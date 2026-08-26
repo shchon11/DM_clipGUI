@@ -406,8 +406,15 @@ reliable + 큰 큐로 만들면: **구독자가 못 따라가면 퍼블리셔가
 ## 11. GUI — `clip_gui`
 
 ```bash
-ros2 run clip_recorder clip_gui
+clip                                  # 권장: 런처 (아래 참고). ~/.bashrc 에 alias 등록됨
+ros2 run clip_recorder clip_gui       # 직접 실행도 가능
 ```
+
+`clip`(= `scripts/clip_launch.sh`)은 ROS/워크스페이스를 소싱하고, IP별 트래픽 카운터 `net_probe`에
+패킷 캡처 권한(cap_net_raw)이 **없을 때만** `sudo setcap`을 한 번 실행한 뒤, GUI를 일반 사용자로 띄운다.
+즉 `colcon build` 직후 한 번만 비밀번호를 묻는다. GUI 안에서도 "권한 부여" 버튼(pkexec 인증 창)으로 같은 일을 할 수 있다.
+GUI 자체를 sudo로 띄우지 않는 이유: 클립/설정이 root 소유가 되고 DDS 공유메모리가 root 소유가 되어
+일반 사용자 노드(카메라 드라이버)와 충돌한다.
 
 레코더를 조종하는 PyQt5 프론트엔드. 링 버퍼/트리거/저장은 그대로 C++ `clip_recorder`가 하고,
 GUI는 파라미터·토픽으로 조종한다 (GUI가 죽어도 녹화는 안 죽고, 이미 떠 있는 외부 레코더에 붙을 수도 있다).
@@ -435,15 +442,15 @@ GUI는 파라미터·토픽으로 조종한다 (GUI가 죽어도 녹화는 안 �
    지금 트리거하면 클립에 담길 경로가 주황선으로 보인다. 왼쪽 목록에서 클립을 체크하면 누적 궤적이 같이 표시된다.
    성능: 수신은 10 Hz로 스로틀되고 그리기는 2 Hz 타이머에서만 — RT2000 100 Hz 출력에도 GUI가 막히지 않는다.
 
-**IP별 트래픽 측정 권한 (한 번만)** — 언매니지드 스위치에는 포트 카운터가 없으므로 PC의 업링크 포트에서
-AF_PACKET으로 세는 작은 도우미(`net_probe`)를 쓴다. raw 소켓 권한이 필요해서 빌드 후 한 번:
+**IP별 트래픽 측정 권한** — 언매니지드 스위치에는 포트 카운터가 없으므로 PC의 업링크 포트에서
+AF_PACKET으로 세는 작은 도우미(`net_probe`)를 쓴다. raw 소켓 권한이 필요한데, `clip` 런처나 GUI의
+"권한 부여" 버튼이 알아서 처리한다. 수동으로 하려면:
 
 ```bash
 sudo setcap cap_net_raw+ep ~/DM_clipGUI/build/clip_recorder/net_probe
 ```
 
-(안 하면 GUI 네트워크 섹션에 이 명령이 안내로 뜨고, NIC 합계만 표시된다. `colcon build`로
-바이너리가 다시 만들어지면 권한이 사라지므로 다시 실행.)
+(`colcon build`로 바이너리가 다시 만들어지면 권한이 사라진다 — 런처가 감지해서 다시 묻는다.)
 
 **진단 단독 실행**
 ```bash
@@ -458,6 +465,7 @@ clip_recorder/
 ├── src/clip_recorder.cpp          레코더 노드 (~/clip_event 로 클립 라이프사이클 발행)
 ├── src/net_probe.c                송신 IP별 트래픽 카운터 (setcap 필요, §11)
 ├── scripts/clip_gui.py            GUI (ros2 run clip_recorder clip_gui)
+├── scripts/clip_launch.sh         `clip` 런처: net_probe 권한 확인/부여 후 GUI 실행
 ├── scripts/bag_diagnostics.py     클립 진단 엔진 (드랍/손상/GNSS) — CLI 겸용
 ├── scripts/gnss_tools.py          GNSS 품질 + 궤적 캐시 + PNG 지도
 ├── scripts/map_widget.py          인터랙티브 OSM 슬리피 맵 위젯 (순수 PyQt5)

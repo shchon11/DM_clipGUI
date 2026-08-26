@@ -12,7 +12,7 @@
 # ~/.bashrc:  alias clip='~/DM_clipGUI/scripts/clip_launch.sh'
 # 워크스페이스 경로가 다르면:  DM_CLIP_WS=/path/to/ws clip
 
-set -u
+# (set -u 사용 금지: ROS setup.bash가 nounset에 안전하지 않음)
 WS="${DM_CLIP_WS:-$HOME/DM_clipGUI}"
 
 # shellcheck disable=SC1091
