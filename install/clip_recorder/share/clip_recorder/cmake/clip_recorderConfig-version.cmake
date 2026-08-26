@@ -1,1 +1,0 @@
-/home/ircv/DM_clipGUI/build/clip_recorder/ament_cmake_core/clip_recorderConfig-version.cmake

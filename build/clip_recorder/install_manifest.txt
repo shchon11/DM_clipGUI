@@ -1,2 +1,0 @@
-/home/ircv/DM_clipGUI/install/clip_recorder/lib/clip_recorder/buffer_probe
-/home/ircv/DM_clipGUI/install/clip_recorder/lib/clip_recorder/clip_trigger

@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 clips/
+build/
+install/
+log/
