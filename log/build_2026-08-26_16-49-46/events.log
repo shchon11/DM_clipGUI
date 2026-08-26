@@ -1,0 +1,189 @@
+[0.000000] (-) TimerEvent: {}
+[0.000188] (clip_recorder) JobQueued: {'identifier': 'clip_recorder', 'dependencies': OrderedDict()}
+[0.000353] (clip_recorder) JobStarted: {'identifier': 'clip_recorder'}
+[0.006608] (clip_recorder) JobProgress: {'identifier': 'clip_recorder', 'progress': 'cmake'}
+[0.006935] (clip_recorder) Command: {'cmd': ['/usr/bin/cmake', '/home/ircv/DM_clipGUI', '-DAMENT_CMAKE_SYMLINK_INSTALL=1', '-DCMAKE_INSTALL_PREFIX=/home/ircv/DM_clipGUI/install/clip_recorder'], 'cwd': '/home/ircv/DM_clipGUI/build/clip_recorder', 'env': OrderedDict([('GJS_DEBUG_TOPICS', 'JS ERROR;JS LOG'), ('LESSOPEN', '| /usr/bin/lesspipe %s'), ('LANGUAGE', 'ko:en'), ('USER', 'ircv'), ('LC_TIME', 'ko_KR.UTF-8'), ('XDG_SESSION_TYPE', 'wayland'), ('SHLVL', '1'), ('LD_LIBRARY_PATH', '/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/rti.com/rti_connext_dds-6.0.1/lib/x64Linux4gcc7.3.0:/opt/rti.com/rti_connext_dds-6.0.1/bin:/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/lib'), ('HOME', '/home/ircv'), ('OLDPWD', '/home/ircv'), ('DESKTOP_SESSION', 'ubuntu'), ('CONNEXTDDS_DIR', '/opt/rti.com/rti_connext_dds-6.0.1'), ('GIO_LAUNCHED_DESKTOP_FILE', '/usr/share/applications/terminator.desktop'), ('ROS_PYTHON_VERSION', '3'), ('GNOME_SHELL_SESSION_MODE', 'ubuntu'), ('GTK_MODULES', 'gail:atk-bridge'), ('NDDSHOME', '/opt/rti.com/rti_connext_dds-6.0.1'), ('LC_MONETARY', 'ko_KR.UTF-8'), ('MANAGERPID', '1843'), ('SYSTEMD_EXEC_PID', '2022'), ('DBUS_SESSION_BUS_ADDRESS', 'unix:path=/run/user/1000/bus'), ('COLORTERM', 'truecolor'), ('TERMINATOR_DBUS_NAME', 'net.tenshu.Terminator25ef4b219e3b005583550f2b0f9f990c3'), ('GIO_LAUNCHED_DESKTOP_FILE_PID', '3758'), ('IM_CONFIG_PHASE', '1'), ('WAYLAND_DISPLAY', 'wayland-0'), ('ROS_DISTRO', 'humble'), ('LOGNAME', 'ircv'), ('JOURNAL_STREAM', '8:16944'), ('_', '/usr/bin/colcon'), ('ROS_VERSION', '2'), ('XDG_SESSION_CLASS', 'user'), ('USERNAME', 'ircv'), ('TERM', 'xterm-256color'), ('GNOME_DESKTOP_SESSION_ID', 'this-is-deprecated'), ('ROS_LOCALHOST_ONLY', '0'), ('PATH', '/home/ircv/.kimi-code/bin:/opt/rti.com/rti_connext_dds-6.0.1/lib/x64Linux4gcc7.3.0:/opt/rti.com/rti_connext_dds-6.0.1/bin:/opt/ros/humble/bin:/home/ircv/.local/bin:/opt/spinnaker/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/snap/bin'), ('SESSION_MANAGER', 'local/ircv:@/tmp/.ICE-unix/1999,unix/ircv:/tmp/.ICE-unix/1999'), ('INVOCATION_ID', '798b75ac93cc496ab02e12117cbf111e'), ('PAPERSIZE', 'a4'), ('XDG_MENU_PREFIX', 'gnome-'), ('LC_ADDRESS', 'ko_KR.UTF-8'), ('GNOME_SETUP_DISPLAY', ':1'), ('XDG_RUNTIME_DIR', '/run/user/1000'), ('SPINNAKER_GENTL64_CTI', '/opt/spinnaker/lib/spinnaker-gentl/Spinnaker_GenTL.cti'), ('DISPLAY', ':0'), ('TERMINATOR_DBUS_PATH', '/net/tenshu/Terminator2'), ('LANG', 'ko_KR.UTF-8'), ('XDG_CURRENT_DESKTOP', 'ubuntu:GNOME'), ('IBUS_DISABLE_SNOOPER', '1'), ('LC_TELEPHONE', 'ko_KR.UTF-8'), ('XMODIFIERS', '@im=ibus'), ('XDG_SESSION_DESKTOP', 'ubuntu'), ('XAUTHORITY', '/run/user/1000/.mutter-Xwaylandauth.VOXNU3'), ('LS_COLORS', 'rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=30;41:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arc=01;31:*.arj=01;31:*.taz=01;31:*.lha=01;31:*.lz4=01;31:*.lzh=01;31:*.lzma=01;31:*.tlz=01;31:*.txz=01;31:*.tzo=01;31:*.t7z=01;31:*.zip=01;31:*.z=01;31:*.dz=01;31:*.gz=01;31:*.lrz=01;31:*.lz=01;31:*.lzo=01;31:*.xz=01;31:*.zst=01;31:*.tzst=01;31:*.bz2=01;31:*.bz=01;31:*.tbz=01;31:*.tbz2=01;31:*.tz=01;31:*.deb=01;31:*.rpm=01;31:*.jar=01;31:*.war=01;31:*.ear=01;31:*.sar=01;31:*.rar=01;31:*.alz=01;31:*.ace=01;31:*.zoo=01;31:*.cpio=01;31:*.7z=01;31:*.rz=01;31:*.cab=01;31:*.wim=01;31:*.swm=01;31:*.dwm=01;31:*.esd=01;31:*.jpg=01;35:*.jpeg=01;35:*.mjpg=01;35:*.mjpeg=01;35:*.gif=01;35:*.bmp=01;35:*.pbm=01;35:*.pgm=01;35:*.ppm=01;35:*.tga=01;35:*.xbm=01;35:*.xpm=01;35:*.tif=01;35:*.tiff=01;35:*.png=01;35:*.svg=01;35:*.svgz=01;35:*.mng=01;35:*.pcx=01;35:*.mov=01;35:*.mpg=01;35:*.mpeg=01;35:*.m2v=01;35:*.mkv=01;35:*.webm=01;35:*.webp=01;35:*.ogm=01;35:*.mp4=01;35:*.m4v=01;35:*.mp4v=01;35:*.vob=01;35:*.qt=01;35:*.nuv=01;35:*.wmv=01;35:*.asf=01;35:*.rm=01;35:*.rmvb=01;35:*.flc=01;35:*.avi=01;35:*.fli=01;35:*.flv=01;35:*.gl=01;35:*.dl=01;35:*.xcf=01;35:*.xwd=01;35:*.yuv=01;35:*.cgm=01;35:*.emf=01;35:*.ogv=01;35:*.ogx=01;35:*.aac=00;36:*.au=00;36:*.flac=00;36:*.m4a=00;36:*.mid=00;36:*.midi=00;36:*.mka=00;36:*.mp3=00;36:*.mpc=00;36:*.ogg=00;36:*.ra=00;36:*.wav=00;36:*.oga=00;36:*.opus=00;36:*.spx=00;36:*.xspf=00;36:'), ('SSH_AGENT_LAUNCHER', 'gnome-keyring'), ('SSH_AUTH_SOCK', '/run/user/1000/keyring/ssh'), ('AMENT_PREFIX_PATH', '/opt/ros/humble'), ('SHELL', '/bin/bash'), ('LC_NAME', 'ko_KR.UTF-8'), ('TERMINATOR_UUID', 'urn:uuid:ac2482f4-0eb9-4886-867e-636199dcb6ad'), ('QT_ACCESSIBILITY', '1'), ('GDMSESSION', 'ubuntu'), ('LESSCLOSE', '/usr/bin/lesspipe %s %s'), ('LC_MEASUREMENT', 'ko_KR.UTF-8'), ('GJS_DEBUG_OUTPUT', 'stderr'), ('LC_IDENTIFICATION', 'ko_KR.UTF-8'), ('CONNEXTDDS_ARCH', 'x64Linux4gcc7.3.0'), ('QT_IM_MODULE', 'ibus'), ('PWD', '/home/ircv/DM_clipGUI/build/clip_recorder'), ('LC_ALL', 'en_US.UTF-8'), ('XDG_CONFIG_DIRS', '/etc/xdg/xdg-ubuntu:/etc/xdg'), ('XDG_DATA_DIRS', '/usr/share/ubuntu:/usr/local/share/:/usr/share/:/var/lib/snapd/desktop'), ('PYTHONPATH', '/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages'), ('LC_NUMERIC', 'ko_KR.UTF-8'), ('LC_PAPER', 'ko_KR.UTF-8'), ('COLCON', '1'), ('GENICAM_GENTL64_PATH', '/opt/spinnaker/lib/spinnaker-gentl'), ('VTE_VERSION', '6800'), ('CMAKE_PREFIX_PATH', '/opt/ros/humble')]), 'shell': False}
+[0.093073] (clip_recorder) StdoutLine: {'line': b'-- The C compiler identification is GNU 11.4.0\n'}
+[0.099855] (-) TimerEvent: {}
+[0.193882] (clip_recorder) StdoutLine: {'line': b'-- The CXX compiler identification is GNU 11.4.0\n'}
+[0.199951] (-) TimerEvent: {}
+[0.204095] (clip_recorder) StdoutLine: {'line': b'-- Detecting C compiler ABI info\n'}
+[0.271033] (clip_recorder) StdoutLine: {'line': b'-- Detecting C compiler ABI info - done\n'}
+[0.280046] (clip_recorder) StdoutLine: {'line': b'-- Check for working C compiler: /usr/bin/cc - skipped\n'}
+[0.281207] (clip_recorder) StdoutLine: {'line': b'-- Detecting C compile features\n'}
+[0.282432] (clip_recorder) StdoutLine: {'line': b'-- Detecting C compile features - done\n'}
+[0.286753] (clip_recorder) StdoutLine: {'line': b'-- Detecting CXX compiler ABI info\n'}
+[0.300048] (-) TimerEvent: {}
+[0.360499] (clip_recorder) StdoutLine: {'line': b'-- Detecting CXX compiler ABI info - done\n'}
+[0.368455] (clip_recorder) StdoutLine: {'line': b'-- Check for working CXX compiler: /usr/bin/c++ - skipped\n'}
+[0.368739] (clip_recorder) StdoutLine: {'line': b'-- Detecting CXX compile features\n'}
+[0.369209] (clip_recorder) StdoutLine: {'line': b'-- Detecting CXX compile features - done\n'}
+[0.371691] (clip_recorder) StdoutLine: {'line': b'-- Found ament_cmake: 1.3.14 (/opt/ros/humble/share/ament_cmake/cmake)\n'}
+[0.400133] (-) TimerEvent: {}
+[0.500348] (-) TimerEvent: {}
+[0.514742] (clip_recorder) StdoutLine: {'line': b'-- Found Python3: /usr/bin/python3 (found version "3.10.12") found components: Interpreter \n'}
+[0.581778] (clip_recorder) StdoutLine: {'line': b'-- Override CMake install command with custom implementation using symlinks instead of copying resources\n'}
+[0.600437] (-) TimerEvent: {}
+[0.611897] (clip_recorder) StdoutLine: {'line': b'-- Found rclcpp: 16.0.19 (/opt/ros/humble/share/rclcpp/cmake)\n'}
+[0.665900] (clip_recorder) StdoutLine: {'line': b'-- Found rosidl_generator_c: 3.1.8 (/opt/ros/humble/share/rosidl_generator_c/cmake)\n'}
+[0.670875] (clip_recorder) StdoutLine: {'line': b'-- Found rosidl_adapter: 3.1.8 (/opt/ros/humble/share/rosidl_adapter/cmake)\n'}
+[0.680470] (clip_recorder) StdoutLine: {'line': b'-- Found rosidl_generator_cpp: 3.1.8 (/opt/ros/humble/share/rosidl_generator_cpp/cmake)\n'}
+[0.694527] (clip_recorder) StdoutLine: {'line': b'-- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c\n'}
+[0.700500] (-) TimerEvent: {}
+[0.710968] (clip_recorder) StdoutLine: {'line': b'-- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp\n'}
+[0.769022] (clip_recorder) StdoutLine: {'line': b'-- Found rmw_implementation_cmake: 6.1.2 (/opt/ros/humble/share/rmw_implementation_cmake/cmake)\n'}
+[0.775145] (clip_recorder) StdoutLine: {'line': b'-- Found rmw_fastrtps_cpp: 6.2.10 (/opt/ros/humble/share/rmw_fastrtps_cpp/cmake)\n'}
+[0.800600] (-) TimerEvent: {}
+[0.860878] (clip_recorder) StdoutLine: {'line': b'-- Found OpenSSL: /usr/lib/x86_64-linux-gnu/libcrypto.so (found version "3.0.2")  \n'}
+[0.889042] (clip_recorder) StdoutLine: {'line': b'-- Found FastRTPS: /opt/ros/humble/include  \n'}
+[0.900690] (-) TimerEvent: {}
+[0.925136] (clip_recorder) StdoutLine: {'line': b"-- Using RMW implementation 'rmw_fastrtps_cpp' as default\n"}
+[0.932862] (clip_recorder) StdoutLine: {'line': b'-- Looking for pthread.h\n'}
+[0.993610] (clip_recorder) StdoutLine: {'line': b'-- Looking for pthread.h - found\n'}
+[0.994020] (clip_recorder) StdoutLine: {'line': b'-- Performing Test CMAKE_HAVE_LIBC_PTHREAD\n'}
+[1.000764] (-) TimerEvent: {}
+[1.055706] (clip_recorder) StdoutLine: {'line': b'-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success\n'}
+[1.057270] (clip_recorder) StdoutLine: {'line': b'-- Found Threads: TRUE  \n'}
+[1.100859] (-) TimerEvent: {}
+[1.122803] (clip_recorder) StdoutLine: {'line': b'-- Found rosbag2_cpp: 0.15.16 (/opt/ros/humble/share/rosbag2_cpp/cmake)\n'}
+[1.159421] (clip_recorder) StdoutLine: {'line': b'-- Found std_srvs: 4.9.1 (/opt/ros/humble/share/std_srvs/cmake)\n'}
+[1.170021] (clip_recorder) StdoutLine: {'line': b'-- Found diagnostic_msgs: 4.9.1 (/opt/ros/humble/share/diagnostic_msgs/cmake)\n'}
+[1.200939] (-) TimerEvent: {}
+[1.240017] (clip_recorder) StdoutLine: {'line': b'-- Configuring done\n'}
+[1.249817] (clip_recorder) StdoutLine: {'line': b'-- Generating done\n'}
+[1.254002] (clip_recorder) StdoutLine: {'line': b'-- Build files have been written to: /home/ircv/DM_clipGUI/build/clip_recorder\n'}
+[1.263470] (clip_recorder) CommandEnded: {'returncode': 0}
+[1.264063] (clip_recorder) JobProgress: {'identifier': 'clip_recorder', 'progress': 'build'}
+[1.264889] (clip_recorder) Command: {'cmd': ['/usr/bin/cmake', '--build', '/home/ircv/DM_clipGUI/build/clip_recorder', '--', '-j20', '-l20'], 'cwd': '/home/ircv/DM_clipGUI/build/clip_recorder', 'env': OrderedDict([('GJS_DEBUG_TOPICS', 'JS ERROR;JS LOG'), ('LESSOPEN', '| /usr/bin/lesspipe %s'), ('LANGUAGE', 'ko:en'), ('USER', 'ircv'), ('LC_TIME', 'ko_KR.UTF-8'), ('XDG_SESSION_TYPE', 'wayland'), ('SHLVL', '1'), ('LD_LIBRARY_PATH', '/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/rti.com/rti_connext_dds-6.0.1/lib/x64Linux4gcc7.3.0:/opt/rti.com/rti_connext_dds-6.0.1/bin:/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/lib'), ('HOME', '/home/ircv'), ('OLDPWD', '/home/ircv'), ('DESKTOP_SESSION', 'ubuntu'), ('CONNEXTDDS_DIR', '/opt/rti.com/rti_connext_dds-6.0.1'), ('GIO_LAUNCHED_DESKTOP_FILE', '/usr/share/applications/terminator.desktop'), ('ROS_PYTHON_VERSION', '3'), ('GNOME_SHELL_SESSION_MODE', 'ubuntu'), ('GTK_MODULES', 'gail:atk-bridge'), ('NDDSHOME', '/opt/rti.com/rti_connext_dds-6.0.1'), ('LC_MONETARY', 'ko_KR.UTF-8'), ('MANAGERPID', '1843'), ('SYSTEMD_EXEC_PID', '2022'), ('DBUS_SESSION_BUS_ADDRESS', 'unix:path=/run/user/1000/bus'), ('COLORTERM', 'truecolor'), ('TERMINATOR_DBUS_NAME', 'net.tenshu.Terminator25ef4b219e3b005583550f2b0f9f990c3'), ('GIO_LAUNCHED_DESKTOP_FILE_PID', '3758'), ('IM_CONFIG_PHASE', '1'), ('WAYLAND_DISPLAY', 'wayland-0'), ('ROS_DISTRO', 'humble'), ('LOGNAME', 'ircv'), ('JOURNAL_STREAM', '8:16944'), ('_', '/usr/bin/colcon'), ('ROS_VERSION', '2'), ('XDG_SESSION_CLASS', 'user'), ('USERNAME', 'ircv'), ('TERM', 'xterm-256color'), ('GNOME_DESKTOP_SESSION_ID', 'this-is-deprecated'), ('ROS_LOCALHOST_ONLY', '0'), ('PATH', '/home/ircv/.kimi-code/bin:/opt/rti.com/rti_connext_dds-6.0.1/lib/x64Linux4gcc7.3.0:/opt/rti.com/rti_connext_dds-6.0.1/bin:/opt/ros/humble/bin:/home/ircv/.local/bin:/opt/spinnaker/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/snap/bin'), ('SESSION_MANAGER', 'local/ircv:@/tmp/.ICE-unix/1999,unix/ircv:/tmp/.ICE-unix/1999'), ('INVOCATION_ID', '798b75ac93cc496ab02e12117cbf111e'), ('PAPERSIZE', 'a4'), ('XDG_MENU_PREFIX', 'gnome-'), ('LC_ADDRESS', 'ko_KR.UTF-8'), ('GNOME_SETUP_DISPLAY', ':1'), ('XDG_RUNTIME_DIR', '/run/user/1000'), ('SPINNAKER_GENTL64_CTI', '/opt/spinnaker/lib/spinnaker-gentl/Spinnaker_GenTL.cti'), ('DISPLAY', ':0'), ('TERMINATOR_DBUS_PATH', '/net/tenshu/Terminator2'), ('LANG', 'ko_KR.UTF-8'), ('XDG_CURRENT_DESKTOP', 'ubuntu:GNOME'), ('IBUS_DISABLE_SNOOPER', '1'), ('LC_TELEPHONE', 'ko_KR.UTF-8'), ('XMODIFIERS', '@im=ibus'), ('XDG_SESSION_DESKTOP', 'ubuntu'), ('XAUTHORITY', '/run/user/1000/.mutter-Xwaylandauth.VOXNU3'), ('LS_COLORS', 'rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=30;41:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arc=01;31:*.arj=01;31:*.taz=01;31:*.lha=01;31:*.lz4=01;31:*.lzh=01;31:*.lzma=01;31:*.tlz=01;31:*.txz=01;31:*.tzo=01;31:*.t7z=01;31:*.zip=01;31:*.z=01;31:*.dz=01;31:*.gz=01;31:*.lrz=01;31:*.lz=01;31:*.lzo=01;31:*.xz=01;31:*.zst=01;31:*.tzst=01;31:*.bz2=01;31:*.bz=01;31:*.tbz=01;31:*.tbz2=01;31:*.tz=01;31:*.deb=01;31:*.rpm=01;31:*.jar=01;31:*.war=01;31:*.ear=01;31:*.sar=01;31:*.rar=01;31:*.alz=01;31:*.ace=01;31:*.zoo=01;31:*.cpio=01;31:*.7z=01;31:*.rz=01;31:*.cab=01;31:*.wim=01;31:*.swm=01;31:*.dwm=01;31:*.esd=01;31:*.jpg=01;35:*.jpeg=01;35:*.mjpg=01;35:*.mjpeg=01;35:*.gif=01;35:*.bmp=01;35:*.pbm=01;35:*.pgm=01;35:*.ppm=01;35:*.tga=01;35:*.xbm=01;35:*.xpm=01;35:*.tif=01;35:*.tiff=01;35:*.png=01;35:*.svg=01;35:*.svgz=01;35:*.mng=01;35:*.pcx=01;35:*.mov=01;35:*.mpg=01;35:*.mpeg=01;35:*.m2v=01;35:*.mkv=01;35:*.webm=01;35:*.webp=01;35:*.ogm=01;35:*.mp4=01;35:*.m4v=01;35:*.mp4v=01;35:*.vob=01;35:*.qt=01;35:*.nuv=01;35:*.wmv=01;35:*.asf=01;35:*.rm=01;35:*.rmvb=01;35:*.flc=01;35:*.avi=01;35:*.fli=01;35:*.flv=01;35:*.gl=01;35:*.dl=01;35:*.xcf=01;35:*.xwd=01;35:*.yuv=01;35:*.cgm=01;35:*.emf=01;35:*.ogv=01;35:*.ogx=01;35:*.aac=00;36:*.au=00;36:*.flac=00;36:*.m4a=00;36:*.mid=00;36:*.midi=00;36:*.mka=00;36:*.mp3=00;36:*.mpc=00;36:*.ogg=00;36:*.ra=00;36:*.wav=00;36:*.oga=00;36:*.opus=00;36:*.spx=00;36:*.xspf=00;36:'), ('SSH_AGENT_LAUNCHER', 'gnome-keyring'), ('SSH_AUTH_SOCK', '/run/user/1000/keyring/ssh'), ('AMENT_PREFIX_PATH', '/opt/ros/humble'), ('SHELL', '/bin/bash'), ('LC_NAME', 'ko_KR.UTF-8'), ('TERMINATOR_UUID', 'urn:uuid:ac2482f4-0eb9-4886-867e-636199dcb6ad'), ('QT_ACCESSIBILITY', '1'), ('GDMSESSION', 'ubuntu'), ('LESSCLOSE', '/usr/bin/lesspipe %s %s'), ('LC_MEASUREMENT', 'ko_KR.UTF-8'), ('GJS_DEBUG_OUTPUT', 'stderr'), ('LC_IDENTIFICATION', 'ko_KR.UTF-8'), ('CONNEXTDDS_ARCH', 'x64Linux4gcc7.3.0'), ('QT_IM_MODULE', 'ibus'), ('PWD', '/home/ircv/DM_clipGUI/build/clip_recorder'), ('LC_ALL', 'en_US.UTF-8'), ('XDG_CONFIG_DIRS', '/etc/xdg/xdg-ubuntu:/etc/xdg'), ('XDG_DATA_DIRS', '/usr/share/ubuntu:/usr/local/share/:/usr/share/:/var/lib/snapd/desktop'), ('PYTHONPATH', '/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages'), ('LC_NUMERIC', 'ko_KR.UTF-8'), ('LC_PAPER', 'ko_KR.UTF-8'), ('COLCON', '1'), ('GENICAM_GENTL64_PATH', '/opt/spinnaker/lib/spinnaker-gentl'), ('VTE_VERSION', '6800'), ('CMAKE_PREFIX_PATH', '/opt/ros/humble')]), 'shell': False}
+[1.301041] (-) TimerEvent: {}
+[1.308143] (clip_recorder) StdoutLine: {'line': b'[ 50%] \x1b[32mBuilding CXX object CMakeFiles/clip_recorder.dir/src/clip_recorder.cpp.o\x1b[0m\n'}
+[1.401136] (-) TimerEvent: {}
+[1.501367] (-) TimerEvent: {}
+[1.601615] (-) TimerEvent: {}
+[1.701855] (-) TimerEvent: {}
+[1.802081] (-) TimerEvent: {}
+[1.902354] (-) TimerEvent: {}
+[2.002597] (-) TimerEvent: {}
+[2.102827] (-) TimerEvent: {}
+[2.203074] (-) TimerEvent: {}
+[2.303346] (-) TimerEvent: {}
+[2.403565] (-) TimerEvent: {}
+[2.503784] (-) TimerEvent: {}
+[2.604002] (-) TimerEvent: {}
+[2.704175] (-) TimerEvent: {}
+[2.804388] (-) TimerEvent: {}
+[2.904600] (-) TimerEvent: {}
+[3.004814] (-) TimerEvent: {}
+[3.105041] (-) TimerEvent: {}
+[3.205289] (-) TimerEvent: {}
+[3.305521] (-) TimerEvent: {}
+[3.405757] (-) TimerEvent: {}
+[3.505977] (-) TimerEvent: {}
+[3.606203] (-) TimerEvent: {}
+[3.706433] (-) TimerEvent: {}
+[3.806664] (-) TimerEvent: {}
+[3.906902] (-) TimerEvent: {}
+[4.007158] (-) TimerEvent: {}
+[4.107398] (-) TimerEvent: {}
+[4.207622] (-) TimerEvent: {}
+[4.307841] (-) TimerEvent: {}
+[4.408070] (-) TimerEvent: {}
+[4.508287] (-) TimerEvent: {}
+[4.608500] (-) TimerEvent: {}
+[4.708719] (-) TimerEvent: {}
+[4.808928] (-) TimerEvent: {}
+[4.909145] (-) TimerEvent: {}
+[5.009355] (-) TimerEvent: {}
+[5.109567] (-) TimerEvent: {}
+[5.209773] (-) TimerEvent: {}
+[5.309981] (-) TimerEvent: {}
+[5.410192] (-) TimerEvent: {}
+[5.510398] (-) TimerEvent: {}
+[5.610610] (-) TimerEvent: {}
+[5.710825] (-) TimerEvent: {}
+[5.811031] (-) TimerEvent: {}
+[5.911255] (-) TimerEvent: {}
+[6.011460] (-) TimerEvent: {}
+[6.111670] (-) TimerEvent: {}
+[6.211875] (-) TimerEvent: {}
+[6.312081] (-) TimerEvent: {}
+[6.412294] (-) TimerEvent: {}
+[6.512508] (-) TimerEvent: {}
+[6.612719] (-) TimerEvent: {}
+[6.712929] (-) TimerEvent: {}
+[6.813137] (-) TimerEvent: {}
+[6.913350] (-) TimerEvent: {}
+[7.013578] (-) TimerEvent: {}
+[7.113778] (-) TimerEvent: {}
+[7.213977] (-) TimerEvent: {}
+[7.314176] (-) TimerEvent: {}
+[7.414374] (-) TimerEvent: {}
+[7.514577] (-) TimerEvent: {}
+[7.614775] (-) TimerEvent: {}
+[7.714974] (-) TimerEvent: {}
+[7.815176] (-) TimerEvent: {}
+[7.915374] (-) TimerEvent: {}
+[8.015575] (-) TimerEvent: {}
+[8.115778] (-) TimerEvent: {}
+[8.215977] (-) TimerEvent: {}
+[8.316198] (-) TimerEvent: {}
+[8.416395] (-) TimerEvent: {}
+[8.516601] (-) TimerEvent: {}
+[8.616806] (-) TimerEvent: {}
+[8.717010] (-) TimerEvent: {}
+[8.817227] (-) TimerEvent: {}
+[8.917490] (-) TimerEvent: {}
+[9.017753] (-) TimerEvent: {}
+[9.118001] (-) TimerEvent: {}
+[9.218210] (-) TimerEvent: {}
+[9.318428] (-) TimerEvent: {}
+[9.418642] (-) TimerEvent: {}
+[9.518861] (-) TimerEvent: {}
+[9.619075] (-) TimerEvent: {}
+[9.719339] (-) TimerEvent: {}
+[9.819560] (-) TimerEvent: {}
+[9.919784] (-) TimerEvent: {}
+[10.020016] (-) TimerEvent: {}
+[10.120258] (-) TimerEvent: {}
+[10.220461] (-) TimerEvent: {}
+[10.320674] (-) TimerEvent: {}
+[10.420886] (-) TimerEvent: {}
+[10.521092] (-) TimerEvent: {}
+[10.621663] (-) TimerEvent: {}
+[10.722050] (-) TimerEvent: {}
+[10.770671] (clip_recorder) StdoutLine: {'line': b'[100%] \x1b[32m\x1b[1mLinking CXX executable clip_recorder\x1b[0m\n'}
+[10.822118] (-) TimerEvent: {}
+[10.922444] (-) TimerEvent: {}
+[11.022717] (-) TimerEvent: {}
+[11.122925] (-) TimerEvent: {}
+[11.182166] (clip_recorder) StdoutLine: {'line': b'[100%] Built target clip_recorder\n'}
+[11.190524] (clip_recorder) CommandEnded: {'returncode': 0}
+[11.191013] (clip_recorder) JobProgress: {'identifier': 'clip_recorder', 'progress': 'install'}
+[11.197070] (clip_recorder) Command: {'cmd': ['/usr/bin/cmake', '--install', '/home/ircv/DM_clipGUI/build/clip_recorder'], 'cwd': '/home/ircv/DM_clipGUI/build/clip_recorder', 'env': OrderedDict([('GJS_DEBUG_TOPICS', 'JS ERROR;JS LOG'), ('LESSOPEN', '| /usr/bin/lesspipe %s'), ('LANGUAGE', 'ko:en'), ('USER', 'ircv'), ('LC_TIME', 'ko_KR.UTF-8'), ('XDG_SESSION_TYPE', 'wayland'), ('SHLVL', '1'), ('LD_LIBRARY_PATH', '/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/rti.com/rti_connext_dds-6.0.1/lib/x64Linux4gcc7.3.0:/opt/rti.com/rti_connext_dds-6.0.1/bin:/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/lib'), ('HOME', '/home/ircv'), ('OLDPWD', '/home/ircv'), ('DESKTOP_SESSION', 'ubuntu'), ('CONNEXTDDS_DIR', '/opt/rti.com/rti_connext_dds-6.0.1'), ('GIO_LAUNCHED_DESKTOP_FILE', '/usr/share/applications/terminator.desktop'), ('ROS_PYTHON_VERSION', '3'), ('GNOME_SHELL_SESSION_MODE', 'ubuntu'), ('GTK_MODULES', 'gail:atk-bridge'), ('NDDSHOME', '/opt/rti.com/rti_connext_dds-6.0.1'), ('LC_MONETARY', 'ko_KR.UTF-8'), ('MANAGERPID', '1843'), ('SYSTEMD_EXEC_PID', '2022'), ('DBUS_SESSION_BUS_ADDRESS', 'unix:path=/run/user/1000/bus'), ('COLORTERM', 'truecolor'), ('TERMINATOR_DBUS_NAME', 'net.tenshu.Terminator25ef4b219e3b005583550f2b0f9f990c3'), ('GIO_LAUNCHED_DESKTOP_FILE_PID', '3758'), ('IM_CONFIG_PHASE', '1'), ('WAYLAND_DISPLAY', 'wayland-0'), ('ROS_DISTRO', 'humble'), ('LOGNAME', 'ircv'), ('JOURNAL_STREAM', '8:16944'), ('_', '/usr/bin/colcon'), ('ROS_VERSION', '2'), ('XDG_SESSION_CLASS', 'user'), ('USERNAME', 'ircv'), ('TERM', 'xterm-256color'), ('GNOME_DESKTOP_SESSION_ID', 'this-is-deprecated'), ('ROS_LOCALHOST_ONLY', '0'), ('PATH', '/home/ircv/.kimi-code/bin:/opt/rti.com/rti_connext_dds-6.0.1/lib/x64Linux4gcc7.3.0:/opt/rti.com/rti_connext_dds-6.0.1/bin:/opt/ros/humble/bin:/home/ircv/.local/bin:/opt/spinnaker/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/snap/bin'), ('SESSION_MANAGER', 'local/ircv:@/tmp/.ICE-unix/1999,unix/ircv:/tmp/.ICE-unix/1999'), ('INVOCATION_ID', '798b75ac93cc496ab02e12117cbf111e'), ('PAPERSIZE', 'a4'), ('XDG_MENU_PREFIX', 'gnome-'), ('LC_ADDRESS', 'ko_KR.UTF-8'), ('GNOME_SETUP_DISPLAY', ':1'), ('XDG_RUNTIME_DIR', '/run/user/1000'), ('SPINNAKER_GENTL64_CTI', '/opt/spinnaker/lib/spinnaker-gentl/Spinnaker_GenTL.cti'), ('DISPLAY', ':0'), ('TERMINATOR_DBUS_PATH', '/net/tenshu/Terminator2'), ('LANG', 'ko_KR.UTF-8'), ('XDG_CURRENT_DESKTOP', 'ubuntu:GNOME'), ('IBUS_DISABLE_SNOOPER', '1'), ('LC_TELEPHONE', 'ko_KR.UTF-8'), ('XMODIFIERS', '@im=ibus'), ('XDG_SESSION_DESKTOP', 'ubuntu'), ('XAUTHORITY', '/run/user/1000/.mutter-Xwaylandauth.VOXNU3'), ('LS_COLORS', 'rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=30;41:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arc=01;31:*.arj=01;31:*.taz=01;31:*.lha=01;31:*.lz4=01;31:*.lzh=01;31:*.lzma=01;31:*.tlz=01;31:*.txz=01;31:*.tzo=01;31:*.t7z=01;31:*.zip=01;31:*.z=01;31:*.dz=01;31:*.gz=01;31:*.lrz=01;31:*.lz=01;31:*.lzo=01;31:*.xz=01;31:*.zst=01;31:*.tzst=01;31:*.bz2=01;31:*.bz=01;31:*.tbz=01;31:*.tbz2=01;31:*.tz=01;31:*.deb=01;31:*.rpm=01;31:*.jar=01;31:*.war=01;31:*.ear=01;31:*.sar=01;31:*.rar=01;31:*.alz=01;31:*.ace=01;31:*.zoo=01;31:*.cpio=01;31:*.7z=01;31:*.rz=01;31:*.cab=01;31:*.wim=01;31:*.swm=01;31:*.dwm=01;31:*.esd=01;31:*.jpg=01;35:*.jpeg=01;35:*.mjpg=01;35:*.mjpeg=01;35:*.gif=01;35:*.bmp=01;35:*.pbm=01;35:*.pgm=01;35:*.ppm=01;35:*.tga=01;35:*.xbm=01;35:*.xpm=01;35:*.tif=01;35:*.tiff=01;35:*.png=01;35:*.svg=01;35:*.svgz=01;35:*.mng=01;35:*.pcx=01;35:*.mov=01;35:*.mpg=01;35:*.mpeg=01;35:*.m2v=01;35:*.mkv=01;35:*.webm=01;35:*.webp=01;35:*.ogm=01;35:*.mp4=01;35:*.m4v=01;35:*.mp4v=01;35:*.vob=01;35:*.qt=01;35:*.nuv=01;35:*.wmv=01;35:*.asf=01;35:*.rm=01;35:*.rmvb=01;35:*.flc=01;35:*.avi=01;35:*.fli=01;35:*.flv=01;35:*.gl=01;35:*.dl=01;35:*.xcf=01;35:*.xwd=01;35:*.yuv=01;35:*.cgm=01;35:*.emf=01;35:*.ogv=01;35:*.ogx=01;35:*.aac=00;36:*.au=00;36:*.flac=00;36:*.m4a=00;36:*.mid=00;36:*.midi=00;36:*.mka=00;36:*.mp3=00;36:*.mpc=00;36:*.ogg=00;36:*.ra=00;36:*.wav=00;36:*.oga=00;36:*.opus=00;36:*.spx=00;36:*.xspf=00;36:'), ('SSH_AGENT_LAUNCHER', 'gnome-keyring'), ('SSH_AUTH_SOCK', '/run/user/1000/keyring/ssh'), ('AMENT_PREFIX_PATH', '/opt/ros/humble'), ('SHELL', '/bin/bash'), ('LC_NAME', 'ko_KR.UTF-8'), ('TERMINATOR_UUID', 'urn:uuid:ac2482f4-0eb9-4886-867e-636199dcb6ad'), ('QT_ACCESSIBILITY', '1'), ('GDMSESSION', 'ubuntu'), ('LESSCLOSE', '/usr/bin/lesspipe %s %s'), ('LC_MEASUREMENT', 'ko_KR.UTF-8'), ('GJS_DEBUG_OUTPUT', 'stderr'), ('LC_IDENTIFICATION', 'ko_KR.UTF-8'), ('CONNEXTDDS_ARCH', 'x64Linux4gcc7.3.0'), ('QT_IM_MODULE', 'ibus'), ('PWD', '/home/ircv/DM_clipGUI/build/clip_recorder'), ('LC_ALL', 'en_US.UTF-8'), ('XDG_CONFIG_DIRS', '/etc/xdg/xdg-ubuntu:/etc/xdg'), ('XDG_DATA_DIRS', '/usr/share/ubuntu:/usr/local/share/:/usr/share/:/var/lib/snapd/desktop'), ('PYTHONPATH', '/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages'), ('LC_NUMERIC', 'ko_KR.UTF-8'), ('LC_PAPER', 'ko_KR.UTF-8'), ('COLCON', '1'), ('GENICAM_GENTL64_PATH', '/opt/spinnaker/lib/spinnaker-gentl'), ('VTE_VERSION', '6800'), ('CMAKE_PREFIX_PATH', '/opt/ros/humble')]), 'shell': False}
+[11.203095] (clip_recorder) StdoutLine: {'line': b'-- Install configuration: ""\n'}
+[11.203395] (clip_recorder) StdoutLine: {'line': b'-- Execute custom install script\n'}
+[11.203629] (clip_recorder) StdoutLine: {'line': b'-- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/lib/clip_recorder/clip_recorder\n'}
+[11.209970] (clip_recorder) StdoutLine: {'line': b'-- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/config/params.yaml\n'}
+[11.215743] (clip_recorder) StdoutLine: {'line': b'-- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/launch/clip_recorder.launch.py\n'}
+[11.222290] (clip_recorder) StdoutLine: {'line': b'-- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/ament_index/resource_index/package_run_dependencies/clip_recorder\n'}
+[11.222984] (-) TimerEvent: {}
+[11.228266] (clip_recorder) StdoutLine: {'line': b'-- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/ament_index/resource_index/parent_prefix_path/clip_recorder\n'}
+[11.233996] (clip_recorder) StdoutLine: {'line': b'-- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/environment/ament_prefix_path.sh\n'}
+[11.240772] (clip_recorder) StdoutLine: {'line': b'-- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/environment/ament_prefix_path.dsv\n'}
+[11.246523] (clip_recorder) StdoutLine: {'line': b'-- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/environment/path.sh\n'}
+[11.252680] (clip_recorder) StdoutLine: {'line': b'-- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/environment/path.dsv\n'}
+[11.259238] (clip_recorder) StdoutLine: {'line': b'-- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/local_setup.bash\n'}
+[11.265194] (clip_recorder) StdoutLine: {'line': b'-- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/local_setup.sh\n'}
+[11.271847] (clip_recorder) StdoutLine: {'line': b'-- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/local_setup.zsh\n'}
+[11.277873] (clip_recorder) StdoutLine: {'line': b'-- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/local_setup.dsv\n'}
+[11.284056] (clip_recorder) StdoutLine: {'line': b'-- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/package.dsv\n'}
+[11.290371] (clip_recorder) StdoutLine: {'line': b'-- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/ament_index/resource_index/packages/clip_recorder\n'}
+[11.296290] (clip_recorder) StdoutLine: {'line': b'-- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/cmake/clip_recorderConfig.cmake\n'}
+[11.301992] (clip_recorder) StdoutLine: {'line': b'-- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/cmake/clip_recorderConfig-version.cmake\n'}
+[11.308471] (clip_recorder) StdoutLine: {'line': b'-- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/package.xml\n'}
+[11.314413] (clip_recorder) StdoutLine: {'line': b'-- Installing: /home/ircv/DM_clipGUI/install/clip_recorder/lib/clip_recorder/buffer_probe\n'}
+[11.314531] (clip_recorder) StdoutLine: {'line': b'-- Installing: /home/ircv/DM_clipGUI/install/clip_recorder/lib/clip_recorder/clip_trigger\n'}
+[11.315674] (clip_recorder) CommandEnded: {'returncode': 0}
+[11.323065] (-) TimerEvent: {}
+[11.333323] (clip_recorder) JobEnded: {'identifier': 'clip_recorder', 'rc': 0}
+[11.333795] (-) EventReactorShutdown: {}

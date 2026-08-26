@@ -1,0 +1,4 @@
+source;share/clip_recorder/local_setup.bash
+source;share/clip_recorder/local_setup.dsv
+source;share/clip_recorder/local_setup.sh
+source;share/clip_recorder/local_setup.zsh

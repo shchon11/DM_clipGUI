@@ -113,10 +113,16 @@ mcap이 더 빠르고 작다: `sudo apt install ros-humble-rosbag2-storage-mcap`
 | `queue_depth` | 50 | 구독 QoS history depth. 이미지처럼 큰 토픽은 5~10 권장 |
 | `output_dir` | `"clips"` | 저장 경로 |
 | `storage_id` | `"sqlite3"` | `"mcap"` 가능 |
-| `topics` | `[]` | 녹화할 토픽 목록. 비우면 전체 (exclude 제외) |
+| `topics` | (미지정) | 녹화할 토픽 목록. **키를 아예 안 쓰면** 전체 (exclude 제외) |
 | `exclude` | `[/rosout, /parameter_events]` | 제외 토픽 (정확히 일치) |
-| `topic_qos` | `[]` | 토픽별 QoS 강제. `"/토픽 <auto\|reliable\|best_effort> <auto\|volatile\|transient_local>"` |
+| `topic_qos` | (미지정) | 토픽별 QoS 강제. `"/토픽 <auto\|reliable\|best_effort> <auto\|volatile\|transient_local>"` |
 | `status_period_sec` | 5.0 | 버퍼 상태 리포트 주기 (로그 + `/diagnostics`). 0이면 끔 |
+
+> ⚠️ params.yaml에 **빈 리스트(`topics: []`, `topic_qos: []`)를 쓰면 노드가 죽는다.**
+> ROS 2 파라미터 YAML 파서는 빈 시퀀스의 타입을 추론하지 못해 노드 생성 단계에서
+> `InvalidParameterValueException: parameter_value_from failed for parameter 'topics': No parameter value set`
+> 를 던진다 (declare_parameter 이전이라 코드로는 못 막는다). "전체"를 원하면 **그 키를 지우거나 주석 처리**할 것.
+> 실행 중 `ros2 param set`으로는 빈 배열을 넣어도 정상 동작한다.
 
 `topics`, `exclude`, `topic_qos`는 **실행 중에도 변경 가능** (2초 내 반영, 구독 자동 재구성):
 

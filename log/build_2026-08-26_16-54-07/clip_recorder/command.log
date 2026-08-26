@@ -1,0 +1,6 @@
+Invoking command in '/home/ircv/DM_clipGUI/build/clip_recorder': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake /home/ircv/DM_clipGUI -DCMAKE_INSTALL_PREFIX=/home/ircv/DM_clipGUI/install/clip_recorder
+Invoked command in '/home/ircv/DM_clipGUI/build/clip_recorder' returned '0': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake /home/ircv/DM_clipGUI -DCMAKE_INSTALL_PREFIX=/home/ircv/DM_clipGUI/install/clip_recorder
+Invoking command in '/home/ircv/DM_clipGUI/build/clip_recorder': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --build /home/ircv/DM_clipGUI/build/clip_recorder -- -j20 -l20
+Invoked command in '/home/ircv/DM_clipGUI/build/clip_recorder' returned '0': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --build /home/ircv/DM_clipGUI/build/clip_recorder -- -j20 -l20
+Invoking command in '/home/ircv/DM_clipGUI/build/clip_recorder': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --install /home/ircv/DM_clipGUI/build/clip_recorder
+Invoked command in '/home/ircv/DM_clipGUI/build/clip_recorder' returned '0': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --install /home/ircv/DM_clipGUI/build/clip_recorder

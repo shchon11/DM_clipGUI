@@ -1,0 +1,1 @@
+/home/ircv/DM_clipGUI/launch/clip_recorder.launch.py

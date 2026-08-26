@@ -1,0 +1,68 @@
+[0.008s] Invoking command in '/home/ircv/DM_clipGUI/build/clip_recorder': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake /home/ircv/DM_clipGUI -DAMENT_CMAKE_SYMLINK_INSTALL=1 -DCMAKE_INSTALL_PREFIX=/home/ircv/DM_clipGUI/install/clip_recorder
+[0.093s] -- The C compiler identification is GNU 11.4.0
+[0.194s] -- The CXX compiler identification is GNU 11.4.0
+[0.204s] -- Detecting C compiler ABI info
+[0.271s] -- Detecting C compiler ABI info - done
+[0.280s] -- Check for working C compiler: /usr/bin/cc - skipped
+[0.281s] -- Detecting C compile features
+[0.282s] -- Detecting C compile features - done
+[0.286s] -- Detecting CXX compiler ABI info
+[0.360s] -- Detecting CXX compiler ABI info - done
+[0.368s] -- Check for working CXX compiler: /usr/bin/c++ - skipped
+[0.368s] -- Detecting CXX compile features
+[0.369s] -- Detecting CXX compile features - done
+[0.371s] -- Found ament_cmake: 1.3.14 (/opt/ros/humble/share/ament_cmake/cmake)
+[0.514s] -- Found Python3: /usr/bin/python3 (found version "3.10.12") found components: Interpreter 
+[0.582s] -- Override CMake install command with custom implementation using symlinks instead of copying resources
+[0.612s] -- Found rclcpp: 16.0.19 (/opt/ros/humble/share/rclcpp/cmake)
+[0.666s] -- Found rosidl_generator_c: 3.1.8 (/opt/ros/humble/share/rosidl_generator_c/cmake)
+[0.671s] -- Found rosidl_adapter: 3.1.8 (/opt/ros/humble/share/rosidl_adapter/cmake)
+[0.680s] -- Found rosidl_generator_cpp: 3.1.8 (/opt/ros/humble/share/rosidl_generator_cpp/cmake)
+[0.694s] -- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c
+[0.711s] -- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp
+[0.769s] -- Found rmw_implementation_cmake: 6.1.2 (/opt/ros/humble/share/rmw_implementation_cmake/cmake)
+[0.775s] -- Found rmw_fastrtps_cpp: 6.2.10 (/opt/ros/humble/share/rmw_fastrtps_cpp/cmake)
+[0.861s] -- Found OpenSSL: /usr/lib/x86_64-linux-gnu/libcrypto.so (found version "3.0.2")  
+[0.889s] -- Found FastRTPS: /opt/ros/humble/include  
+[0.925s] -- Using RMW implementation 'rmw_fastrtps_cpp' as default
+[0.933s] -- Looking for pthread.h
+[0.993s] -- Looking for pthread.h - found
+[0.994s] -- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+[1.055s] -- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+[1.057s] -- Found Threads: TRUE  
+[1.123s] -- Found rosbag2_cpp: 0.15.16 (/opt/ros/humble/share/rosbag2_cpp/cmake)
+[1.159s] -- Found std_srvs: 4.9.1 (/opt/ros/humble/share/std_srvs/cmake)
+[1.170s] -- Found diagnostic_msgs: 4.9.1 (/opt/ros/humble/share/diagnostic_msgs/cmake)
+[1.240s] -- Configuring done
+[1.250s] -- Generating done
+[1.254s] -- Build files have been written to: /home/ircv/DM_clipGUI/build/clip_recorder
+[1.263s] Invoked command in '/home/ircv/DM_clipGUI/build/clip_recorder' returned '0': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake /home/ircv/DM_clipGUI -DAMENT_CMAKE_SYMLINK_INSTALL=1 -DCMAKE_INSTALL_PREFIX=/home/ircv/DM_clipGUI/install/clip_recorder
+[1.265s] Invoking command in '/home/ircv/DM_clipGUI/build/clip_recorder': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --build /home/ircv/DM_clipGUI/build/clip_recorder -- -j20 -l20
+[1.308s] [ 50%] [32mBuilding CXX object CMakeFiles/clip_recorder.dir/src/clip_recorder.cpp.o[0m
+[10.770s] [100%] [32m[1mLinking CXX executable clip_recorder[0m
+[11.182s] [100%] Built target clip_recorder
+[11.190s] Invoked command in '/home/ircv/DM_clipGUI/build/clip_recorder' returned '0': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --build /home/ircv/DM_clipGUI/build/clip_recorder -- -j20 -l20
+[11.197s] Invoking command in '/home/ircv/DM_clipGUI/build/clip_recorder': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --install /home/ircv/DM_clipGUI/build/clip_recorder
+[11.203s] -- Install configuration: ""
+[11.203s] -- Execute custom install script
+[11.203s] -- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/lib/clip_recorder/clip_recorder
+[11.210s] -- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/config/params.yaml
+[11.215s] -- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/launch/clip_recorder.launch.py
+[11.222s] -- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/ament_index/resource_index/package_run_dependencies/clip_recorder
+[11.228s] -- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/ament_index/resource_index/parent_prefix_path/clip_recorder
+[11.234s] -- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/environment/ament_prefix_path.sh
+[11.241s] -- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/environment/ament_prefix_path.dsv
+[11.246s] -- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/environment/path.sh
+[11.252s] -- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/environment/path.dsv
+[11.259s] -- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/local_setup.bash
+[11.265s] -- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/local_setup.sh
+[11.272s] -- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/local_setup.zsh
+[11.278s] -- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/local_setup.dsv
+[11.284s] -- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/package.dsv
+[11.290s] -- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/ament_index/resource_index/packages/clip_recorder
+[11.296s] -- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/cmake/clip_recorderConfig.cmake
+[11.302s] -- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/cmake/clip_recorderConfig-version.cmake
+[11.308s] -- Symlinking: /home/ircv/DM_clipGUI/install/clip_recorder/share/clip_recorder/package.xml
+[11.314s] -- Installing: /home/ircv/DM_clipGUI/install/clip_recorder/lib/clip_recorder/buffer_probe
+[11.314s] -- Installing: /home/ircv/DM_clipGUI/install/clip_recorder/lib/clip_recorder/clip_trigger
+[11.316s] Invoked command in '/home/ircv/DM_clipGUI/build/clip_recorder' returned '0': CMAKE_PREFIX_PATH=/opt/ros/humble /usr/bin/cmake --install /home/ircv/DM_clipGUI/build/clip_recorder

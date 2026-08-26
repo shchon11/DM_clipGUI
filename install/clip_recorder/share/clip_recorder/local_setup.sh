@@ -1,0 +1,1 @@
+/home/ircv/DM_clipGUI/build/clip_recorder/ament_cmake_environment_hooks/local_setup.sh

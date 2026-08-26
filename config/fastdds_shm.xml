@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Fast DDS 프로파일 — 대형 이미지(1920x1200 bayer_rggb8 = 2.304 MB)를 SHM으로 흘리기 위한 설정.
+
+  기본값 문제:
+    segment_size = max_message_size = 524288 (512 KB)
+    -> 2.304 MB 프레임 한 장이 세그먼트에 통째로 안 들어감. 5조각으로 쪼개져
+       512 KB 풀 하나를 두고 경쟁 -> writer 블로킹 -> KEEP_LAST 덮어쓰기로 프레임 유실.
+
+  여기 값의 근거:
+    max_message_size 4 MB  : 2.304 MB 프레임이 조각내기 없이 한 메시지로 나감.
+    segment_size   256 MB  : 카메라 1대(69 MB/s) 기준 약 3.7초, 6대가 한 프로세스에
+                             묶여 있으면(415 MB/s) 약 0.6초 분량의 여유.
+                             관측된 최대 백로그가 0.6초였으므로 그보다 커야 함.
+                             tmpfs는 실제 쓴 만큼만 RAM을 잡으므로 명목 크기 부담은 없음.
+    port_queue_capacity    : 디스크립터 링. 크기가 작아 넉넉히 잡아도 부담 없음.
+
+  주의: 이 파일은 퍼블리셔(카메라 드라이버) 프로세스에도 반드시 적용해야 한다.
+        세그먼트는 "보내는 쪽" 참가자가 소유하기 때문에, 레코더에만 걸면 효과가 없다.
+-->
+<dds xmlns="http://www.eprosima.com">
+  <profiles>
+    <transport_descriptors>
+
+      <transport_descriptor>
+        <transport_id>shm_big</transport_id>
+        <type>SHM</type>
+        <segment_size>268435456</segment_size>
+        <maxMessageSize>4194304</maxMessageSize>
+        <port_queue_capacity>4096</port_queue_capacity>
+        <healthy_check_timeout_ms>2000</healthy_check_timeout_ms>
+      </transport_descriptor>
+
+      <!-- 원격 호스트에서 토픽을 볼 일이 있으면 남겨둔다.
+           전부 로컬이라면 이 디스크립터와 아래 userTransports 항목을 지우면
+           UDP 경로가 완전히 빠져서 더 안정적이다. -->
+      <transport_descriptor>
+        <transport_id>udp_tuned</transport_id>
+        <type>UDPv4</type>
+        <sendBufferSize>16777216</sendBufferSize>
+        <receiveBufferSize>16777216</receiveBufferSize>
+      </transport_descriptor>
+
+    </transport_descriptors>
+
+    <participant profile_name="big_shm" is_default_profile="true">
+      <rtps>
+        <userTransports>
+          <transport_id>shm_big</transport_id>
+          <transport_id>udp_tuned</transport_id>
+        </userTransports>
+        <useBuiltinTransports>false</useBuiltinTransports>
+      </rtps>
+    </participant>
+
+  </profiles>
+</dds>

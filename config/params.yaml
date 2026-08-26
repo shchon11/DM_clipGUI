@@ -4,7 +4,7 @@ clip_recorder:
     post_sec: 10.0          # 트리거 이후 녹화 구간 (m초)
     trigger_slack_sec: 2.0 # 트리거가 이만큼 늦게 도착해도 pre 구간이 온전하도록 여유분 추가 보관
                            #   (버퍼는 pre_sec + trigger_slack_sec 초를 유지 → 메모리도 그만큼 더 씀)
-    max_buffer_mb: 4096.0  # 링 버퍼 바이트 상한 (초과 시 오래된 것부터 evict)
+    max_buffer_mb: 16384.0  # 링 버퍼 바이트 상한 (초과 시 오래된 것부터 evict)
     queue_depth: 50        # 구독 QoS history depth
     output_dir: "clips"    # 클립 저장 경로 (clip_YYYYmmdd_HHMMSS/)
     storage_id: "sqlite3"  # Humble 기본. mcap 쓰려면 ros-humble-rosbag2-storage-mcap 설치 후 "mcap"
@@ -20,8 +20,13 @@ clip_recorder:
     #       정확히 잘라냄. frame_id는 선택 라벨 → clip_YYYYmmdd_HHMMSS_<라벨>/
     #       버튼/조이스틱 노드에서 퍼블리셔를 미리 만들어두고 쏘는 용도.
 
-    # 비워두면 모든 토픽 녹화 (exclude 제외)
-    topics: []
+    # 녹화할 토픽 목록. 지정하지 않으면 (= 아래처럼 주석 처리) 모든 토픽 녹화 (exclude 제외).
+    # 주의: ROS 2 파라미터 YAML은 빈 리스트(`topics: []`)의 타입을 추론하지 못해
+    #       "No parameter value set"으로 노드가 죽는다. "전체 녹화"는 키를 비워두지 말고 지운다.
+    #       (실행 중에는 `ros2 param set`으로 빈 배열 지정 가능)
+    # topics:
+    #   - /zed/zed_node/rgb/color/rect/image/compressed
+    #   - /tf
 
     exclude:
       - /rosout
@@ -30,7 +35,7 @@ clip_recorder:
     # 토픽별 QoS 강제 지정 (미지정 시 auto = 퍼블리셔에 맞춰 자동).
     # 형식: "/토픽 <auto|reliable|best_effort> <auto|volatile|transient_local>"
     # topics/exclude/topic_qos는 실행 중에도 변경 가능 (ros2 param set).
-    topic_qos: []
+    # (여기도 `topic_qos: []`로 두면 위와 같은 이유로 죽는다 -> 미지정 = 전부 auto)
     # topic_qos:
     #   - "/zed/zed_node/rgb/color/rect/image/compressed best_effort volatile"
     #   - "/tf_static reliable transient_local"
