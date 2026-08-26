@@ -31,6 +31,10 @@ install(PROGRAMS scripts/buffer_probe.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME buffer_probe)
 
+install(PROGRAMS scripts/clip_trigger.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME clip_trigger)
+
 install(DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME})
 

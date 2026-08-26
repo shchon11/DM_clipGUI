@@ -56,7 +56,14 @@ DDS 디스커버리를 거치므로 **수백 ms ~ 1 s 이상 늦게** 도착한�
 `trigger_slack_sec`(기본 2 s)만큼 늦는 것까지 pre 구간이 온전하다.
 창이 이미 다 지난 아주 늦은 트리거는 기다리지 않고 즉시 저장한다.
 
-버튼/조이스틱/GPIO 노드에서 **퍼블리셔를 미리 만들어두고** 쏘는 것이 핵심:
+터미널에서 바로 쏘려면 (퍼블리셔를 열어두고 **Enter**로 트리거, 라벨 입력 후 Enter면 라벨 포함, `q` 종료):
+
+```bash
+ros2 run clip_recorder clip_trigger
+ros2 run clip_recorder clip_trigger --label hard_brake   # 기본 라벨
+```
+
+버튼/조이스틱/GPIO 노드를 직접 만들 때도 같은 원리 — **퍼블리셔를 미리 만들어두고** 쏘는 것이 핵심:
 
 ```python
 from std_msgs.msg import Header
@@ -396,6 +403,7 @@ reliable + 큰 큐로 만들면: **구독자가 못 따라가면 퍼블리셔가
 clip_recorder/
 ├── src/clip_recorder.cpp          레코더 노드
 ├── scripts/buffer_probe.py        버퍼 필요량 측정 툴 (ros2 run clip_recorder buffer_probe)
+├── scripts/clip_trigger.py        키보드 트리거 (ros2 run clip_recorder clip_trigger)
 ├── config/params.yaml             파라미터 (주석 참고)
 ├── launch/clip_recorder.launch.py
 ├── CMakeLists.txt / package.xml
