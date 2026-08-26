@@ -403,14 +403,69 @@ reliable + 큰 큐로 만들면: **구독자가 못 따라가면 퍼블리셔가
 
 ---
 
+## 11. GUI — `clip_gui`
+
+```bash
+ros2 run clip_recorder clip_gui
+```
+
+레코더를 조종하는 PyQt5 프론트엔드. 링 버퍼/트리거/저장은 그대로 C++ `clip_recorder`가 하고,
+GUI는 파라미터·토픽으로 조종한다 (GUI가 죽어도 녹화는 안 죽고, 이미 떠 있는 외부 레코더에 붙을 수도 있다).
+
+**흐름**
+1. 시작 → **토픽 선택 창**: 현재 토픽이 전부 뜨고, 이전 세션 선택이 체크된 상태. 토픽별 QoS 콤보
+   (기본 best_effort/volatile, transient_local 퍼블리셔가 감지된 토픽은 자동으로 transient_local).
+   프로파일 저장/불러오기 가능. 설정은 `~/.config/dm_clip_gui/last_session.yaml`에 자동 저장.
+2. **메인 창**: 레코더 자동 실행(없을 때), 트리거 버튼 + 단축키(기본 F9, 설정에서 변경), 라벨 입력.
+   - 링 버퍼: 메모리/보관 초/유입 + **디스크 여유** (현재 유입 기준 클립 몇 개 더 저장 가능한지, 부족 시 경고)
+   - 네트워크: 스위치 업링크 NIC 합계 (x / 10 Gbps) + **송신 IP별** Mbps·포트 사용률·pps.
+     카메라는 GigE Vision 디스커버리 + 드라이버 `camera_serial`로 이름이 자동으로 붙고, 그 외 IP는
+     목적지 포트로 정체를 추정한다 (OxTS NCOM 3000, PTP, DDS, Ouster/Velodyne 라이다 포트 등 →
+     `? UDP/3000 브로드캐스트` 식). **장치 칸을 더블클릭하면 이름을 직접 지정**할 수 있다 (설정에 저장).
+     `127.0.0.1`/이 PC 주소는 자동으로 "이 PC"로 표시. 5분 이상 조용한 IP는 목록에서 빠진다.
+   - GNSS: pos_type / nav_status / fix 상태 / 위치 / 수평정확도 / 위성 수·HDOP(GGA) 실시간.
+   - 토픽별 Hz와 대역폭(B/s·KB/s·MB/s 자동 단위), 하단 로그창 (레코더 /rosout + 클립 진행 상황).
+3. **클립 저장 완료 → 자동 진단** (`bag_diagnostics`) → 결과 창 + `<클립>/diagnostics.txt/.json` 저장.
+   GNSS 품질(fix 비율, 정확도, 점프, 공백)도 포함되고 궤적은 `<클립>/gnss_track.json`에 캐시.
+4. **궤적 지도 (누적)**: 여러 클립을 체크해서 OSM 위에 겹쳐 본다. 진단이 끝난 클립은 자동으로 추가·체크.
+   지도는 인터랙티브(휠 확대/축소, 드래그 이동, 전국~골목 z3~19, 순수 PyQt5 `map_widget.py` — QtWebEngine 불필요).
+   타일은 인터넷에서 받아 `~/.cache/dm_clip_gui/tiles`에 캐시 (오프라인이면 캐시된 곳만 보임). PNG 내보내기 가능.
+5. **GNSS · 지도 창** (상태 + 지도 + 클립 궤적이 한 창): 솔루션(pos_type / GGA 품질: RTK FIXED·FLOAT·DGPS·SPS),
+   위성 수, HDOP, 정확도, 속도, fix 수신율 + 지도에 **현재 위치**와 **pre 구간(pre_sec 초) 궤적** —
+   지금 트리거하면 클립에 담길 경로가 주황선으로 보인다. 왼쪽 목록에서 클립을 체크하면 누적 궤적이 같이 표시된다.
+   성능: 수신은 10 Hz로 스로틀되고 그리기는 2 Hz 타이머에서만 — RT2000 100 Hz 출력에도 GUI가 막히지 않는다.
+
+**IP별 트래픽 측정 권한 (한 번만)** — 언매니지드 스위치에는 포트 카운터가 없으므로 PC의 업링크 포트에서
+AF_PACKET으로 세는 작은 도우미(`net_probe`)를 쓴다. raw 소켓 권한이 필요해서 빌드 후 한 번:
+
+```bash
+sudo setcap cap_net_raw+ep ~/DM_clipGUI/build/clip_recorder/net_probe
+```
+
+(안 하면 GUI 네트워크 섹션에 이 명령이 안내로 뜨고, NIC 합계만 표시된다. `colcon build`로
+바이너리가 다시 만들어지면 권한이 사라지므로 다시 실행.)
+
+**진단 단독 실행**
+```bash
+python3 scripts/bag_diagnostics.py clips/clip_XXXX          # 드랍/손상/GNSS 판정
+python3 scripts/gnss_tools.py clips/clip_XXXX --map out.png  # 궤적 지도만
+```
+
 ## 파일
 
 ```
 clip_recorder/
-├── src/clip_recorder.cpp          레코더 노드
+├── src/clip_recorder.cpp          레코더 노드 (~/clip_event 로 클립 라이프사이클 발행)
+├── src/net_probe.c                송신 IP별 트래픽 카운터 (setcap 필요, §11)
+├── scripts/clip_gui.py            GUI (ros2 run clip_recorder clip_gui)
+├── scripts/bag_diagnostics.py     클립 진단 엔진 (드랍/손상/GNSS) — CLI 겸용
+├── scripts/gnss_tools.py          GNSS 품질 + 궤적 캐시 + PNG 지도
+├── scripts/map_widget.py          인터랙티브 OSM 슬리피 맵 위젯 (순수 PyQt5)
+├── scripts/net_tools.py           NIC 통계 + GigE Vision 디스커버리
 ├── scripts/buffer_probe.py        버퍼 필요량 측정 툴 (ros2 run clip_recorder buffer_probe)
 ├── scripts/clip_trigger.py        키보드 트리거 (ros2 run clip_recorder clip_trigger)
 ├── config/params.yaml             파라미터 (주석 참고)
+├── config/fastdds_shm.xml         Fast DDS SHM 프로파일 (대형 이미지 무손실 전송, §10)
 ├── launch/clip_recorder.launch.py
 ├── CMakeLists.txt / package.xml
 └── README.md

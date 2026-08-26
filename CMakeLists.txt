@@ -27,6 +27,12 @@ ament_target_dependencies(clip_recorder
 install(TARGETS clip_recorder
   DESTINATION lib/${PROJECT_NAME})
 
+# 송신 IP별 수신 트래픽 카운터 (AF_PACKET). 설치 후 한 번:
+#   sudo setcap cap_net_raw+ep $(ros2 pkg prefix clip_recorder)/lib/clip_recorder/net_probe
+add_executable(net_probe src/net_probe.c)
+install(TARGETS net_probe
+  DESTINATION lib/${PROJECT_NAME})
+
 install(PROGRAMS scripts/buffer_probe.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME buffer_probe)
@@ -34,6 +40,19 @@ install(PROGRAMS scripts/buffer_probe.py
 install(PROGRAMS scripts/clip_trigger.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME clip_trigger)
+
+install(PROGRAMS scripts/clip_gui.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME clip_gui)
+
+install(PROGRAMS scripts/clip_launch.sh
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME clip_launch)
+
+# clip_gui가 import하는 모듈 — 실행 파일이 아니라 .py 확장자를 유지해야 함
+install(FILES scripts/bag_diagnostics.py scripts/net_tools.py scripts/gnss_tools.py
+  scripts/map_widget.py
+  DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME})

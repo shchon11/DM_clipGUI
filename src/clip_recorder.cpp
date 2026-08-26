@@ -36,6 +36,7 @@
 #include "diagnostic_msgs/msg/diagnostic_status.hpp"
 #include "diagnostic_msgs/msg/key_value.hpp"
 #include "std_msgs/msg/header.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/trigger.hpp"
 
 using namespace std::chrono_literals;
@@ -99,6 +100,11 @@ public:
           RCLCPP_WARN(get_logger(), "trigger ignored: %s", msg.c_str());
         }
       });
+
+    // Clip lifecycle events for GUIs: "started|<label>", "writing|<uri>",
+    // "done|<uri>|<msgs>|<dur_s>", "busy|<reason>", "error|<what>".
+    event_pub_ = create_publisher<std_msgs::msg::String>(
+      "~/clip_event", rclcpp::QoS(10).reliable());
 
     // Ring-buffer statistics (log + /diagnostics). 0 disables.
     status_period_sec_ = declare_parameter<double>("status_period_sec", 5.0);
@@ -334,6 +340,7 @@ private:
 
     // Evict: older than pre_sec horizon, or over the byte cap.
     topic_bytes_[topic] += sz;
+    topic_msgs_[topic] += 1;
 
     const rclcpp::Time horizon =
       stamp - rclcpp::Duration::from_seconds(pre_sec_ + trigger_slack_sec_);
@@ -363,6 +370,7 @@ private:
       std::lock_guard<std::mutex> lk(buf_mtx_);
       if (clip_active_ || writing_.load()) {
         msg_out = "busy: clip in progress or bag write pending";
+        publishEvent("busy|" + msg_out);
         return false;
       }
       trigger_time_ = event;
@@ -383,6 +391,7 @@ private:
     if (!label.empty()) {oss << " label=" << label;}
     msg_out = oss.str();
     RCLCPP_INFO(get_logger(), "%s", msg_out.c_str());
+    publishEvent("started|" + label);
 
     if (remaining > 0.0) {
       // Node-clock timer so post_sec also respects use_sim_time.
@@ -427,6 +436,7 @@ private:
           writeBag(clip, latched, types, t0, label);
         } catch (const std::exception & e) {
           RCLCPP_ERROR(get_logger(), "bag write failed: %s", e.what());
+          publishEvent(std::string("error|") + e.what());
         }
         writing_.store(false);
       });
@@ -441,6 +451,7 @@ private:
   {
     if (clip.empty() && latched.empty()) {
       RCLCPP_WARN(get_logger(), "clip empty, nothing to write");
+      publishEvent("error|clip empty, nothing to write");
       return;
     }
 
@@ -452,6 +463,8 @@ private:
     std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", &tm);
     std::string uri = output_dir_ + "/clip_" + ts;
     if (!label.empty()) {uri += "_" + sanitizeLabel(label);}
+
+    publishEvent("writing|" + uri);
 
     rosbag2_storage::StorageOptions storage_opts;
     storage_opts.uri = uri;
@@ -516,6 +529,17 @@ private:
     RCLCPP_INFO(
       get_logger(), "wrote %s: %zu msgs, %.1fs (trigger at %.3f)",
       uri.c_str(), clip.size(), dur, t0.seconds());
+    std::ostringstream ev;
+    ev << "done|" << uri << "|" << clip.size() << "|"
+       << std::fixed << std::setprecision(1) << dur;
+    publishEvent(ev.str());
+  }
+
+  void publishEvent(const std::string & text)
+  {
+    std_msgs::msg::String m;
+    m.data = text;
+    event_pub_->publish(m);
   }
 
   static std::string sanitizeLabel(const std::string & label)
@@ -536,7 +560,7 @@ private:
   {
     size_t bytes = 0, msgs = 0, cap_evictions = 0;
     double span = 0.0;
-    std::unordered_map<std::string, size_t> topic_bytes;
+    std::unordered_map<std::string, size_t> topic_bytes, topic_msgs;
     {
       std::lock_guard<std::mutex> lk(buf_mtx_);
       bytes = buffer_bytes_;
@@ -547,19 +571,26 @@ private:
       cap_evictions = cap_evictions_;
       cap_evictions_ = 0;
       topic_bytes = topic_bytes_;
+      topic_msgs = topic_msgs_;
     }
 
-    // Per-topic inflow since the previous tick (MB/s), heaviest first.
+    // Per-topic inflow since the previous tick (MB/s + Hz), heaviest first.
     std::vector<std::pair<std::string, double>> rates;
+    std::unordered_map<std::string, double> hz, bps;
     double total_rate = 0.0;
     for (const auto & [t, b] : topic_bytes) {
       const auto prev = last_topic_bytes_.find(t);
       const size_t before = prev == last_topic_bytes_.end() ? 0 : prev->second;
       const double r = static_cast<double>(b - before) / status_period_sec_ / (1024.0 * 1024.0);
       rates.emplace_back(t, r);
+      bps[t] = static_cast<double>(b - before) / status_period_sec_;
       total_rate += r;
+      const auto pm = last_topic_msgs_.find(t);
+      const size_t m_before = pm == last_topic_msgs_.end() ? 0 : pm->second;
+      hz[t] = static_cast<double>(topic_msgs[t] - m_before) / status_period_sec_;
     }
     last_topic_bytes_ = std::move(topic_bytes);
+    last_topic_msgs_ = std::move(topic_msgs);
     std::sort(
       rates.begin(), rates.end(),
       [](const auto & a, const auto & b) {return a.second > b.second;});
@@ -600,7 +631,13 @@ private:
     kv("rate_mb_s", f1(total_rate));
     kv("needed_mb", f1(needed_mb));
     kv("cap_hit", cap_hit ? "true" : "false");
-    for (const auto & [t, r] : rates) {kv(t, f1(r) + " MB/s");}
+    // "<topic>" = "X.X MB/s" (buffer_probe 호환). 추가로 "<topic>|hz", "<topic>|bps":
+    // 작은 토픽도 정밀하게 보이도록 정수 bytes/s와 메시지 주기를 따로 싣는다.
+    for (const auto & [t, r] : rates) {
+      kv(t, f1(r) + " MB/s");
+      kv(t + "|hz", f1(hz[t]));
+      kv(t + "|bps", std::to_string(static_cast<long long>(bps[t])));
+    }
 
     diagnostic_msgs::msg::DiagnosticArray arr;
     arr.header.stamp = now();
@@ -653,8 +690,10 @@ private:
   rclcpp::Subscription<std_msgs::msg::Header>::SharedPtr trigger_sub_;
   double status_period_sec_{};
   std::unordered_map<std::string, size_t> topic_bytes_, last_topic_bytes_;
+  std::unordered_map<std::string, size_t> topic_msgs_, last_topic_msgs_;
   size_t cap_evictions_{0};
   rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr status_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr event_pub_;
   rclcpp::TimerBase::SharedPtr status_timer_;
 };
 
