@@ -1,0 +1,36 @@
+clip_recorder:
+  ros__parameters:
+    pre_sec: 20.0          # 트리거 이전 보존 구간 (n초)
+    post_sec: 10.0          # 트리거 이후 녹화 구간 (m초)
+    trigger_slack_sec: 2.0 # 트리거가 이만큼 늦게 도착해도 pre 구간이 온전하도록 여유분 추가 보관
+                           #   (버퍼는 pre_sec + trigger_slack_sec 초를 유지 → 메모리도 그만큼 더 씀)
+    max_buffer_mb: 4096.0  # 링 버퍼 바이트 상한 (초과 시 오래된 것부터 evict)
+    queue_depth: 50        # 구독 QoS history depth
+    output_dir: "clips"    # 클립 저장 경로 (clip_YYYYmmdd_HHMMSS/)
+    storage_id: "sqlite3"  # Humble 기본. mcap 쓰려면 ros-humble-rosbag2-storage-mcap 설치 후 "mcap"
+    status_period_sec: 5.0 # 버퍼 상태 리포트 주기 (로그 + /diagnostics). 0이면 끔.
+                           #   buffer MB / cap, 실제 담긴 초, 유입 MB/s, pre_sec에 필요한 MB, 토픽별 MB/s
+                           #   상한에 걸려 pre 구간이 잘리면 WARN
+
+    # 트리거 방법 (둘 다 가능):
+    #  1) 서비스: ros2 service call /clip_recorder/trigger_clip std_srvs/srv/Trigger
+    #     → 요청이 "도착한 시각"이 사건 시각. CLI는 기동+디스커버리로 수백 ms 늦음.
+    #  2) 토픽:   /clip_recorder/trigger (std_msgs/Header)
+    #     → stamp = 사건이 실제 일어난 시각 (0이면 now). 늦게 도착해도 [stamp-pre, stamp+post]를
+    #       정확히 잘라냄. frame_id는 선택 라벨 → clip_YYYYmmdd_HHMMSS_<라벨>/
+    #       버튼/조이스틱 노드에서 퍼블리셔를 미리 만들어두고 쏘는 용도.
+
+    # 비워두면 모든 토픽 녹화 (exclude 제외)
+    topics: []
+
+    exclude:
+      - /rosout
+      - /parameter_events
+
+    # 토픽별 QoS 강제 지정 (미지정 시 auto = 퍼블리셔에 맞춰 자동).
+    # 형식: "/토픽 <auto|reliable|best_effort> <auto|volatile|transient_local>"
+    # topics/exclude/topic_qos는 실행 중에도 변경 가능 (ros2 param set).
+    topic_qos: []
+    # topic_qos:
+    #   - "/zed/zed_node/rgb/color/rect/image/compressed best_effort volatile"
+    #   - "/tf_static reliable transient_local"
