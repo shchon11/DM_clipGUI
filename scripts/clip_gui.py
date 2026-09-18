@@ -16,7 +16,10 @@
 import json
 import math
 import os
+import queue
+import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -25,7 +28,7 @@ from pathlib import Path
 
 import yaml
 
-from PyQt5.QtCore import QObject, Qt, QThread, QTimer, QProcess, pyqtSignal
+from PyQt5.QtCore import QByteArray, QObject, Qt, QThread, QTimer, QProcess, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QKeySequence, QPixmap, QTextCursor
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
@@ -33,7 +36,8 @@ from PyQt5.QtWidgets import (
     QHBoxLayout, QHeaderView, QKeySequenceEdit, QLabel, QLineEdit,
     QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea,
-    QShortcut, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget,
+    QShortcut, QSizePolicy, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget,
+    QToolButton,
     QTextEdit, QVBoxLayout, QWidget)
 
 import rclpy
@@ -41,6 +45,7 @@ from rclpy.executors import SingleThreadedExecutor
 from rcl_interfaces.msg import Log, Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import GetParameters, SetParameters
 from rclpy.qos import DurabilityPolicy, qos_profile_sensor_data
+from rclpy.signals import SignalHandlerOptions
 from diagnostic_msgs.msg import DiagnosticArray
 from geometry_msgs.msg import TwistWithCovarianceStamped
 from sensor_msgs.msg import NavSatFix
@@ -49,7 +54,10 @@ from std_msgs.msg import Header, String
 import bag_diagnostics
 import gnss_tools
 import net_tools
+import preview_panel
+import sensor_launcher
 import sensor_stage
+import ui_theme
 from map_widget import MapWidget
 
 CONFIG_DIR = Path.home() / ".config" / "dm_clip_gui"
@@ -58,7 +66,7 @@ RECORDER_PARAMS = CONFIG_DIR / "recorder_params.yaml"
 
 # GUI 목록에서 숨기는 토픽 (레코더 내부/ROS 인프라)
 HIDDEN_TOPICS = ("/rosout", "/parameter_events",
-                 "/clip_recorder/trigger", "/clip_recorder/clip_event")
+                 "/clip_recorder/trigger", "/clip_recorder/clip_event", "/clip_recorder/record")
 
 DEFAULT_CFG = {
     "topics": [],           # [{name, type, reliability, durability}]
@@ -70,6 +78,8 @@ DEFAULT_CFG = {
         "max_buffer_mb": 16384.0, "queue_depth": 50,
         "output_dir": str(Path.home() / "DM_clipGUI" / "clips"),
         "storage_id": "sqlite3", "status_period_sec": 2.0,
+        # 수동 녹화: 시작부터 중지까지 bag 하나 (나누지 않는다). rosbag2 쓰기 캐시 크기
+        "record_cache_mb": 256.0,
     },
     "ui": {
         "shortcut": "F9", "auto_diagnose": True, "auto_start_recorder": True,
@@ -89,18 +99,10 @@ DEFAULT_CFG = {
 GGA_QUALITY = {0: "INVALID", 1: "GPS (SPS)", 2: "DGPS", 3: "PPS", 4: "RTK FIXED",
                5: "RTK FLOAT", 6: "DR (추측항법)", 7: "MANUAL", 8: "SIMULATION"}
 ROSOUT_LEVELS = {10: "DEBUG", 20: "INFO", 30: "WARN", 40: "ERROR", 50: "FATAL"}
-LOG_COLORS = {"INFO": None, "DEBUG": "#888888", "WARN": "#b58900",
-              "ERROR": "#dc322f", "FATAL": "#dc322f", "GUI": "#268bd2",
-              "OK": "#859900"}
-
-
-def fmt_bw(bytes_per_s):
-    """bytes/s → 사람이 읽기 좋은 단위 (B/s, KB/s, MB/s, GB/s)"""
-    v = float(bytes_per_s)
-    for unit, div in (("GB/s", 1 << 30), ("MB/s", 1 << 20), ("KB/s", 1 << 10)):
-        if v >= div:
-            return f"{v / div:.2f} {unit}" if v / div < 100 else f"{v / div:.0f} {unit}"
-    return f"{v:.0f} B/s"
+# 녹화 탭 로그는 센서 기동 탭처럼 어두운 배경(#0f172a)이라 밝은 톤을 쓴다. INFO 는 기본 글자색.
+LOG_COLORS = {"INFO": None, "DEBUG": "#94a3b8", "WARN": "#fbbf24",
+              "ERROR": "#f87171", "FATAL": "#f87171", "GUI": "#7dd3fc",
+              "OK": "#4ade80"}
 
 
 def load_config(path=LAST_SESSION):
@@ -109,7 +111,10 @@ def load_config(path=LAST_SESSION):
         saved = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
         for key in ("recorder", "ui"):
             cfg[key].update(saved.get(key) or {})
+        # 한때 수동 녹화 파일을 60초마다 나누던 설정 — 이제 나누지 않는다 (녹화 하나 = bag 하나)
+        cfg["recorder"].pop("record_split_sec", None)
         cfg["topics"] = saved.get("topics") or []
+        cfg["sensors"] = saved.get("sensors") or {}
     except FileNotFoundError:
         pass
     except Exception as e:
@@ -137,7 +142,9 @@ class RosWorker(QThread):
 
     def __init__(self, cfg):
         super().__init__()
-        rclpy.init(args=None)
+        # rclpy 는 기본으로 SIGINT/SIGTERM 에 ROS 컨텍스트를 내려 버린다. 그러면 Ctrl+C 뒤 종료 과정에서
+        # 녹화 중지 명령(토픽)을 보낼 수 없다 — 시그널은 main() 의 처리기가 받아 순서대로 정리한다.
+        rclpy.init(args=None, signal_handler_options=SignalHandlerOptions.NO)
         self.node = rclpy.create_node("clip_gui")
         ui = cfg["ui"]
         # GNSS: best_effort 구독은 reliable/best_effort 퍼블리셔 모두와 호환
@@ -165,14 +172,37 @@ class RosWorker(QThread):
             String, "/clip_recorder/clip_event", self._on_event, 10)
         self._trigger_pub = self.node.create_publisher(
             Header, "/clip_recorder/trigger", 10)
+        self._record_pub = self.node.create_publisher(
+            String, "/clip_recorder/record", 10)
         self._param_cli = self.node.create_client(
             SetParameters, "/clip_recorder/set_parameters")
+        self._calls = queue.SimpleQueue()     # ROS 스레드에서 돌릴 작업 (구독 생성/해제)
         self._stop = False
+
+    def call_in_ros_thread(self, fn):
+        """구독을 만들고 내리는 일은 스핀하는 스레드에서 한다.
+
+        GUI 스레드에서 하면 executor 가 대기 집합을 만드는 도중에 목록이 바뀌어 스핀 루프가
+        예외로 죽을 수 있다 (그러면 GUI 가 ROS 를 통째로 잃는다). 최대 0.2초 뒤에 실행된다.
+        """
+        self._calls.put(fn)
+
+    def _drain_calls(self):
+        while True:
+            try:
+                fn = self._calls.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                fn()
+            except Exception as e:
+                print(f"[clip_gui] ROS 스레드 작업 실패: {e}", file=sys.stderr)
 
     def run(self):
         ex = SingleThreadedExecutor()
         ex.add_node(self.node)
         while not self._stop and rclpy.ok():
+            self._drain_calls()
             ex.spin_once(timeout_sec=0.2)
 
     def stop(self):
@@ -283,12 +313,48 @@ class RosWorker(QThread):
         h.frame_id = label
         self._trigger_pub.publish(h)
 
+    def record(self, start, label=""):
+        """수동 녹화 시작/중지 — 결과는 clip_event 의 rec_started / rec_stopped 로 온다."""
+        text = ("start|" + label if label else "start") if start else "stop"
+        self._record_pub.publish(String(data=text))
+
     def recorder_alive(self):
         try:
             return "clip_recorder" in \
                 [n for n, _ in self.node.get_node_names_and_namespaces()]
         except Exception:
             return False
+
+    def published_topics(self, exclude=None):
+        """발행자가 실제로 있는 토픽 이름만. exclude={(토픽, 발행자 gid)} 는 없는 셈 친다.
+
+        get_topic_names_and_types() 는 구독만 있는 토픽도 돌려준다. 센서를 한 번 띄웠다 내리면 레코더와
+        미리보기가 그 토픽을 계속 구독하고 있어서, 다시 기동할 때 카메라가 뜨기도 전에 토픽이 '있다'고
+        나와 곧바로 '실행 중'이 됐다 (GUI 를 껐다 켜면 구독이 사라져서 정상으로 돌아오던 증상).
+        exclude 는 기동 직전에 이미 있던 발행자 — 강제 종료된 노드의 발행자는 DDS 임대 시간(~20초)
+        동안 그래프에 남는다.
+        """
+        out = []
+        for name, types in self.node.get_topic_names_and_types():
+            if not types:
+                continue
+            if not exclude:
+                if self.node.count_publishers(name) > 0:
+                    out.append(name)
+                continue
+            infos = self.node.get_publishers_info_by_topic(name)
+            if any((name, tuple(i.endpoint_gid)) not in exclude for i in infos):
+                out.append(name)
+        return out
+
+    def publisher_gids(self):
+        """{(토픽, 발행자 gid)} — 센서 기동 직전 스냅숏."""
+        out = set()
+        for name, types in self.node.get_topic_names_and_types():
+            if types:
+                for info in self.node.get_publishers_info_by_topic(name):
+                    out.add((name, tuple(info.endpoint_gid)))
+        return out
 
     def list_topics(self):
         out = []
@@ -306,6 +372,24 @@ class RosWorker(QThread):
             out.append({"name": name, "type": types[0],
                         "transient_pub": transient})
         return out
+
+    def set_recorder_string(self, name, value):
+        """레코더 문자열 파라미터 하나를 실행 중에 바꾼다 (output_dir 등). 결과는 sig_params."""
+        if not self._param_cli.service_is_ready():
+            self.sig_params.emit(False, "레코더 파라미터 서비스에 연결 안 됨 — 다음 레코더 시작부터 적용")
+            return
+        req = SetParameters.Request()
+        req.parameters = [Parameter(name=name, value=ParameterValue(
+            type=ParameterType.PARAMETER_STRING, string_value=value))]
+
+        def done(fut):
+            try:
+                bad = [r.reason for r in fut.result().results if not r.successful]
+                self.sig_params.emit(not bad, "; ".join(bad) if bad else f"{name} = {value}")
+            except Exception as e:
+                self.sig_params.emit(False, str(e))
+
+        self._param_cli.call_async(req).add_done_callback(done)
 
     def set_recorder_params(self, topics, qos_entries):
         """topics/topic_qos 파라미터를 비동기로 적용. 결과는 sig_params."""
@@ -347,7 +431,7 @@ class RecorderManager(QProcess):
         params = {k: rec[k] for k in
                   ("pre_sec", "post_sec", "trigger_slack_sec", "max_buffer_mb",
                    "queue_depth", "output_dir", "storage_id",
-                   "status_period_sec")}
+                   "status_period_sec", "record_cache_mb")}
         topics = [t["name"] for t in cfg["topics"]]
         # 주의: ROS 2 파라미터 YAML은 빈 리스트의 타입을 추론하지 못해 노드가
         # 죽는다("No parameter value set"). 비어 있으면 키 자체를 생략한다.
@@ -361,16 +445,35 @@ class RecorderManager(QProcess):
             yaml.safe_dump({"clip_recorder": {"ros__parameters": params}}),
             encoding="utf-8")
         self.setProcessChannelMode(QProcess.MergedChannels)
-        self.start("ros2", ["run", "clip_recorder", "clip_recorder",
-                            "--ros-args", "-r", "__node:=clip_recorder",
-                            "--params-file", str(RECORDER_PARAMS)])
+        # setsid: 터미널 Ctrl+C 가 레코더에 바로 가지 않게 (센서 런치와 같은 이유 — sensor_launcher 참고).
+        # 종료는 GUI 가 녹화 정리 → 센서 → 레코더 순으로 한다.
+        self.start("setsid", ["ros2", "run", "clip_recorder", "clip_recorder",
+                              "--ros-args", "-r", "__node:=clip_recorder",
+                              "--params-file", str(RECORDER_PARAMS)])
 
-    def stop_recorder(self):
-        if self.state() != QProcess.NotRunning:
+    def stop_recorder(self, wait_ms=20000):
+        """레코더를 내린다. 수동 녹화 중이면 레코더가 bag 을 닫고(캐시 flush) 내려갈 때까지 기다린다.
+
+        `ros2 run` 은 받은 시그널을 레코더에 넘기지 않는다 — SIGTERM 을 받으면 자기만 죽고 레코더는
+        고아로 남아 계속 돈다 (예전 terminate() 가 그랬다). 그래서 레코더 바이너리에 직접 SIGINT 를 보낸다.
+        """
+        if self.state() == QProcess.NotRunning:
+            return
+        pid = int(self.processId())
+        family = sensor_launcher.descendants(pid) if pid > 0 else []
+        for child in family:
+            try:
+                os.kill(child, signal.SIGINT)
+            except OSError:
+                pass
+        if not sensor_launcher.wait_finished(self, wait_ms):
             self.terminate()
-            if not self.waitForFinished(5000):
+            if not sensor_launcher.wait_finished(self, 3000):
                 self.kill()
                 self.waitForFinished(2000)
+        left = [c for c in family if sensor_launcher._alive(c)]
+        if left:
+            sensor_launcher.terminate(left, grace_s=0.5 if sensor_launcher.FORCE_STOP else 3.0)
 
 
 # ---------------- 진단 실행 스레드 ----------------
@@ -552,7 +655,7 @@ class GnssMapWindow(QDialog):
     def __init__(self, cfg, parent=None):
         super().__init__(parent)
         self.setWindowTitle("GNSS — 상태 · 현재 위치 · 클립 궤적")
-        self.resize(1400, 860)
+        ui_theme.fit_to_screen(self, 1400, 860)
         self.cfg = cfg
         self.thread = None
         self._dirty = False
@@ -764,7 +867,7 @@ class GnssMapWindow(QDialog):
                     continue
                 pts = [(f["lat"], f["lon"]) for f in fixes]
                 color = gnss_tools.TRACK_COLORS[i % len(gnss_tools.TRACK_COLORS)]
-                self.map.add_track(f"clip:{path}", pts, color, 3.0, z=5)
+                self.map.add_track(f"clip:{path}", pts, color, 4.5, z=5)
                 self.map.set_marker(f"s:{path}", *pts[0], color=color, radius=5, z=6)
                 self.map.set_marker(f"e:{path}", *pts[-1], color=color, radius=5, label=lbl, z=6)
                 it = self._item_for(path)
@@ -855,7 +958,7 @@ class GnssMapWindow(QDialog):
             f"주황: 지금 트리거하면 담기는 pre {pre_sec:.0f}초 궤적 ({len(pts)} fix) · "
             f"초록: pre 시작 · 파랑: 현재 위치")
         if len(draw_pts) >= 2:
-            self.map.add_track("trail", draw_pts, "#ff6f00", width=4.0, z=15)
+            self.map.add_track("trail", draw_pts, "#ff6f00", width=5.5, z=15)
         else:
             self.map.remove("trail")
         if pts:
@@ -883,7 +986,7 @@ class TopicDialog(QDialog):
         self.worker = worker
         self.cfg = cfg
         self.setWindowTitle("녹화 토픽 선택")
-        self.resize(860, 560)
+        ui_theme.fit_to_screen(self, 860, 560)
 
         v = QVBoxLayout(self)
         top = QHBoxLayout()
@@ -1064,7 +1167,7 @@ class SettingsDialog(QDialog):
         self.storage.addItems(["sqlite3", "mcap"])
         self.storage.setCurrentText(rec["storage_id"])
         self.key = QKeySequenceEdit(QKeySequence(ui["shortcut"]))
-        self.auto_diag = QCheckBox("클립 저장 완료 시 자동 진단")
+        self.auto_diag = QCheckBox("클립 녹화 완료 시 자동 진단")
         self.auto_diag.setChecked(ui["auto_diagnose"])
         self.auto_start = QCheckBox("시작 시 레코더 자동 실행 (외부 노드 없을 때)")
         self.auto_start.setChecked(ui["auto_start_recorder"])
@@ -1092,7 +1195,7 @@ class SettingsDialog(QDialog):
         form.addRow("스위치 업링크 NIC", self.nic)
         form.addRow("장치 포트 링크 속도", self.ip_link)
         note = QLabel("pre/post/버퍼 설정은 레코더 재시작 시 적용됩니다 "
-                      "(GUI가 띄운 레코더는 자동 재시작).")
+                      "(레코더는 자동으로 재시작 — 외부에서 띄운 레코더는 제외).")
         note.setStyleSheet("color:#666;")
         form.addRow(note)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -1129,7 +1232,7 @@ class DiagDialog(QDialog):
     def __init__(self, report, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"클립 진단 — {Path(report['bag']).name}")
-        self.resize(940, 620)
+        ui_theme.fit_to_screen(self, 940, 620)
         v = QVBoxLayout(self)
 
         lvl = report["level"]
@@ -1227,7 +1330,7 @@ class DiagDialog(QDialog):
         dlg.setWindowTitle(f"GNSS 궤적 — {Path(self.report['bag']).name}")
         lay = QVBoxLayout(dlg)
         m = MapWidget()
-        m.add_track("clip", pts, "#1565c0", 3.0)
+        m.add_track("clip", pts, "#2563eb", 4.5)
         m.set_marker("s", *pts[0], color="#2e7d32", label="시작")
         m.set_marker("e", *pts[-1], color="#c62828", label="끝")
         lay.addWidget(m)
@@ -1246,22 +1349,36 @@ class MainWindow(QMainWindow):
         self.recorder = RecorderManager(self)
         self.owns_recorder = False
         self.busy = False
+        self.quit_signal = None       # 터미널 신호로 끄는 중이면 그 이름 (SIGINT …) — 종료 대화상자를 건너뛴다
         self.last_clip = None
         self.diag_thread = None
         self._cap_warned = False
         self._disk_warned = False
         self._last_rate = 0.0     # 최근 유입 MB/s (디스크 여유 → 클립 수 환산용)
+        # 링 버퍼 상태 — 레코더는 status_period_sec(2초)마다 알려주고, 그 사이는 GUI 가 시간으로 채워
+        # 막대가 부드럽게 오른다. 보관 구간이 다 차야 클립 녹화를 받는다 (덜 찬 클립은 pre 가 잘린다).
+        self._ring = {"t": 0.0, "span": 0.0, "retain": 0.0, "buf": 0.0, "cap": 1.0,
+                      "rate": 0.0, "need": 0.0, "cap_hit": False, "have": False}
+        self._ring_ready = False
+        self._alive = False
+        self._last_net_rates = None
+        self.ring_timer = QTimer(self, interval=100, timeout=self._tick_ring)
+        # 수동 녹화 상태 — 레코더의 /diagnostics(rec_*)가 기준이다 (GUI 를 다시 켜도 이어 보인다)
+        self.recording = None     # {"uri", "t0", "sec", "mb", "closing"}
+        self._rec_pending = False
+        self.rec_timer = QTimer(self, interval=1000, timeout=self._tick_recording)
         self._cams = {}           # GVCP 디스커버리 {ip: info}
         self._own_ips = net_tools.own_ipv4s()
         self._ip_seen = {}        # ip -> 마지막으로 트래픽이 있었던 시각
         self._ip_flows = {}       # ip -> 플로우 힌트
+        self._last_sensor_rescan = time.monotonic()   # 모르는 IP 때문에 센서를 다시 감지한 시각
         self._serials = {}        # {camera_serial: 드라이버 네임스페이스}
         self._gnss = {"pos_type": None, "nav_status": None, "fix": None, "gga": None}
         self.gnss_win = None       # GnssMapWindow (상태 + 지도 + 클립 궤적, 한 창)
         self._trail = deque()      # (t, lat, lon) — 최근 pre_sec 초의 유효 fix
 
         self.setWindowTitle("DM Clip GUI — 데이터 로깅")
-        self.resize(1000, 900)
+        ui_theme.fit_to_screen(self, 1000, 900)
         self._build_ui()
         self._build_menu()
 
@@ -1296,7 +1413,7 @@ class MainWindow(QMainWindow):
         self.busy_timer = QTimer(self, singleShot=True,
                                  timeout=self._busy_timeout)
 
-        # 센서 기동 중에만 도는 토픽 폴링 (기동 완료 판정)
+        # 센서군이 떠 있는 동안 도는 토픽 폴링 (기동 완료 판정 · 장비별 상태)
         self.sensor_timer = QTimer(self, interval=2000,
                                    timeout=self._poll_sensor_topics)
         self.sensor_timer.start()
@@ -1312,14 +1429,27 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.tabs)
 
         self.stage = sensor_stage.SensorStageWidget(self.cfg)
+        self.stage.attach_ros(self.worker)      # 기동 중인 카메라 라이브 보기 (이름 짓기)
         self.stage.sig_log.connect(self.log)
         self.stage.sig_ready.connect(self._on_sensors_ready)
+        self.stage.sig_go_record.connect(self._go_record)
         self.stage.sig_state.connect(self._refresh_sensor_summary)
         self.tabs.addTab(self.stage, "센서 기동")
 
+        # 왼쪽: 레코더·버퍼·네트워크·GNSS·트리거·로그 / 오른쪽 전체: 센서 미리보기
         page = QWidget()
         self.tabs.addTab(page, "녹화")
-        v = QVBoxLayout(page)
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(10, 10, 10, 10)
+        self.rec_hsplit = QSplitter(Qt.Horizontal)
+        self.rec_hsplit.setChildrenCollapsible(False)
+        outer.addWidget(self.rec_hsplit)
+        left = QWidget()
+        left.setMinimumWidth(380)
+        self.rec_hsplit.addWidget(left)
+        v = QVBoxLayout(left)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(8)
 
         # 센서 상태 한 줄 — 녹화 중에 센서가 죽으면 여기서 먼저 보인다
         self.lbl_sensors = QLabel("센서 정지")
@@ -1344,37 +1474,56 @@ class MainWindow(QMainWindow):
         g = QGridLayout(grp_buf)
         self.bar_mem = QProgressBar(format="%v / %m MB")
         self.bar_span = QProgressBar(format="버퍼링 준비 중…")
+        self.bar_span.setRange(0, 1000)
+        self.bar_span.setToolTip("지금 트리거하면 담길 과거 구간 (pre + 여유). 다 차야 클립 녹화를 받습니다 —\n"
+                                 "덜 찬 채로 받으면 클립의 앞부분(pre)이 잘립니다.")
         self.lbl_inflow = QLabel("유입 - MB/s")
-        g.addWidget(QLabel("메모리"), 0, 0)
-        g.addWidget(self.bar_mem, 0, 1)
-        g.addWidget(QLabel("보관 구간"), 1, 0)
-        g.addWidget(self.bar_span, 1, 1)
-        g.addWidget(self.lbl_inflow, 2, 1)
+        # 수치는 막대 오른쪽에 — 줄 수를 줄여 아래 네트워크 표(센서 18대)에 자리를 준다
         self.bar_disk = QProgressBar()
         self.lbl_disk = QLabel("")
         self.lbl_disk.setStyleSheet("color:#666;")
-        g.addWidget(QLabel("디스크"), 3, 0)
-        g.addWidget(self.bar_disk, 3, 1)
-        g.addWidget(self.lbl_disk, 4, 1)
-        v.addWidget(grp_buf)
+        for w in (self.lbl_inflow, self.lbl_disk):
+            w.setMinimumWidth(110)
+        g.addWidget(QLabel("메모리"), 0, 0)
+        g.addWidget(self.bar_mem, 0, 1)
+        g.addWidget(self.lbl_inflow, 0, 2)
+        g.addWidget(QLabel("보관 구간"), 1, 0)
+        g.addWidget(self.bar_span, 1, 1, 1, 2)
+        g.addWidget(QLabel("디스크"), 2, 0)
+        g.addWidget(self.bar_disk, 2, 1)
+        g.addWidget(self.lbl_disk, 2, 2)
+        g.setColumnStretch(1, 1)
 
-        # 네트워크 (스위치 업링크 + 장치별) / GNSS
-        row = QHBoxLayout()
+        # 아래 박스들은 전부 한 세로 분할 안에 있다 — 경계를 끌어서 크기를 바꾸고, 위치는 저장된다.
+        self.rec_split = QSplitter(Qt.Vertical)
+        self.rec_split.setChildrenCollapsible(False)
+        self.rec_split.addWidget(grp_buf)
+
+        # 네트워크 (스위치 업링크 + 장치별) / GNSS — 좌우도 끌어서 조절
+        row = QSplitter(Qt.Horizontal)
+        row.setChildrenCollapsible(False)
+        self.net_split = row
         grp_net = QGroupBox("네트워크 — 스위치 업링크")
         gn = QGridLayout(grp_net)
         self.lbl_nic = QLabel("NIC: -")
         self.bar_nic = QProgressBar(format="- / - Gbps")
         gn.addWidget(self.lbl_nic, 0, 0)
         gn.addWidget(self.bar_nic, 0, 1)
-        self.net_table = QTableWidget(0, 5)
-        self.net_table.setHorizontalHeaderLabels(
-            ["장치", "IP", "Mbps", "포트 사용률", "pps"])
+        # 센서 18대 — 장치 이름이 제일 중요하다. Mbps·사용률은 한 칸으로, pps 는 툴팁으로.
+        self.net_table = QTableWidget(0, 3)
+        self.net_table.setHorizontalHeaderLabels(["장치", "IP", "대역폭"])
         self.net_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        for col in (1, 2):
+            self.net_table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeToContents)
         self.net_table.verticalHeader().setVisible(False)
         self.net_table.setEditTriggers(QTableWidget.DoubleClicked)   # 장치 이름 직접 지정
         self.net_table.itemChanged.connect(self._on_net_alias_edited)
-        self.net_table.setToolTip("장치 칸을 더블클릭하면 이름을 직접 지정할 수 있습니다 (설정에 저장)")
-        self.net_table.setMaximumHeight(190)
+        self.net_table.setToolTip("장치 칸을 더블클릭하면 이름을 직접 지정할 수 있습니다 (설정에 저장)\n"
+                                  "열 제목을 누르면 정렬 (한 번 더 누르면 반대로)")
+        # 열 제목 클릭 = 그 열로 오름차순 ▲, 한 번 더 = 내림차순 ▼ (센서 기동 탭의 장비 표와 같게).
+        # 표는 매초 새로 채우므로 Qt 정렬 대신 채울 때 정렬한다. ui.net_sort 에 저장.
+        self.net_table.horizontalHeader().setSectionsClickable(True)
+        self.net_table.horizontalHeader().sectionClicked.connect(self._on_net_sort)
         gn.addWidget(self.net_table, 1, 0, 1, 2)
         self.lbl_net_state = QLabel("")
         self.lbl_net_state.setWordWrap(True)
@@ -1387,32 +1536,57 @@ class MainWindow(QMainWindow):
         state_row.addWidget(self.lbl_net_state, 1)
         state_row.addWidget(self.btn_grant)
         gn.addLayout(state_row, 2, 0, 1, 2)
-        row.addWidget(grp_net, 3)
+        row.addWidget(grp_net)
 
+        # GNSS: 상태 한 줄 + 위치/품질 한 줄 + 미니 지도 (현재 위치 · 지금 트리거하면 담길 pre 궤적)
         grp_gnss = QGroupBox("GNSS")
-        gg = QGridLayout(grp_gnss)
+        gg = QVBoxLayout(grp_gnss)
+        gg.setSpacing(4)
+        head = QHBoxLayout()
         self.lbl_gnss_status = QLabel("수신 대기…")
-        self.lbl_gnss_status.setWordWrap(True)
-        self.lbl_gnss_pos = QLabel("-")
-        self.lbl_gnss_q = QLabel("-")
-        for r_, (k, w) in enumerate((("상태", self.lbl_gnss_status),
-                                     ("위치", self.lbl_gnss_pos),
-                                     ("품질", self.lbl_gnss_q))):
-            gg.addWidget(QLabel(k), r_, 0, Qt.AlignTop)
-            gg.addWidget(w, r_, 1)
-        btn_g = QPushButton("GNSS · 지도 열기")
+        self.lbl_gnss_status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        btn_g = QToolButton()
+        btn_g.setText("크게 ↗")
+        btn_g.setToolTip("GNSS · 지도 창 (상태 전체 + 클립 궤적)")
         btn_g.clicked.connect(self.open_gnss)
-        gg.addWidget(btn_g, 3, 0, 1, 2)
-        gg.setRowStretch(4, 1)
-        row.addWidget(grp_gnss, 2)
-        v.addLayout(row)
+        head.addWidget(self.lbl_gnss_status, 1)
+        head.addWidget(btn_g)
+        gg.addLayout(head)
+        self.lbl_gnss_pos = QLabel("-")
+        self.lbl_gnss_pos.setStyleSheet("color:#6b7280;")
+        self.lbl_gnss_pos.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        gg.addWidget(self.lbl_gnss_pos)
+        self.minimap = MapWidget()
+        self.minimap.setMinimumSize(160, 110)
+        last = self.cfg["ui"].get("last_fix")
+        if last:
+            self.minimap.set_view(last[0], last[1], 15)
+        self._minimap_zoomed = False     # 첫 fix 에서 한 번만 확대하고, 그 뒤로는 따라가기만
+        # [GNSS · 지도] 창에서 체크한 클립 경로를 미니 지도에도 (고르기는 그 창에서)
+        self._mini_clips = None          # 지금 그려 둔 클립 목록
+        self._mini_thread = None
+        gg.addWidget(self.minimap, 1)
+        row.addWidget(grp_gnss)
+        # 장치 이름 칸이 넓어야 한다 (센서 18대). 오른쪽은 GNSS 미니 지도.
+        row.setStretchFactor(0, 3)
+        row.setStretchFactor(1, 2)
+        row.setSizes([440, 280])
+        self.rec_split.addWidget(row)
 
-        # 트리거
-        grp_trig = QGroupBox("클립 트리거")
+        # 녹화: 클립(트리거 앞뒤 창) + 수동 녹화(시작~중지 전부)
+        grp_trig = QGroupBox("녹화")
         h = QHBoxLayout(grp_trig)
+        # 저장 위치 — 누르면 폴더 선택. 설정에 바로 저장돼 GUI 를 다시 켜도 유지되고,
+        # 떠 있는 레코더에도 바로 알려 다음 클립·녹화부터 새 위치에 쓴다.
+        self.btn_outdir = QPushButton()
+        self.btn_outdir.setMinimumHeight(56)
+        self.btn_outdir.setMaximumWidth(260)
+        self.btn_outdir.clicked.connect(self.pick_output_dir)
+        h.addWidget(self.btn_outdir)
+        self._show_output_dir()
         h.addWidget(QLabel("라벨:"))
         self.label_edit = QLineEdit(
-            placeholderText="클립 폴더명에 붙일 라벨 (선택)")
+            placeholderText="클립·녹화 폴더명에 붙일 라벨 (선택)")
         h.addWidget(self.label_edit, 1)
         self.btn_trigger = QPushButton()
         self.btn_trigger.setMinimumHeight(56)
@@ -1421,32 +1595,68 @@ class MainWindow(QMainWindow):
         f.setBold(True)
         self.btn_trigger.setFont(f)
         self.btn_trigger.setStyleSheet(
-            "QPushButton {background:#c62828; color:white; border-radius:6px;}"
-            "QPushButton:disabled {background:#888;}")
+            "QPushButton {background:#dc2626; color:white; border:none; border-radius:8px;}"
+            "QPushButton:hover {background:#b91c1c;}"
+            "QPushButton:disabled {background:#d1d5db; color:#f9fafb;}")
         self.btn_trigger.clicked.connect(self.trigger_clip)
         h.addWidget(self.btn_trigger, 1)
-        v.addWidget(grp_trig)
+        self.btn_record = QPushButton()
+        self.btn_record.setMinimumHeight(56)
+        self.btn_record.setFont(f)
+        self.btn_record.setToolTip(
+            "수동 녹화: 누른 때부터 다시 누를 때까지 선택한 토픽을 전부 bag 하나로 씁니다 "
+            "(rec_<시각>[_라벨], 중간에 나누지 않음).\n클립과 같은 구독을 쓰므로 센서 쪽 부하는 "
+            "늘지 않고, 녹화 중에도 클립 녹화가 됩니다.\n"
+            "디스크 여유가 1 GB 밑으로 내려가면 자동으로 멈춥니다.")
+        self.btn_record.clicked.connect(self.toggle_recording)
+        h.addWidget(self.btn_record, 1)
 
-        self.lbl_state = QLabel("대기 중")
+        # 현재 상태 줄: 상태마다 바탕색이 바뀌는 띠 (ui_theme 의 QLabel#StateBar[kind=...])
+        self.lbl_state = QLabel()
+        self.lbl_state.setObjectName("StateBar")
         self.lbl_state.setAlignment(Qt.AlignCenter)
-        v.addWidget(self.lbl_state)
+        self._set_state("대기 중")
+        self.lbl_rec = QLabel("")
+        self.lbl_rec.setObjectName("StateBar")
+        self.lbl_rec.setProperty("kind", "rec")
+        self.lbl_rec.setAlignment(Qt.AlignCenter)
+        self.lbl_rec.hide()
+        self._style_record_button()
+        trig_box = QWidget()
+        tv = QVBoxLayout(trig_box)
+        tv.setContentsMargins(0, 0, 0, 0)
+        tv.addWidget(grp_trig)
+        tv.addWidget(self.lbl_rec)
+        tv.addWidget(self.lbl_state)
+        trig_box.setMaximumHeight(trig_box.sizeHint().height() + 40)
+        self.rec_split.addWidget(trig_box)
 
-        # 토픽별 유입량 + 로그
-        split = QSplitter(Qt.Vertical)
-        self.topic_table = QTableWidget(0, 3)
-        self.topic_table.setHorizontalHeaderLabels(["토픽", "Hz", "대역폭"])
-        self.topic_table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.Stretch)
-        self.topic_table.verticalHeader().setVisible(False)
-        self.topic_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        split.addWidget(self.topic_table)
-
+        # (예전의 토픽별 Hz/대역폭 표는 없앴다 — 대역폭은 네트워크 표가 장치별로, 수신 Hz 는
+        #  오른쪽 미리보기가 센서별로 보여준다.)
         self.log_view = QTextEdit(readOnly=True)
+        self.log_view.setObjectName("Log")             # 센서 기동 탭 런치 로그와 같은 어두운 배경
         self.log_view.setFont(QFont("Monospace", 9))
         self.log_view.document().setMaximumBlockCount(3000)
-        split.addWidget(self.log_view)
-        split.setSizes([260, 220])
-        v.addWidget(split, 1)
+        self.rec_split.addWidget(self.log_view)
+        self.rec_split.setSizes([110, 300, 90, 160])
+        v.addWidget(self.rec_split, 1)
+
+        self.preview = preview_panel.PreviewPanel(self.worker, self.cfg, self.stage)
+        self.preview.setMinimumWidth(280)
+        self.rec_hsplit.addWidget(self.preview)
+        self.rec_hsplit.setStretchFactor(0, 3)
+        self.rec_hsplit.setStretchFactor(1, 2)
+        self.rec_hsplit.setSizes([620, 460])
+
+        # 칸 크기 복원 + 끌 때마다 저장 ("record/v" — 토픽 표가 빠져 칸 수가 바뀌어 새 키)
+        states = self.cfg["ui"].setdefault("splitters", {})
+        for name, splitter in (("record/v", self.rec_split), ("record/net", self.net_split),
+                               ("record/h", self.rec_hsplit)):
+            if states.get(name):
+                splitter.restoreState(QByteArray.fromBase64(states[name].encode()))
+            splitter.splitterMoved.connect(
+                lambda *_, n=name, sp=splitter:
+                    states.__setitem__(n, bytes(sp.saveState().toBase64()).decode()))
 
     def _build_menu(self):
         m_file = self.menuBar().addMenu("파일(&F)")
@@ -1482,15 +1692,15 @@ class MainWindow(QMainWindow):
     # --- 센서 기동 탭 연동 ---
 
     def _poll_sensor_topics(self):
-        """기동 완료 판정에 쓸 토픽 목록을 supervisor 에 넘긴다.
+        """기동 완료 판정 · 장비별 상태(토픽이 사라짐)에 쓸 토픽 목록을 supervisor 에 넘긴다.
 
-        rclpy 노드를 GUI 스레드에서 건드리므로, 기동 중인 센서군이 있을 때만 돈다.
-        다 뜬 뒤에도 계속 폴링할 이유가 없다.
+        센서군이 떠 있는 동안만 돈다 — 다 뜬 뒤에도 도는 이유는, 도중에 카메라 노드 하나가
+        죽거나 토픽이 사라지면 감지된 장비 표의 그 행을 빨갛게 바꾸려는 것이다.
         """
-        if not self.stage.has_starting():
+        if not self.stage.supervisor.any_active():
             return
         try:
-            self.stage.set_topics([t["name"] for t in self.worker.list_topics()])
+            self.stage.set_topics(self.worker.published_topics(self.stage.stale_publishers()))
         except Exception:
             pass
 
@@ -1498,8 +1708,11 @@ class MainWindow(QMainWindow):
         """기동한 센서군이 전부 올라왔다 — 녹화 탭으로 넘기고 토픽을 다시 고르게 한다."""
         self.log("OK", "센서 기동 완료 — 녹화할 토픽을 선택하세요")
         self._refresh_sensor_summary()
+        self._go_record()
+
+    def _go_record(self):
         self.tabs.setCurrentIndex(1)
-        QTimer.singleShot(500, self.open_topic_dialog)
+        QTimer.singleShot(300, self.open_topic_dialog)
 
     def _refresh_sensor_summary(self):
         text = self.stage.summary()
@@ -1511,8 +1724,14 @@ class MainWindow(QMainWindow):
     def _startup_recorder(self):
         if self.worker.recorder_alive():
             self.owns_recorder = False
-            self.log("GUI", "외부 clip_recorder 노드에 연결 — 토픽 설정을 적용합니다")
-            self._apply_topics_runtime()
+            if not self.cfg["topics"]:
+                # 토픽을 아직 안 골랐으면 밀어넣지 않는다. 빈 목록을 보내면 레코더는 그걸
+                # "전체 토픽 녹화"로 받아들여, 이미 돌고 있던 레코더의 선택을 덮어쓴다.
+                self.log("GUI", "외부 clip_recorder 노드에 연결 — 토픽 선택 전이라 "
+                                "레코더의 현재 토픽 설정은 그대로 둡니다")
+            else:
+                self.log("GUI", "외부 clip_recorder 노드에 연결 — 토픽 설정을 적용합니다")
+                self._apply_topics_runtime()
         elif not self.cfg["topics"]:
             # 예전에는 시작할 때 토픽 선택 창이 먼저 떠서 선택이 보장됐다. 이제는
             # 센서를 먼저 띄우는 흐름이라, 선택 전에 자동 시작하면 전체 토픽을 녹화한다.
@@ -1535,6 +1754,9 @@ class MainWindow(QMainWindow):
     def _toggle_recorder(self):
         if self.worker.recorder_alive():
             if self.owns_recorder:
+                if not self._confirm_end_recording("레코더를 멈추면"):
+                    return
+                self._stop_recording_and_wait()
                 self.recorder.stop_recorder()
                 self.log("GUI", "레코더 정지")
             else:
@@ -1544,6 +1766,10 @@ class MainWindow(QMainWindow):
 
     def _restart_recorder(self):
         if self.owns_recorder:
+            if self.recording:
+                self.log("WARN", "수동 녹화 중이라 레코더를 재시작하지 않습니다 — 바꾼 설정은 녹화를 "
+                                 "멈춘 뒤 [레코더 정지]→[레코더 시작] 하면 적용됩니다")
+                return
             self.recorder.stop_recorder()
             QTimer.singleShot(500, self._start_recorder)
         else:
@@ -1585,7 +1811,12 @@ class MainWindow(QMainWindow):
             self.lbl_alive.setText("레코더: 정지됨")
             self.lbl_alive.setStyleSheet("color:#dc322f; font-weight:bold;")
             self.btn_recorder.setText("레코더 시작")
-        self.btn_trigger.setEnabled(alive and not self.busy)
+        self._alive = alive
+        if not alive:
+            self._ring["have"] = False           # 레코더가 없으면 버퍼도 없다 — 다시 뜨면 처음부터 찬다
+        self._set_ring_ready(self._ring_ready and alive)
+        self.btn_record.setEnabled(alive and not self._rec_pending and
+                                   not (self.recording or {}).get("closing"))
         self._update_disk()
 
     # --- 네트워크 ---
@@ -1601,6 +1832,7 @@ class MainWindow(QMainWindow):
             "QProgressBar::chunk{background:#b58900;}" if pct > 0.75 else "")
 
     def _on_net_ips(self, rates):
+        self._last_net_rates = rates
         link = float(self.cfg["ui"].get("per_ip_link_mbps", 1000))
         now = time.monotonic()
         for ip, (mbps, pps, flows) in rates.items():
@@ -1610,18 +1842,20 @@ class MainWindow(QMainWindow):
                 self._ip_seen[ip] = now
             self._ip_seen.setdefault(ip, now)
         # 5분 넘게 조용한 IP는 목록에서 뺀다 (net_probe는 한 번 본 IP를 계속 보고함)
-        rows = sorted(((ip, v) for ip, v in rates.items()
-                       if now - self._ip_seen.get(ip, now) < 300),
-                      key=lambda kv: -kv[1][0])
+        rows = [(ip, v) for ip, v in rates.items() if now - self._ip_seen.get(ip, now) < 300]
+        col, descending = self._net_sort_spec()
+        rows.sort(key=lambda kv: self._net_sort_key(col, kv), reverse=descending)
+        labels = ["장치", "IP", "대역폭"]
+        labels[col] += "  ▼" if descending else "  ▲"
+        self.net_table.setHorizontalHeaderLabels(labels)
         self.net_table.blockSignals(True)        # 채우는 동안 itemChanged 무시
         self.net_table.setRowCount(len(rows))
         for r, (ip, (mbps, pps, _)) in enumerate(rows):
             pct = mbps / link * 100
             idle = now - self._ip_seen.get(ip, now)
+            rate = f"{mbps:.0f}" if mbps >= 10 else f"{mbps:.2f}"
             cells = [self._alias(ip), ip,
-                     f"{mbps:.0f}" if mbps >= 10 else f"{mbps:.2f}",
-                     f"{pct:.0f}% / {link:.0f}M",
-                     f"{pps:.0f}" if idle < 10 else f"유휴 {idle:.0f}s"]
+                     f"{rate} Mbps · {pct:.0f}%" if idle < 10 else f"유휴 {idle:.0f}s"]
             for c, txt in enumerate(cells):
                 it = QTableWidgetItem(txt)
                 if c != 0:
@@ -1633,10 +1867,51 @@ class MainWindow(QMainWindow):
                 elif pct > 75:
                     it.setForeground(QColor("#b58900"))
                 self.net_table.setItem(r, c, it)
+            sensor = self.stage.device_at(ip)
+            detail = (f"\n{sensor['subset_label']} · {sensor['model'] or '-'} · "
+                      f"시리얼 {sensor['identity'] or '-'} · {sensor['nic'] or '-'}") if sensor else ""
             self.net_table.item(r, 0).setToolTip(
-                f"{ip}\n힌트: {net_tools.describe_flows(self._ip_flows.get(ip)) or '-'}"
+                f"{ip}{detail}\n{rate} Mbps · 포트({link:.0f}M) 사용률 {pct:.0f}% · {pps:.0f} pps"
+                f"\n힌트: {net_tools.describe_flows(self._ip_flows.get(ip)) or '-'}"
                 "\n더블클릭해서 이름 지정")
         self.net_table.blockSignals(False)
+
+        # 정체 모를 장치가 트래픽을 내고 있으면 (센서 탭 감지 뒤에 켜진 라이다 등) 다시 감지한다.
+        unknown = any(self._alias(ip).startswith("?") for ip, _ in rows)
+        if unknown and now - self._last_sensor_rescan > 60:
+            self._last_sensor_rescan = now
+            self.stage.refresh_discovery()
+
+    NET_COLS = ("name", "ip", "bw")
+
+    def _net_sort_spec(self):
+        """(열 번호, 내림차순?) — 기본은 대역폭 내림차순 (예전 동작)."""
+        key, _, order = str(self.cfg["ui"].get("net_sort") or "bw:desc").partition(":")
+        col = self.NET_COLS.index(key) if key in self.NET_COLS else 2
+        return col, order == "desc"
+
+    def _on_net_sort(self, index):
+        if not 0 <= index < len(self.NET_COLS):
+            return
+        col, descending = self._net_sort_spec()
+        descending = (not descending) if col == index else False
+        self.cfg["ui"]["net_sort"] = f"{self.NET_COLS[index]}:{'desc' if descending else 'asc'}"
+        save_config(self.cfg)
+        if self._last_net_rates is not None:
+            self._on_net_ips(self._last_net_rates)
+
+    def _net_sort_key(self, col, kv):
+        ip, (mbps, _pps, _flows) = kv
+        try:
+            ip_key = tuple(int(x) for x in ip.split("."))
+        except ValueError:
+            ip_key = (999,)
+        if col == 0:
+            name = self._alias(ip)
+            return ([int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)], ip_key)
+        if col == 1:
+            return ip_key
+        return (mbps, ip_key)
 
     def _on_net_alias_edited(self, item):
         if item.column() != 0:
@@ -1701,11 +1976,20 @@ class MainWindow(QMainWindow):
         return manual if manual else self._auto_alias(ip)
 
     def _auto_alias(self, ip):
-        """이 PC > 카메라(serial→노드 이름) > 모델명 > 플로우 힌트(포트로 추정) > ?"""
+        """이 PC > 센서 기동 탭이 감지한 센서 > GigE 카메라(serial→노드 이름) > 모델명
+        > 플로우 힌트(포트로 추정) > ?
+
+        라이다·GNSS 는 GigE 디스커버리에 안 잡혀서 예전에는 포트로만 추정했다
+        ("? Ouster LiDAR 데이터"). 라이다 데이터 패킷은 MTU 보다 커서 IP 단편화되고, 뒤쪽 단편에는
+        UDP 헤더가 없어 "? UDP" 로도 보였다. 센서 탭이 IP 로 이미 알고 있으니 그걸 먼저 쓴다.
+        """
         if ip.startswith("127."):
             return "이 PC (localhost 루프백)"
         if ip in self._own_ips:
             return "이 PC"
+        sensor = self.stage.device_at(ip)
+        if sensor:
+            return self.stage.describe_device(sensor, self._serials.get(sensor.get("identity")))
         cam = self._cams.get(ip)
         if cam:
             name = self._serials.get(cam["serial"])
@@ -1753,16 +2037,72 @@ class MainWindow(QMainWindow):
                 fix["status"], str(fix["status"])))
         self.lbl_gnss_status.setText("  ".join(parts) if parts else "수신 대기…")
         self.lbl_gnss_status.setStyleSheet(
-            "color:#859900; font-weight:bold;" if live else "color:#dc322f;")
+            "color:#16a34a; font-weight:bold;" if live else "color:#dc2626; font-weight:bold;")
+        line = []
         if fix:
-            self.lbl_gnss_pos.setText(
-                f"{fix['lat']:.6f}, {fix['lon']:.6f}  alt {fix['alt']:.1f} m")
-        q = []
+            line.append(f"{fix['lat']:.6f}, {fix['lon']:.6f} · {fix['alt']:.1f} m")
         if fix and fix.get("hacc") is not None:
-            q.append(f"수평정확도 {fix['hacc']:.2f} m")
+            line.append(f"±{fix['hacc']:.2f} m")
         if gga:
-            q.append(f"위성 {gga['sats']}  HDOP {gga['hdop']:.1f}")
-        self.lbl_gnss_q.setText("  ".join(q) if q else "-")
+            line.append(f"위성 {gga['sats']} · HDOP {gga['hdop']:.1f}")
+        self.lbl_gnss_pos.setText("  ·  ".join(line) if line else "위치 없음")
+        self._update_minimap(fix, live, pre)
+
+    def _update_minimap_clips(self):
+        """[GNSS · 지도] 창에서 체크한 클립(ui.map_clips)의 경로를 미니 지도에 — 목록이 바뀔 때만 읽는다."""
+        sel = list(self.cfg["ui"].get("map_clips") or [])
+        if sel == self._mini_clips or (self._mini_thread and self._mini_thread.isRunning()):
+            return
+        self._mini_clips = sel
+        clips = [(Path(p).name.replace("clip_", "").replace("rec_", "녹화 "), p) for p in sel if Path(p).is_dir()]
+        if not clips:
+            self._draw_minimap_clips([])
+            return
+        self._mini_thread = MapLoadThread(clips)
+        self._mini_thread.sig_done.connect(self._draw_minimap_clips)
+        self._mini_thread.start()
+
+    def _draw_minimap_clips(self, tracks):
+        for oid in [o for o in list(self.minimap._overlays) if o.startswith(("clip:", "s:", "e:"))]:
+            self.minimap.remove(oid)
+        allpts = []
+        for i, (_lbl, path, fixes) in enumerate(tracks):
+            if len(fixes) < 2:
+                continue
+            pts = [(f["lat"], f["lon"]) for f in fixes]
+            step = max(1, len(pts) // 300)                  # 작은 지도 — 점을 솎는다
+            pts = pts[::step] + ([pts[-1]] if (len(pts) - 1) % step else [])
+            color = gnss_tools.TRACK_COLORS[i % len(gnss_tools.TRACK_COLORS)]
+            self.minimap.add_track(f"clip:{path}", pts, color, 3.5, z=5)
+            self.minimap.set_marker(f"s:{path}", *pts[0], color=color, radius=3, z=6)
+            self.minimap.set_marker(f"e:{path}", *pts[-1], color=color, radius=4, z=6)
+            allpts += pts
+        # 아직 실시간 위치로 확대하지 않았으면 클립들이 다 보이게
+        if allpts and not self._minimap_zoomed:
+            self.minimap.fit_bounds(allpts)
+
+    def _update_minimap(self, fix, live, pre):
+        """현재 위치(파랑) + 지금 트리거하면 담길 pre 구간 궤적(주황) + [GNSS · 지도] 창에서 체크한 클립 경로.
+        녹화 탭이 보일 때만 그린다."""
+        if not self.minimap.isVisible():
+            return
+        self._update_minimap_clips()
+        pts = [(la, lo) for _, la, lo in self._trail]
+        step = max(1, len(pts) // 200)
+        draw = pts[::step]
+        if len(pts) > 1 and (len(pts) - 1) % step:
+            draw.append(pts[-1])
+        if len(draw) >= 2:
+            self.minimap.add_track("trail", draw, "#ff6f00", width=4.5, z=15)
+        else:
+            self.minimap.remove("trail")
+        if fix and fix["status"] >= 0 and not (abs(fix["lat"]) < 1e-9 and abs(fix["lon"]) < 1e-9):
+            color = "#2962ff" if live else "#9ca3af"          # 끊기면 회색 = 마지막 위치
+            self.minimap.set_marker("me", fix["lat"], fix["lon"], color=color, radius=6)
+            if live:
+                self.cfg["ui"]["last_fix"] = [fix["lat"], fix["lon"]]   # 다음 실행 때 여기서 시작
+                self.minimap.set_view(fix["lat"], fix["lon"], None if self._minimap_zoomed else 16)
+                self._minimap_zoomed = True
 
     # --- 상태 표시 ---
     def _update_disk(self):
@@ -1788,7 +2128,12 @@ class MainWindow(QMainWindow):
         if clip_gb > 0.01:
             est = (f" — 클립당 약 {clip_gb:.1f} GB, "
                    f"{int(free_gb / clip_gb)}개 저장 가능")
+        if self.recording and self._last_rate > 0.1:
+            est = f" — 지금 녹화 속도로 약 {free_gb * 1000 / self._last_rate / 60:.0f}분 더"
         self.lbl_disk.setText(f"여유 {free_gb:.1f} GB{est}")
+        if self.recording and free_gb < 1.0 and not self.recording.get("closing"):
+            self.log("ERROR", f"디스크 여유 {free_gb:.2f} GB — 수동 녹화를 자동으로 멈춥니다")
+            self._request_stop_recording()
 
         low = (clip_gb > 0.01 and free_gb < 2 * clip_gb) or free_gb < 5.0
         self.lbl_disk.setStyleSheet(
@@ -1796,7 +2141,7 @@ class MainWindow(QMainWindow):
         if low and not self._disk_warned:
             self._disk_warned = True
             self.log("ERROR", f"디스크 여유 부족: {free_gb:.1f} GB — "
-                              "클립 저장 실패 위험, 오래된 클립을 정리하세요")
+                              "녹화 실패 위험, 오래된 클립·녹화를 정리하세요")
         elif not low:
             self._disk_warned = False
 
@@ -1810,11 +2155,12 @@ class MainWindow(QMainWindow):
         except (KeyError, ValueError):
             return
         self._last_rate = rate
-        self.bar_mem.setMaximum(max(1, int(cap)))
-        self.bar_mem.setValue(min(int(buf), int(cap)))
-        self.bar_span.setMaximum(max(1, int(retain * 10)))
-        self.bar_span.setValue(min(int(span * 10), int(retain * 10)))
-        self.bar_span.setFormat(f"{span:.1f} / {retain:.1f} s")
+        self._sync_recording(kv)
+        self._ring.update(t=time.monotonic(), span=span, retain=retain, buf=buf, cap=cap,
+                          rate=rate, need=need, cap_hit=cap_hit, have=True)
+        if not self.ring_timer.isActive():
+            self.ring_timer.start()
+        self._tick_ring()
         self.lbl_inflow.setText(
             f"유입 {rate:.1f} MB/s — {retain:.0f}초 보관에 {need:.0f} MB 필요")
         if cap_hit and not self._cap_warned:
@@ -1824,32 +2170,49 @@ class MainWindow(QMainWindow):
         elif not cap_hit:
             self._cap_warned = False
 
-        # 토픽별: "<topic>"="X MB/s", "<topic>|hz", "<topic>|bps"(정수 bytes/s)
-        per = {}
-        for k, v in kv.items():
-            if not k.startswith("/"):
-                continue
-            name, _, field = k.partition("|")
-            d = per.setdefault(name, {"bps": None, "hz": None, "mb": 0.0})
-            try:
-                if field == "hz":
-                    d["hz"] = float(v)
-                elif field == "bps":
-                    d["bps"] = float(v)
-                elif v.endswith(" MB/s"):
-                    d["mb"] = float(v[:-5])
-            except ValueError:
-                pass
-        rows = sorted(per.items(),
-                      key=lambda kv_: -(kv_[1]["bps"] if kv_[1]["bps"] is not None
-                                        else kv_[1]["mb"] * 1048576))
-        self.topic_table.setRowCount(len(rows))
-        for row, (name, d) in enumerate(rows):
-            bps = d["bps"] if d["bps"] is not None else d["mb"] * 1048576
-            self.topic_table.setItem(row, 0, QTableWidgetItem(name))
-            self.topic_table.setItem(
-                row, 1, QTableWidgetItem("-" if d["hz"] is None else f"{d['hz']:.1f}"))
-            self.topic_table.setItem(row, 2, QTableWidgetItem(fmt_bw(bps)))
+    def _tick_ring(self):
+        """링 버퍼 막대 (0.1초마다). 보고 사이에는 보관 구간이 실시간으로 찬다고 보고 채운다."""
+        ring = self._ring
+        if not ring["have"]:
+            self.bar_span.setValue(0)
+            self.bar_span.setFormat("버퍼링 준비 중…")
+            self._set_ring_ready(False)
+            return
+        dt = min(time.monotonic() - ring["t"], 5.0)
+        retain = max(ring["retain"], 0.1)
+        span = ring["span"] if ring["span"] >= retain else min(retain, ring["span"] + dt)
+        buf = ring["buf"]
+        if ring["span"] < retain and ring["rate"] > 0:
+            buf = min(ring["cap"], max(ring["buf"], ring["need"]), ring["buf"] + ring["rate"] * dt)
+        self.bar_mem.setMaximum(max(1, int(ring["cap"])))
+        self.bar_mem.setValue(min(int(buf), int(ring["cap"])))
+        full = span >= retain - 0.3
+        self.bar_span.setValue(int(min(span / retain, 1.0) * 1000))
+        if ring["cap_hit"]:
+            color, text = ui_theme.ERR, f"{span:.1f} / {retain:.1f} s — 메모리 상한에 걸려 더 못 채움"
+        elif full:
+            color, text = ui_theme.OK, f"{span:.1f} / {retain:.1f} s — 클립 녹화 가능"
+        else:
+            color, text = ui_theme.WARN, f"{span:.1f} / {retain:.1f} s — 채우는 중 ({retain - span:.0f}초 남음)"
+        self.bar_span.setFormat(text)
+        if self.bar_span.property("ringColor") != color:
+            self.bar_span.setProperty("ringColor", color)
+            self.bar_span.setStyleSheet(f"QProgressBar::chunk {{ background: {color}; border-radius: 4px; }}")
+        # 메모리 상한에 걸리면 영영 안 차므로 (경고는 따로 뜬다) 그 상태로 받는다
+        self._set_ring_ready(full or ring["cap_hit"], retain - span)
+
+    def _set_ring_ready(self, ready, remaining=0.0):
+        self._ring_ready = ready
+        self.btn_trigger.setEnabled(self._alive and not self.busy and ready)
+        rec = self.cfg["recorder"]
+        key = self.cfg["ui"]["shortcut"]
+        length = f"{rec['pre_sec'] + rec['post_sec']:g}"
+        if ready or not self._alive:
+            text = f"● 클립({length}초) 녹화  ({key})"
+        else:
+            text = f"● 클립({length}초) 녹화 — 준비 중 {max(remaining, 0):.0f}초"
+        if self.btn_trigger.text() != text:
+            self.btn_trigger.setText(text)
 
     # --- 트리거 / 클립 이벤트 ---
     def _apply_shortcut(self):
@@ -1860,7 +2223,11 @@ class MainWindow(QMainWindow):
             self._shortcut = QShortcut(QKeySequence(key), self)
             self._shortcut.setContext(Qt.ApplicationShortcut)
             self._shortcut.activated.connect(self.trigger_clip)
-        self.btn_trigger.setText(f"● 클립 저장  ({key})")
+        rec = self.cfg["recorder"]
+        self.btn_trigger.setToolTip(f"사건 순간 앞 {rec['pre_sec']:g}초 + 뒤 {rec['post_sec']:g}초를 "
+                                    "clip_<시각>[_라벨] 로 씁니다 (길이는 설정 창의 pre/post).\n"
+                                    "링 버퍼의 보관 구간이 다 차야 눌립니다.")
+        self._set_ring_ready(self._ring_ready)
 
     def trigger_clip(self):
         if self.busy:
@@ -1869,6 +2236,11 @@ class MainWindow(QMainWindow):
         if not self.worker.recorder_alive():
             self.log("ERROR", "레코더가 실행 중이 아님 — 트리거 불가")
             return
+        if not self._ring_ready:
+            ring = self._ring
+            self.log("WARN", f"보관 구간이 아직 {ring['span']:.0f}/{ring['retain']:.0f}초 — 다 차면 클립 녹화를 "
+                             "받습니다 (지금 받으면 앞부분이 잘림)")
+            return
         label = self.label_edit.text().strip()
         self.worker.trigger(label)
         self.log("GUI", f"트리거 전송 (label='{label}')")
@@ -1876,24 +2248,25 @@ class MainWindow(QMainWindow):
     def _on_clip_event(self, data):
         parts = data.split("|")
         kind = parts[0]
+        if kind.startswith("rec_"):
+            self._on_record_event(kind, parts)
+            self._update_alive()
+            return
         if kind == "started":
             self.busy = True
             post = self.cfg["recorder"]["post_sec"]
-            self.lbl_state.setText(
-                f"클립 녹화 중… (post {post:.0f}초 + 디스크 기록 대기)")
-            self.lbl_state.setStyleSheet("color:#b58900; font-weight:bold;")
+            self._set_state(f"클립 녹화 중… (post {post:.0f}초 + 디스크 기록 대기)", "clip")
             self.busy_timer.start(int((post + 300) * 1000))
         elif kind == "writing":
-            self.lbl_state.setText(f"디스크 기록 중: {parts[1]}")
+            self._set_state(f"디스크 기록 중: {parts[1]}", "write")
             self.log("GUI", f"디스크 기록 중… ({parts[1]})")
         elif kind == "done":
             self.busy = False
             self.busy_timer.stop()
             uri, nmsg, dur = parts[1], parts[2], parts[3]
             self.last_clip = uri
-            self.lbl_state.setText("대기 중")
-            self.lbl_state.setStyleSheet("")
-            self.log("OK", f"클립 저장 완료: {uri} ({nmsg}개, {dur}s)")
+            self._set_state("대기 중")
+            self.log("OK", f"클립 녹화 완료: {uri} ({nmsg}개, {dur}s)")
             if self.cfg["ui"]["auto_diagnose"]:
                 self.run_diagnostics(uri)
         elif kind == "busy":
@@ -1901,17 +2274,195 @@ class MainWindow(QMainWindow):
         elif kind == "error":
             self.busy = False
             self.busy_timer.stop()
-            self.lbl_state.setText("대기 중")
-            self.lbl_state.setStyleSheet("")
-            self.log("ERROR", f"클립 저장 실패: {parts[1]}")
+            self._set_state("대기 중")
+            self.log("ERROR", f"클립 녹화 실패: {parts[1]}")
         self._update_alive()
+
+    # --- 저장 위치 ---
+    def _show_output_dir(self):
+        path = Path(self.cfg["recorder"]["output_dir"]).expanduser()
+        try:
+            short = "~/" + str(path.relative_to(Path.home()))
+        except ValueError:
+            short = str(path)
+        if len(short) > 28:
+            short = "…" + short[-27:]
+        self.btn_outdir.setText(f"📁 {short}")
+        self.btn_outdir.setToolTip(f"저장 위치: {path}\n누르면 바꿉니다 — 다음 클립·녹화부터 새 위치에 씁니다 "
+                                   "(설정에 저장, GUI 를 다시 켜도 유지)")
+
+    def pick_output_dir(self):
+        current = str(Path(self.cfg["recorder"]["output_dir"]).expanduser())
+        chosen = QFileDialog.getExistingDirectory(self, "저장 위치", current)
+        if not chosen or chosen == current:
+            return
+        try:
+            Path(chosen).mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            self.log("ERROR", f"저장 위치를 만들 수 없음: {e}")
+            return
+        self.cfg["recorder"]["output_dir"] = chosen
+        save_config(self.cfg)
+        self._show_output_dir()
+        self._update_disk()
+        if self.worker.recorder_alive():
+            self.worker.set_recorder_string("output_dir", chosen)
+        note = " (진행 중인 수동 녹화는 원래 위치에 계속 씁니다)" if self.recording else ""
+        self.log("GUI", f"저장 위치: {chosen}{note}")
+
+    # --- 수동 녹화 ---
+    def _style_record_button(self):
+        if self.recording:
+            self.btn_record.setStyleSheet(
+                "QPushButton {background:#ffffff; color:#b91c1c; border:2px solid #dc2626;"
+                " border-radius:8px;} QPushButton:hover {background:#fef2f2;}"
+                "QPushButton:disabled {color:#9ca3af; border-color:#d1d5db;}")
+        else:
+            self.btn_record.setStyleSheet(
+                "QPushButton {background:#1f2937; color:white; border:none; border-radius:8px;}"
+                "QPushButton:hover {background:#111827;}"
+                "QPushButton:disabled {background:#d1d5db; color:#f9fafb;}")
+        self._tick_recording()
+
+    def toggle_recording(self):
+        if self.recording:
+            self._request_stop_recording()
+            return
+        if not self.worker.recorder_alive():
+            self.log("ERROR", "레코더가 실행 중이 아님 — 녹화 불가")
+            return
+        if not self.cfg["topics"]:
+            self.log("WARN", "녹화할 토픽을 고르지 않아 레코더가 보는 토픽 전부를 녹화합니다")
+        label = self.label_edit.text().strip()
+        self._rec_pending = True
+        self.btn_record.setEnabled(False)
+        self.btn_record.setText("시작 중…")
+        self.worker.record(True, label)
+        self.log("GUI", f"수동 녹화 시작 요청 (label='{label}')")
+        QTimer.singleShot(5000, self._record_request_timeout)
+
+    def _record_request_timeout(self):
+        if self._rec_pending:
+            self._rec_pending = False
+            self.log("ERROR", "레코더가 수동 녹화 명령에 답이 없습니다 — 레코더가 이 기능을 모르는 옛 "
+                              "빌드일 수 있습니다 (레코더를 재시작하세요)")
+            self._style_record_button()
+            self._update_alive()
+
+    def _request_stop_recording(self):
+        if not self.recording or self.recording.get("closing"):
+            return
+        self.recording["closing"] = True
+        self.worker.record(False)
+        self.btn_record.setEnabled(False)
+        self.btn_record.setText("파일 닫는 중…")
+        self.log("GUI", "수동 녹화 중지 요청")
+
+    def _stop_recording_and_wait(self, timeout=30.0):
+        """녹화를 멈추고 파일이 닫힐 때까지 기다린다 (레코더 정지 · GUI 종료 전)."""
+        if not self.recording:
+            return
+        self._request_stop_recording()
+        deadline = time.time() + timeout
+        while self.recording and time.time() < deadline and not sensor_launcher.FORCE_STOP:
+            QApplication.processEvents()
+            time.sleep(0.05)
+
+    def _confirm_end_recording(self, what):
+        if not self.recording:
+            return True
+        answer = QMessageBox.question(
+            self, "수동 녹화 중",
+            f"수동 녹화 중입니다 ({Path(self.recording['uri']).name}).\n"
+            f"{what} 녹화를 끝내고 파일을 닫습니다. 계속할까요?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        return answer == QMessageBox.Yes
+
+    def _on_record_event(self, kind, parts):
+        if kind == "rec_started":
+            self._rec_pending = False
+            self.recording = {"uri": parts[1], "t0": time.time(), "sec": 0.0, "mb": 0.0}
+            self.rec_timer.start()
+            self.log("OK", f"수동 녹화 시작: {parts[1]}")
+        elif kind == "rec_closing":
+            if self.recording:
+                self.recording["closing"] = True
+        elif kind == "rec_stopped":
+            uri, nmsg, dur, mb = (parts + ["", "", "", ""])[1:5]
+            self.recording = None
+            self.rec_timer.stop()
+            self.last_clip = uri
+            self.log("OK", f"수동 녹화 저장 완료: {uri} ({nmsg}개, {dur}s, {float(mb or 0) / 1024:.1f} GB) "
+                           "— 진단은 [클립 진단]에서 이 폴더를 고르세요")
+        elif kind == "rec_busy":
+            self._rec_pending = False
+            reason = parts[1] if len(parts) > 1 else ""
+            if reason.startswith("already recording: ") and not self.recording:
+                # GUI 를 다시 켰는데 레코더는 녹화 중이던 경우 — 이어서 보여준다
+                self.recording = {"uri": reason.split(": ", 1)[1], "t0": time.time(), "sec": 0.0, "mb": 0.0}
+                self.rec_timer.start()
+            self.log("WARN", f"레코더: {reason}")
+        elif kind == "rec_error":
+            self._rec_pending = False
+            if self.recording and self.recording.get("closing"):
+                self.recording = None
+                self.rec_timer.stop()
+            self.log("ERROR", f"수동 녹화 오류: {parts[1] if len(parts) > 1 else ''}")
+        self._style_record_button()
+
+    def _sync_recording(self, kv):
+        """레코더가 2초마다 알려주는 녹화 상태가 기준 — GUI 가 놓친 이벤트도 여기서 맞춘다."""
+        active = kv.get("rec_active")
+        if active == "true":
+            try:
+                sec, mb = float(kv.get("rec_sec", 0)), float(kv.get("rec_mb", 0))
+            except ValueError:
+                sec, mb = 0.0, 0.0
+            if not self.recording:
+                self.recording = {"uri": kv.get("rec_uri", ""), "t0": time.time() - sec}
+                self.rec_timer.start()
+                self._style_record_button()
+            self.recording.update(sec=sec, mb=mb, t0=time.time() - sec)
+            errors = kv.get("rec_errors", "0")
+            if errors not in ("0", "") and not self.recording.get("warned"):
+                self.recording["warned"] = True
+                self.log("ERROR", f"수동 녹화 쓰기 오류 {errors}건 — 레코더 로그를 확인하세요")
+        elif active == "false" and self.recording and not self.recording.get("closing"):
+            self.log("WARN", "레코더가 녹화 중이 아닙니다 (레코더가 재시작됐을 수 있음) — 녹화 표시를 끕니다")
+            self.recording = None
+            self.rec_timer.stop()
+            self._style_record_button()
+
+    def _tick_recording(self):
+        rec = self.recording
+        if not rec:
+            self.btn_record.setText("⏺  수동 녹화")
+            self.lbl_rec.hide()
+            return
+        sec = time.time() - rec["t0"]
+        clock = f"{int(sec // 3600):d}:{int(sec % 3600 // 60):02d}:{int(sec % 60):02d}"
+        gb = rec.get("mb", 0.0) / 1024
+        if rec.get("closing"):
+            self.btn_record.setText("파일 닫는 중…")
+        else:
+            self.btn_record.setText(f"■  녹화 중지   {clock}")
+        self.lbl_rec.setText(f"● 수동 녹화 중  {Path(rec['uri']).name}  ·  {clock}  ·  {gb:.1f} GB"
+                             + (f"  ·  {self._last_rate:.0f} MB/s" if self._last_rate else ""))
+        self.lbl_rec.show()
+
+    def _set_state(self, text, kind="idle"):
+        """현재 상태 줄. kind: idle · clip(클립 녹화) · write(디스크 기록) · diag(진단)."""
+        self.lbl_state.setText(text)
+        if self.lbl_state.property("kind") != kind:
+            self.lbl_state.setProperty("kind", kind)
+            ui_theme.repolish(self.lbl_state)
 
     def _busy_timeout(self):
         if self.busy:
             self.busy = False
             self.log("ERROR", "클립 완료 이벤트가 오지 않음 — 상태 초기화 "
                               "(레코더 로그를 확인하세요)")
-            self.lbl_state.setText("대기 중")
+            self._set_state("대기 중")
             self._update_alive()
 
     # --- 진단 ---
@@ -1926,11 +2477,11 @@ class MainWindow(QMainWindow):
         self.log("GUI", f"진단 시작: {p}")
         self.diag_thread = DiagRunner(p)
         self.diag_thread.sig_progress.connect(
-            lambda s: self.lbl_state.setText(f"진단 중: {s}"))
+            lambda s: self._set_state(f"진단 중: {s}", "diag"))
         self.diag_thread.sig_done.connect(self._on_diag_done)
         self.diag_thread.sig_error.connect(
             lambda e: (self.log("ERROR", f"진단 실패: {e}"),
-                       self.lbl_state.setText("대기 중")))
+                       self._set_state("대기 중")))
         self.diag_thread.start()
 
     def open_gnss(self):
@@ -1953,7 +2504,7 @@ class MainWindow(QMainWindow):
                 save_config(self.cfg)
 
     def _on_diag_done(self, report):
-        self.lbl_state.setText("대기 중")
+        self._set_state("대기 중")
         if any("track_m" in q for q in (report.get("gnss") or {}).values()):
             self._add_to_map(report["bag"])
             self.log("GUI", "GNSS 궤적을 누적 지도에 추가")
@@ -2035,32 +2586,99 @@ class MainWindow(QMainWindow):
             self.log("GUI", f"프로파일 저장: {path}")
 
     # --- 종료 ---
+    def quit_by_signal(self, name):
+        """터미널 Ctrl+C · SIGTERM · SIGHUP: 묻지 않고 녹화 정리 → 센서 → 레코더 순으로 내리고 끈다."""
+        if self.quit_signal:
+            return
+        self.quit_signal = name
+        if not self.close():            # closeEvent 가 거부할 일은 없지만, 창이 이미 닫혔으면 여기서 끝낸다
+            QApplication.instance().quit()
+
+    def _quit_note(self, text):
+        self.log("GUI", text)
+        if self.quit_signal:
+            say(text)
+
     def closeEvent(self, ev):
-        if self.stage.supervisor.any_active():
-            answer = QMessageBox.question(
-                self, "센서 종료",
-                "GUI가 띄운 센서가 아직 실행 중입니다. 같이 종료할까요?\n"
-                "(아니오를 누르면 센서는 계속 돕니다)",
-                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
-                QMessageBox.Yes)
-            if answer == QMessageBox.Cancel:
+        by_signal = bool(self.quit_signal)
+        if self.recording:
+            if not by_signal and not self._confirm_end_recording("GUI 를 닫으면"):
                 ev.ignore()
                 return
-            if answer == QMessageBox.Yes:
-                self.stage.stop_all()
+            self._quit_note(f"수동 녹화를 끝내고 파일을 닫는 중… ({Path(self.recording['uri']).name})")
+            self._stop_recording_and_wait()
+        if self.stage.supervisor.any_active():
+            # "센서는 두고 닫기"는 두지 않는다. 창이 닫히면 QProcess 가 런치를 SIGKILL 하고, 로그 파이프가
+            # 끊긴 노드들도 곧 쓰러져서 (2026-09-19 확인) 센서가 계속 도는 게 아니라 지저분하게 죽을 뿐이다.
+            if not by_signal:
+                box = QMessageBox(QMessageBox.Question, "센서 종료",
+                                  "센서가 아직 실행 중입니다.\n센서를 모두 종료하고 닫을까요?",
+                                  QMessageBox.Yes | QMessageBox.Cancel, self)
+                box.button(QMessageBox.Yes).setText("센서 종료하고 닫기")
+                box.button(QMessageBox.Cancel).setText("취소")
+                box.setDefaultButton(QMessageBox.Yes)
+                if box.exec_() != QMessageBox.Yes:
+                    ev.ignore()
+                    return
+            names = [self.stage.groups[k]["label"] for k, p in self.stage.supervisor.procs.items()
+                     if p.is_active() and k in self.stage.groups]
+            self._quit_note(f"센서 종료 중… ({', '.join(names)})")
+            self.stage.stop_all()
         save_config(self.cfg)
+        self.preview.shutdown()
         if self.diag_thread and self.diag_thread.isRunning():
             self.diag_thread.wait(1000)
         self.netmon.stop()
         if self.owns_recorder:
+            if self.recorder.state() != QProcess.NotRunning:
+                self._quit_note("레코더 종료 중…")
             self.recorder.stop_recorder()
         self.worker.stop()
         super().closeEvent(ev)
+        if by_signal:
+            say("종료 완료")
+            # 모달 창(토픽 선택 등)이 떠 있어도 그 이벤트 루프까지 같이 빠져나온다
+            QApplication.instance().quit()
+
+
+def say(text):
+    """터미널에 한 줄. 터미널이 닫혀(SIGHUP) 못 쓰면 조용히 넘어간다."""
+    try:
+        print(f"[clip_gui] {text}", file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        pass
+
+
+def install_signal_handlers(win):
+    """터미널 Ctrl+C · SIGTERM · SIGHUP(터미널 닫힘) → 센서부터 정리하고 끈다.
+
+    센서 런치와 레코더는 setsid 로 따로 세션에 떠 있어 터미널 신호를 직접 받지 않는다 — 이 처리기가
+    받아서 win.quit_by_signal 로 녹화 정리 → 센서 → 레코더 순으로 내린다. 종료 중에 한 번 더 받으면
+    기다리지 않고 강제로 끝낸다 (sensor_launcher.FORCE_STOP).
+    """
+    def handler(signum, _frame):
+        name = signal.Signals(signum).name
+        if not win.quit_signal:
+            say(f"{name} 받음 — 녹화 정리 → 센서 종료 → 레코더 종료 순으로 끕니다 "
+                "(기다리지 않으려면 Ctrl+C 한 번 더)")
+            QTimer.singleShot(0, lambda: win.quit_by_signal(name))
+        elif not sensor_launcher.FORCE_STOP:
+            sensor_launcher.FORCE_STOP = True
+            say(f"{name} 다시 받음 — 기다리지 않고 강제로 끝냅니다")
+
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, handler)
+    # 파이썬 시그널 처리기는 파이썬 코드가 돌 때만 불린다. Qt 이벤트 루프가 조용할 때도 곧바로
+    # 불리도록 빈 타이머로 주기적으로 깨운다.
+    wake = QTimer(win)
+    wake.timeout.connect(lambda: None)
+    wake.start(200)
 
 
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("DM Clip GUI")
+    ui_theme.apply(app)
     cfg = load_config()
     worker = RosWorker(cfg)
     worker.start()
@@ -2069,6 +2687,7 @@ def main():
     # (아직 안 뜬 센서의 토픽은 목록에 없다), 기동이 끝나면 자동으로 선택 창이 열린다.
     # 이미 떠 있는 센서에 붙어 바로 녹화하려면 [녹화] 탭 -> 파일 -> 토픽 선택.
     win = MainWindow(worker, cfg)
+    install_signal_handlers(win)
     win.show()
     rc = app.exec_()
     return rc

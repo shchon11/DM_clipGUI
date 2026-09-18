@@ -24,8 +24,9 @@ TILE_CACHE = Path.home() / ".cache" / "dm_clip_gui" / "tiles"
 USER_AGENT = "dm_clip_gui/0.1 (ROS2 bag GNSS viewer)"
 STATUS_NAMES = {-1: "NO_FIX", 0: "FIX", 1: "SBAS_FIX", 2: "GBAS_FIX"}
 TRACK_FILE = "gnss_track.json"     # 클립 폴더에 캐시되는 궤적 (bag 재독 방지)
-TRACK_COLORS = ["#1565c0", "#c62828", "#2e7d32", "#ef6c00", "#6a1b9a",
-                "#00838f", "#ad1457", "#4e342e", "#37474f", "#9e9d24"]
+# 클립 궤적 색 — 흑백으로 흐린 바탕 지도 위에서 서로 잘 갈리는 선명한 색만 (갈색 · 회색 · 올리브는 묻혔다)
+TRACK_COLORS = ["#2563eb", "#e11d48", "#16a34a", "#9333ea", "#ea580c",
+                "#0891b2", "#db2777", "#ca8a04", "#4f46e5", "#0d9488"]
 OK, WARN, FAIL = "OK", "WARN", "FAIL"
 
 

@@ -6,6 +6,15 @@
 // [event - pre_sec, event + post_sec] to a rosbag2 bag in a background thread.
 // Publishes ring-buffer statistics on /diagnostics so the real memory need
 // (inflow MB/s x pre_sec) can be measured on the target system.
+//
+// Manual recording ("start" / "stop" on ~/record, or the ~/start_recording
+// and ~/stop_recording services) writes every message of the same subscriptions
+// straight into one bag until stopped (record_split_sec > 0 would split it; off
+// by default — a recording is one bag from start to stop). It
+// reuses the ring buffer's subscriptions instead of a second `ros2 bag record`,
+// so the cameras are not asked to send everything twice, and it hands the
+// writer the received buffer itself (no copy). Clips can still be cut while a
+// recording runs.
 
 #include <algorithm>
 #include <atomic>
@@ -30,6 +39,7 @@
 #include "rclcpp/serialized_message.hpp"
 #include "rosbag2_cpp/writer.hpp"
 #include "rosbag2_cpp/converter_options.hpp"
+#include "rosbag2_storage/serialized_bag_message.hpp"
 #include "rosbag2_storage/storage_options.hpp"
 #include "rosbag2_storage/topic_metadata.hpp"
 #include "diagnostic_msgs/msg/diagnostic_array.hpp"
@@ -73,6 +83,11 @@ public:
     topic_qos_raw_ = declare_parameter<std::vector<std::string>>(
       "topic_qos", std::vector<std::string>{});
     parseQosOverrides(topic_qos_raw_, qos_overrides_);
+    // Manual recording: one bag from start to stop by default (record_split_sec
+    // > 0 splits it every N seconds); rosbag2's cache thread does the disk
+    // writes (record_cache_mb, 0 = write inline).
+    record_split_sec_ = declare_parameter<double>("record_split_sec", 0.0);
+    record_cache_mb_ = declare_parameter<double>("record_cache_mb", 256.0);
 
     max_buffer_bytes_ = static_cast<size_t>(max_buffer_mb_ * 1024.0 * 1024.0);
 
@@ -101,8 +116,38 @@ public:
         }
       });
 
+    // Manual recording: "start", "start|<label>", "stop".
+    record_sub_ = create_subscription<std_msgs::msg::String>(
+      "~/record", rclcpp::QoS(10).reliable(),
+      [this](std_msgs::msg::String::ConstSharedPtr m) {
+        std::string msg;
+        const std::string & cmd = m->data;
+        if (cmd.rfind("start", 0) == 0) {
+          const auto bar = cmd.find('|');
+          startRecording(bar == std::string::npos ? "" : cmd.substr(bar + 1), msg);
+        } else if (cmd == "stop") {
+          stopRecording(msg);
+        } else {
+          RCLCPP_WARN(get_logger(), "unknown record command '%s'", cmd.c_str());
+        }
+      });
+    rec_start_srv_ = create_service<std_srvs::srv::Trigger>(
+      "~/start_recording",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        res->success = startRecording("", res->message);
+      });
+    rec_stop_srv_ = create_service<std_srvs::srv::Trigger>(
+      "~/stop_recording",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        res->success = stopRecording(res->message);
+      });
+
     // Clip lifecycle events for GUIs: "started|<label>", "writing|<uri>",
     // "done|<uri>|<msgs>|<dur_s>", "busy|<reason>", "error|<what>".
+    // Manual recording: "rec_started|<uri>", "rec_closing|<uri>",
+    // "rec_stopped|<uri>|<msgs>|<dur_s>|<MB>", "rec_busy|<reason>", "rec_error|<what>".
     event_pub_ = create_publisher<std_msgs::msg::String>(
       "~/clip_event", rclcpp::QoS(10).reliable());
 
@@ -129,6 +174,11 @@ public:
             topics_filter_ = p.as_string_array();
           } else if (p.get_name() == "exclude") {
             exclude_ = p.as_string_array();
+          } else if (p.get_name() == "output_dir") {
+            // Takes effect from the next clip / recording; one in progress keeps its folder.
+            std::lock_guard<std::mutex> lk(dir_mtx_);
+            output_dir_ = p.as_string();
+            RCLCPP_INFO(get_logger(), "output_dir -> %s", output_dir_.c_str());
           } else if (p.get_name() == "topic_qos") {
             std::unordered_map<std::string, QosOverride> parsed;
             if (!parseQosOverrides(p.as_string_array(), parsed)) {
@@ -156,6 +206,14 @@ public:
   {
     if (writer_thread_.joinable()) {
       writer_thread_.join();
+    }
+    // A recording still open at shutdown: closing flushes the cache to disk.
+    {
+      std::lock_guard<std::mutex> lk(rec_mtx_);
+      rec_writer_.reset();
+    }
+    if (rec_close_thread_.joinable()) {
+      rec_close_thread_.join();
     }
   }
 
@@ -292,8 +350,8 @@ private:
     try {
       sub = create_generic_subscription(
         topic, type, qos,
-        [this, topic](std::shared_ptr<rclcpp::SerializedMessage> msg) {
-          onMessage(topic, std::move(msg));
+        [this, topic, type](std::shared_ptr<rclcpp::SerializedMessage> msg) {
+          onMessage(topic, type, std::move(msg));
         });
     } catch (const std::exception & e) {
       failed_topics_.insert(topic);
@@ -318,10 +376,28 @@ private:
 
   // ---------- ring buffer ----------
 
-  void onMessage(const std::string & topic, std::shared_ptr<rclcpp::SerializedMessage> msg)
+  void onMessage(
+    const std::string & topic, const std::string & type,
+    std::shared_ptr<rclcpp::SerializedMessage> msg)
   {
     const rclcpp::Time stamp = now();
     const size_t sz = msg->size();
+
+    {
+      std::lock_guard<std::mutex> rk(rec_mtx_);
+      if (rec_writer_) {
+        try {
+          writeShared(*rec_writer_, topic, type, msg, stamp);
+          ++rec_msgs_;
+          rec_bytes_ += sz;
+        } catch (const std::exception & e) {
+          ++rec_errors_;
+          RCLCPP_ERROR_THROTTLE(
+            get_logger(), *get_clock(), 5000, "recording write failed (%s): %s",
+            topic.c_str(), e.what());
+        }
+      }
+    }
 
     std::lock_guard<std::mutex> lk(buf_mtx_);
 
@@ -351,6 +427,138 @@ private:
       buffer_bytes_ -= buffer_.front().data->size();
       buffer_.pop_front();
     }
+  }
+
+  // ---------- manual recording ----------
+
+  // Hand the writer the received buffer itself: the bag message points at the
+  // same bytes the ring buffer holds, and its deleter only keeps `msg` alive
+  // until rosbag2's cache has written it. Writer::write(shared_ptr<rclcpp::
+  // SerializedMessage>) would take the buffer away from the ring buffer instead.
+  static void writeShared(
+    rosbag2_cpp::Writer & writer, const std::string & topic, const std::string & type,
+    const std::shared_ptr<rclcpp::SerializedMessage> & msg, const rclcpp::Time & stamp)
+  {
+    auto bag = std::make_shared<rosbag2_storage::SerializedBagMessage>();
+    bag->topic_name = topic;
+    bag->time_stamp = stamp.nanoseconds();
+    bag->serialized_data = std::shared_ptr<rcutils_uint8_array_t>(
+      &msg->get_rcl_serialized_message(), [msg](rcutils_uint8_array_t *) {});
+    writer.write(bag, topic, type, "cdr");
+  }
+
+  bool startRecording(const std::string & label, std::string & msg_out)
+  {
+    std::unordered_map<std::string, std::shared_ptr<rclcpp::SerializedMessage>> latched;
+    std::unordered_map<std::string, std::string> types;
+    {
+      std::lock_guard<std::mutex> lk(buf_mtx_);
+      latched = latched_last_;
+      types = types_;
+    }
+
+    std::lock_guard<std::mutex> lk(rec_mtx_);
+    if (rec_writer_) {
+      msg_out = "already recording: " + rec_uri_;
+      publishEvent("rec_busy|" + msg_out);
+      return false;
+    }
+
+    std::time_t tt = std::time(nullptr);
+    std::tm tm{};
+    localtime_r(&tt, &tm);
+    char ts[32];
+    std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", &tm);
+    std::string uri = outputDir() + "/rec_" + ts;
+    if (!label.empty()) {uri += "_" + sanitizeLabel(label);}
+
+    rosbag2_storage::StorageOptions storage_opts;
+    storage_opts.uri = uri;
+    storage_opts.storage_id = storage_id_;
+    storage_opts.max_cache_size =
+      static_cast<uint64_t>(std::max(0.0, record_cache_mb_) * 1024.0 * 1024.0);
+    storage_opts.max_bagfile_duration =
+      static_cast<uint64_t>(std::max(0.0, record_split_sec_));
+    rosbag2_cpp::ConverterOptions conv_opts;
+    conv_opts.input_serialization_format = "cdr";
+    conv_opts.output_serialization_format = "cdr";
+
+    auto writer = std::make_unique<rosbag2_cpp::Writer>();
+    try {
+      writer->open(storage_opts, conv_opts);
+    } catch (const std::exception & e) {
+      msg_out = std::string("cannot open ") + uri + ": " + e.what();
+      RCLCPP_ERROR(get_logger(), "%s", msg_out.c_str());
+      publishEvent("rec_error|" + msg_out);
+      return false;
+    }
+
+    rec_start_ = now();
+    rec_msgs_ = rec_bytes_ = rec_errors_ = 0;
+    // Latched topics (/tf_static, /ouster/metadata, ...) were published once,
+    // long ago — put the last sample at the start so the recording is usable.
+    for (const auto & [topic, msg] : latched) {
+      auto it = types.find(topic);
+      if (it != types.end()) {
+        writeShared(*writer, topic, it->second, msg, rec_start_);
+      }
+    }
+    rec_writer_ = std::move(writer);
+    rec_uri_ = uri;
+    msg_out = "recording to " + uri;
+    RCLCPP_INFO(
+      get_logger(), "recording started: %s (%s, cache %.0fMB, %zu latched)", uri.c_str(),
+      record_split_sec_ > 0.0 ? ("split every " + std::to_string(record_split_sec_) + "s").c_str() :
+      "one file until stop", record_cache_mb_, latched.size());
+    publishEvent("rec_started|" + uri);
+    return true;
+  }
+
+  bool stopRecording(std::string & msg_out)
+  {
+    std::unique_ptr<rosbag2_cpp::Writer> writer;
+    std::string uri;
+    size_t msgs = 0, bytes = 0, errors = 0;
+    double dur = 0.0;
+    {
+      std::lock_guard<std::mutex> lk(rec_mtx_);
+      if (!rec_writer_) {
+        msg_out = "not recording";
+        publishEvent("rec_busy|" + msg_out);
+        return false;
+      }
+      writer = std::move(rec_writer_);
+      uri = rec_uri_;
+      msgs = rec_msgs_;
+      bytes = rec_bytes_;
+      errors = rec_errors_;
+      dur = (now() - rec_start_).seconds();
+    }
+    msg_out = "stopping " + uri;
+    publishEvent("rec_closing|" + uri);
+
+    // Closing flushes rosbag2's cache — up to record_cache_mb of disk writes.
+    // Do it off the executor so the node keeps buffering meanwhile.
+    if (rec_close_thread_.joinable()) {
+      rec_close_thread_.join();
+    }
+    rec_close_thread_ = std::thread(
+      [this, w = std::move(writer), uri, msgs, bytes, errors, dur]() mutable {
+        try {
+          w.reset();
+        } catch (const std::exception & e) {
+          publishEvent(std::string("rec_error|close failed: ") + e.what());
+        }
+        RCLCPP_INFO(
+          get_logger(), "recording stopped: %s: %zu msgs, %.1fs, %.1f MB%s", uri.c_str(), msgs,
+          dur, static_cast<double>(bytes) / (1024.0 * 1024.0),
+          errors ? (", " + std::to_string(errors) + " write errors").c_str() : "");
+        std::ostringstream ev;
+        ev << "rec_stopped|" << uri << "|" << msgs << "|" << std::fixed << std::setprecision(1)
+           << dur << "|" << static_cast<double>(bytes) / (1024.0 * 1024.0);
+        publishEvent(ev.str());
+      });
+    return true;
   }
 
   // ---------- trigger / finalize ----------
@@ -461,7 +669,7 @@ private:
     localtime_r(&tt, &tm);
     char ts[32];
     std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", &tm);
-    std::string uri = output_dir_ + "/clip_" + ts;
+    std::string uri = outputDir() + "/clip_" + ts;
     if (!label.empty()) {uri += "_" + sanitizeLabel(label);}
 
     publishEvent("writing|" + uri);
@@ -533,6 +741,12 @@ private:
     ev << "done|" << uri << "|" << clip.size() << "|"
        << std::fixed << std::setprecision(1) << dur;
     publishEvent(ev.str());
+  }
+
+  std::string outputDir()
+  {
+    std::lock_guard<std::mutex> lk(dir_mtx_);
+    return output_dir_;
   }
 
   void publishEvent(const std::string & text)
@@ -631,6 +845,17 @@ private:
     kv("rate_mb_s", f1(total_rate));
     kv("needed_mb", f1(needed_mb));
     kv("cap_hit", cap_hit ? "true" : "false");
+    {
+      std::lock_guard<std::mutex> lk(rec_mtx_);
+      kv("rec_active", rec_writer_ ? "true" : "false");
+      if (rec_writer_) {
+        kv("rec_uri", rec_uri_);
+        kv("rec_sec", f1((now() - rec_start_).seconds()));
+        kv("rec_mb", f1(static_cast<double>(rec_bytes_) / (1024.0 * 1024.0)));
+        kv("rec_msgs", std::to_string(rec_msgs_));
+        kv("rec_errors", std::to_string(rec_errors_));
+      }
+    }
     // "<topic>" = "X.X MB/s" (buffer_probe 호환). 추가로 "<topic>|hz", "<topic>|bps":
     // 작은 토픽도 정밀하게 보이도록 정수 bytes/s와 메시지 주기를 따로 싣는다.
     for (const auto & [t, r] : rates) {
@@ -661,6 +886,7 @@ private:
   int queue_depth_{};
   size_t max_buffer_bytes_{};
   std::string output_dir_, storage_id_;
+  std::mutex dir_mtx_;          // output_dir_ can change at runtime (GUI folder picker)
   std::vector<std::string> topics_filter_, exclude_, topic_qos_raw_;
   std::unordered_map<std::string, QosOverride> qos_overrides_;
   std::unordered_map<std::string, std::string> applied_qos_;
@@ -688,6 +914,17 @@ private:
   rclcpp::TimerBase::SharedPtr finalize_timer_;
 
   rclcpp::Subscription<std_msgs::msg::Header>::SharedPtr trigger_sub_;
+
+  // manual recording
+  double record_split_sec_{}, record_cache_mb_{};
+  std::mutex rec_mtx_;
+  std::unique_ptr<rosbag2_cpp::Writer> rec_writer_;
+  std::string rec_uri_;
+  rclcpp::Time rec_start_;
+  size_t rec_msgs_{0}, rec_bytes_{0}, rec_errors_{0};
+  std::thread rec_close_thread_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr record_sub_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr rec_start_srv_, rec_stop_srv_;
   double status_period_sec_{};
   std::unordered_map<std::string, size_t> topic_bytes_, last_topic_bytes_;
   std::unordered_map<std::string, size_t> topic_msgs_, last_topic_msgs_;

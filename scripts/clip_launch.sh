@@ -37,4 +37,11 @@ else
   echo "net_probe 없음 ($NP) — IP별 트래픽은 표시되지 않습니다" >&2
 fi
 
+# ros2 run 을 거치지 않고 GUI 를 바로 exec 한다. ros2 run 은 받은 SIGTERM 을 자식에게 넘기지 않아서
+# 이 PID 로 보낸 종료 신호가 GUI 에 닿지 않았다. GUI 는 Ctrl+C · SIGTERM · SIGHUP 을 받으면
+# 녹화 정리 → 센서 → 레코더 순으로 내리고 끈다 (한 번 더 누르면 기다리지 않고 강제 종료).
+GUI="$WS/install/clip_recorder/lib/clip_recorder/clip_gui"
+if [ -x "$GUI" ]; then
+  exec "$GUI" "$@"
+fi
 exec ros2 run clip_recorder clip_gui "$@"

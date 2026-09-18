@@ -5,6 +5,8 @@
 #   - 휠 확대/축소 (커서 기준), 드래그 이동, +/- 버튼, 더블클릭 확대, 줌 3~19 (전국 → 골목)
 #   - 타일은 스레드풀에서 받아 ~/.cache/dm_clip_gui/tiles 에 캐시 (gnss_tools와 공유)
 #   - 오버레이: 폴리라인(궤적), 마커(현재 위치 등). 줌이 바뀌면 자동 재투영.
+#   - 바탕 지도는 기본으로 흑백 · 흐리게 — OSM 도로가 주황/노랑/빨강이라 컬러 그대로면 같은 색 계열의
+#     궤적이 묻힌다. 궤적은 흰 테두리를 둘러 어떤 바탕에서도 보이게 한다. [◐] 버튼으로 원래 색.
 #
 # 사용:
 #   m = MapWidget(); m.set_view(37.56, 126.98, 15)
@@ -17,7 +19,7 @@ import urllib.request
 from pathlib import Path
 
 from PyQt5.QtCore import QObject, QPointF, QRectF, QRunnable, Qt, QThreadPool, QTimer, pyqtSignal
-from PyQt5.QtGui import QBrush, QColor, QFont, QPainterPath, QPen, QPixmap
+from PyQt5.QtGui import QBrush, QColor, QFont, QImage, QPainterPath, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QGraphicsEllipseItem, QGraphicsPathItem, QGraphicsPixmapItem, QGraphicsScene,
     QGraphicsSimpleTextItem, QGraphicsView, QLabel, QToolButton)
@@ -28,6 +30,7 @@ TILE_CACHE = Path.home() / ".cache" / "dm_clip_gui" / "tiles"
 USER_AGENT = "dm_clip_gui/0.1 (ROS2 bag GNSS viewer)"
 MIN_Z, MAX_Z = 3, 19
 KOREA = (36.3, 127.8, 7)          # 기본 뷰: 대한민국 전역
+MUTED_OPACITY = 0.6               # 흑백 바탕의 불투명도 (밝은 배경 위라 흐려 보인다)
 
 
 def world_px(lat, lon, z):
@@ -85,7 +88,8 @@ class MapWidget(QGraphicsView):
         self.setRenderHints(self.renderHints() | 0x02 | 0x04)   # Antialiasing | SmoothPixmap
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setBackgroundBrush(QBrush(QColor("#dde3ea")))
+        self.setBackgroundBrush(QBrush(QColor("#f4f5f7")))
+        self._muted = True          # 바탕 지도 흑백 · 흐리게 (궤적이 잘 보이게)
         self.setMinimumSize(320, 240)
 
         self.z = KOREA[2]
@@ -117,6 +121,12 @@ class MapWidget(QGraphicsView):
                             "font-weight:bold;font-size:14px;}")
         self._btn_in.clicked.connect(lambda: self.set_zoom(self.z + 1))
         self._btn_out.clicked.connect(lambda: self.set_zoom(self.z - 1))
+        self._btn_mute = QToolButton(self)
+        self._btn_mute.setText("◐")
+        self._btn_mute.setFixedSize(28, 28)
+        self._btn_mute.setStyleSheet("QToolButton{background:white;border:1px solid #999;font-size:13px;}")
+        self._btn_mute.setToolTip("바탕 지도: 흑백(궤적이 잘 보임) ↔ 원래 색")
+        self._btn_mute.clicked.connect(lambda: self.set_muted(not self._muted))
         self._attr = QLabel("© OpenStreetMap contributors", self)
         self._attr.setStyleSheet("background:rgba(255,255,255,190);color:#333;"
                                  "font-size:9px;padding:1px 4px;")
@@ -235,6 +245,7 @@ class MapWidget(QGraphicsView):
         w, h = self.viewport().width(), self.viewport().height()
         self._btn_in.move(w - 36, 8)
         self._btn_out.move(w - 36, 38)
+        self._btn_mute.move(w - 36, 72)
         self._attr.adjustSize()
         self._attr.move(4, h - self._attr.height() - 4)
         self._zoom_lbl.move(w - self._zoom_lbl.width() - 8, h - 18)
@@ -260,13 +271,14 @@ class MapWidget(QGraphicsView):
             z, x, y = key
             item = QGraphicsPixmapItem(self._placeholder)
             item.setTransformationMode(Qt.SmoothTransformation)
+            item.setOpacity(MUTED_OPACITY if self._muted else 1.0)
             item.setPos(x * TILE, y * TILE)
             item.setZValue(0)
             self._scene.addItem(item)
             self._tiles[key] = item
             cached = TILE_CACHE / str(z) / str(x) / f"{y}.png"
             if cached.exists():
-                item.setPixmap(QPixmap(str(cached)))
+                self._set_tile(item, str(cached))
             elif key not in self._pending:
                 self._pending.add(key)
                 self._pool.start(_TileJob(z, x, y, self._sig))
@@ -277,12 +289,31 @@ class MapWidget(QGraphicsView):
         self._pending.discard((z, x, y))
         item = self._tiles.get((z, x, y))
         if item is not None and path and z == self.z:
-            item.setPixmap(QPixmap(path))
+            self._set_tile(item, path)
         if not self._pending:
             self._clear_stale()
 
+    def _set_tile(self, item, path):
+        item.setData(0, path)
+        if self._muted:
+            gray = QImage(path).convertToFormat(QImage.Format_Grayscale8)
+            item.setPixmap(QPixmap.fromImage(gray))
+        else:
+            item.setPixmap(QPixmap(path))
+        item.setOpacity(MUTED_OPACITY if self._muted else 1.0)
+
+    def set_muted(self, muted):
+        """바탕 지도를 흑백 · 흐리게(True) / 원래 색(False). 이미 받은 타일도 바로 바꾼다."""
+        self._muted = muted
+        for item in list(self._tiles.values()) + list(self._stale):
+            path = item.data(0) if hasattr(item, "data") else None
+            if path:
+                self._set_tile(item, path)
+            elif hasattr(item, "setOpacity"):
+                item.setOpacity(MUTED_OPACITY if muted else 1.0)
+
     # ---------- 오버레이 ----------
-    def add_track(self, oid, latlons, color="#1565c0", width=2.5, z=10):
+    def add_track(self, oid, latlons, color="#1565c0", width=4.0, z=10):
         self._overlays[oid] = {"kind": "track", "pts": list(latlons), "color": color,
                                "width": width, "z": z, "items": []}
         self._draw(oid)
@@ -318,15 +349,18 @@ class MapWidget(QGraphicsView):
             path = QPainterPath(QPointF(*pts[0]))
             for x, y in pts[1:]:
                 path.lineTo(x, y)
-            item = QGraphicsPathItem(path)
-            pen = QPen(QColor(ov["color"]), ov["width"])
-            pen.setCosmetic(True)
-            pen.setCapStyle(Qt.RoundCap)
-            pen.setJoinStyle(Qt.RoundJoin)
-            item.setPen(pen)
-            item.setZValue(ov["z"])
-            self._scene.addItem(item)
-            ov["items"].append(item)
+            # 흰 테두리(아래) + 색 선(위) — 어떤 바탕에서도 선이 떠 보인다
+            for color, width, dz in ((QColor(255, 255, 255, 235), ov["width"] + 3.5, -0.5),
+                                     (QColor(ov["color"]), ov["width"], 0.0)):
+                item = QGraphicsPathItem(path)
+                pen = QPen(color, width)
+                pen.setCosmetic(True)
+                pen.setCapStyle(Qt.RoundCap)
+                pen.setJoinStyle(Qt.RoundJoin)
+                item.setPen(pen)
+                item.setZValue(ov["z"] + dz)
+                self._scene.addItem(item)
+                ov["items"].append(item)
         else:
             x, y = world_px(ov["lat"], ov["lon"], self.z)
             r = ov["radius"]

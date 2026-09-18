@@ -53,7 +53,8 @@ install(PROGRAMS scripts/clip_launch.sh
 install(FILES scripts/bag_diagnostics.py scripts/net_tools.py scripts/gnss_tools.py
   scripts/map_widget.py
   scripts/sensor_discovery.py scripts/sensor_config.py scripts/sensor_launcher.py
-  scripts/sensor_stage.py
+  scripts/sensor_stage.py scripts/ui_theme.py scripts/preview_panel.py scripts/param_doc.py
+  scripts/defaults_writer.py
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY config launch

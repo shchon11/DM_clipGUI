@@ -8,10 +8,20 @@
 #   - 중복/비단조 stamp, 0바이트 페이로드, 크기 이상치
 #   - 샘플 역직렬화 + 타입별 페이로드 검증 (Image 크기, JPEG/PNG 매직)
 #
+# 도착 시각만으로는 "멈췄다가 몰려 온 것"과 "빠진 것"을 못 가른다 — 드라이버나 DDS 가 잠깐 멈추면
+# 긴 간격이 생긴다. 그래서 센서가 매긴 번호/시각이 있으면 그걸로 센다:
+#   - Ouster lidar_packets : 패킷 안의 frame_id · measurement_id (Ouster 패킷엔 header 가 없다)
+#   - Ouster imu_packets   : 패킷 안의 센서 시각
+#   - FLIR 카메라           : image_raw/metadata 의 camera_frame_id — 같은 stamp 를 쓰는 image_raw ·
+#                            camera_info · image_rgb/compressed 에도 적용
+# 그 밖의 토픽은 도착 시각 간격으로 세되, 긴 간격 뒤에 메시지가 몰려 와서 시간선을 따라잡으면
+# 지터(늦게 왔을 뿐)로 본다. 빠진 거라면 시간선이 영영 한 주기 밀린다.
+#
 # 단독 실행:  python3 bag_diagnostics.py <clip_dir> [--json out.json]
 # 모듈 사용:  report = analyze(clip_dir); print(render_text(report))
 
 import argparse
+import collections
 import json
 import math
 import sqlite3
@@ -25,6 +35,18 @@ SAMPLES_PER_TOPIC = 25      # 역직렬화/페이로드 검사 샘플 수
 MIN_MSGS_FOR_GAPS = 10      # 이보다 적으면 간격 분석 생략 (저빈도 토픽)
 GAP_FACTOR = 1.6            # dt > median*GAP_FACTOR 이면 유실 후보
 LAT_WARN_MS = 200.0         # 수신 지연 p95 경고 문턱
+LAT_GROWTH_MS = 100.0       # 클립 앞 1/3 → 뒤 1/3 지연 중앙값이 이만큼 늘면 백로그 (쌓이는 중)
+JITTER_LOOKAHEAD = 64       # 긴 간격 뒤 이 개수 안에서 시간선을 따라잡으면 지터
+JITTER_WINDOW_S = 0.5       # … 단 이 시간 안에서
+MAX_SEQ_JUMP = 100_000      # 센서 번호가 이보다 크게 뛰면 재시작으로 보고 유실로 세지 않는다
+CADENCE_MIN_SKIPS = 20      # 한 칸 빈 자리가 이만큼은 있어야 장비 출력 패턴인지 본다
+CADENCE_REGULAR = 0.8       # 빈 자리 사이 간격이 최빈값 ±1 안에 드는 비율이 이 이상이면 규칙적
+CADENCE_SPREAD = 0.5        # 클립을 10구간으로 나눠 구간마다 빈 비율이 전체의 0.5 ~ 2배 안 = 고르게 퍼짐
+
+PACKET_TYPE = "ouster_sensor_msgs/msg/PacketMsg"
+FLIR_META_TYPE = "flir_spinnaker_camera/msg/FlirMetadata"
+# 라이다 한 바퀴를 모아 내는 토픽 — stamp 가 스캔 시작이라 한 바퀴(1/rate)만큼은 원래 늦다
+SCAN_TYPES = {"sensor_msgs/msg/PointCloud2", "sensor_msgs/msg/Image", "sensor_msgs/msg/LaserScan"}
 
 OK, WARN, FAIL = "OK", "WARN", "FAIL"
 _RANK = {OK: 0, WARN: 1, FAIL: 2}
@@ -50,34 +72,63 @@ def _parse_header_ns(head: bytes):
 
 # ---------- 스토리지 리더 ----------
 
-def _read_sqlite(db_path, progress):
-    """{topic: {'type':.., 'rows':[(bag_ns, hdr_ns|None, size)], 'ids':[rowid]}}"""
-    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    topics = {tid: (name, typ) for tid, name, typ in
-              con.execute("SELECT id, name, type FROM topics")}
+def _head_len(type_name):
+    """메시지 앞 몇 바이트를 읽을지. 센서 번호를 꺼낼 타입만 더 읽는다 (나머지는 header 12바이트)."""
+    if type_name == PACKET_TYPE:
+        return 8 + 64           # CDR(캡슐 4 + 배열 길이 4) + 패킷 앞 64바이트
+    if type_name == FLIR_META_TYPE:
+        return 512              # 작은 메시지 — camera_frame_id 까지
+    return 12
+
+
+def _db3_files(bag_dir):
+    """<이름>_0.db3, _1.db3, … 를 번호 순으로 — 나뉜 bag(record_split_sec, ros2 bag record
+    --max-bag-*)도 이어서 읽는다. 문자열 정렬이면 _10 이 _2 앞에 온다."""
+    def index(path):
+        tail = path.stem.rsplit("_", 1)[-1]
+        return (int(tail) if tail.isdigit() else -1, path.name)
+    return sorted(Path(bag_dir).glob("*.db3"), key=index)
+
+
+def _read_sqlite(db_paths, progress):
+    """{topic: {'type':.., 'rows':[(bag_ns, hdr_ns|None, size)], '_ids':[(db, rowid)], '_heads'?:[bytes]}}
+
+    파일이 여러 개면 시간 순으로 이어 붙인다 (나뉜 파일은 시간 구간이 겹치지 않는다).
+    """
     out = {}
-    for tid, (name, typ) in sorted(topics.items(), key=lambda kv: kv[1][0]):
-        rows, ids = [], []
-        for rid, bag_ns, head, size in con.execute(
-                "SELECT id, timestamp, substr(data,1,12), length(data) "
-                "FROM messages WHERE topic_id=? ORDER BY timestamp", (tid,)):
-            rows.append((bag_ns, _parse_header_ns(head), size or 0))
-            ids.append(rid)
-        out[name] = {"type": typ, "rows": rows, "_ids": ids, "_db": str(db_path)}
-        if progress:
-            progress(f"읽는 중: {name} ({len(rows)}개)")
-    con.close()
+    for db_path in db_paths:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        topics = {tid: (name, typ) for tid, name, typ in
+                  con.execute("SELECT id, name, type FROM topics")}
+        for tid, (name, typ) in sorted(topics.items(), key=lambda kv: kv[1][0]):
+            info = out.setdefault(name, {"type": typ, "rows": [], "_ids": []})
+            n = _head_len(typ)
+            heads = info.setdefault("_heads", []) if n > 12 else None
+            for rid, bag_ns, head, size in con.execute(
+                    f"SELECT id, timestamp, substr(data,1,{n}), length(data) "
+                    "FROM messages WHERE topic_id=? ORDER BY timestamp", (tid,)):
+                info["rows"].append((bag_ns, _parse_header_ns(head), size or 0))
+                info["_ids"].append((str(db_path), rid))
+                if heads is not None:
+                    heads.append(bytes(head or b""))
+            if progress:
+                progress(f"읽는 중: {name} ({len(info['rows'])}개)")
+        con.close()
     return out
 
 
 def _fetch_samples_sqlite(info, indices):
-    con = sqlite3.connect(f"file:{info['_db']}?mode=ro", uri=True)
-    out = []
-    for i in indices:
-        row = con.execute("SELECT data FROM messages WHERE id=?",
-                          (info["_ids"][i],)).fetchone()
-        out.append((i, bytes(row[0]) if row and row[0] is not None else b""))
-    con.close()
+    out, cons = [], {}
+    try:
+        for i in indices:
+            db, rid = info["_ids"][i]
+            if db not in cons:
+                cons[db] = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            row = cons[db].execute("SELECT data FROM messages WHERE id=?", (rid,)).fetchone()
+            out.append((i, bytes(row[0]) if row and row[0] is not None else b""))
+    finally:
+        for con in cons.values():
+            con.close()
     return out
 
 
@@ -94,6 +145,9 @@ def _read_rosbag2py(bag_dir, progress):
         topic, data, bag_ns = reader.read_next()
         info = out[topic]
         info["rows"].append((bag_ns, _parse_header_ns(bytes(data[:12])), len(data)))
+        n = _head_len(info["type"])
+        if n > 12:
+            info.setdefault("_heads", []).append(bytes(data[:n]))
         # 대략 SAMPLES_PER_TOPIC개가 남도록 성긴 간격으로 본문 보관
         if len(info["_samples"]) < SAMPLES_PER_TOPIC * 4 and \
                 len(info["rows"]) % max(1, len(info["rows"]) // SAMPLES_PER_TOPIC + 1) == 0:
@@ -102,8 +156,173 @@ def _read_rosbag2py(bag_dir, progress):
         if progress and n_read % 2000 == 0:
             progress(f"읽는 중: {n_read}개…")
     for info in out.values():
-        info["rows"].sort(key=lambda r: r[0])
+        order = sorted(range(len(info["rows"])), key=lambda i: info["rows"][i][0])
+        info["rows"] = [info["rows"][i] for i in order]
+        if "_heads" in info:                     # 센서 번호와 행이 어긋나지 않게 같이 정렬
+            info["_heads"] = [info["_heads"][i] for i in order]
     return out
+
+
+# ---------- 센서가 매긴 번호 / 시각 ----------
+
+def _packet_bytes(head):
+    """PacketMsg CDR → 패킷 앞부분 (uint8[] buf)."""
+    if not head or len(head) < 8:
+        return b""
+    n = struct.unpack_from("<I", head, 4)[0]
+    return bytes(head[8:8 + n])
+
+
+def _ouster_lidar_ids(bufs):
+    """lidar 패킷마다 연속 번호 → (번호들, 한 바퀴 도는 값, 설명). 모르는 형식이면 None.
+
+    새 프로파일(RNG19_… 등): 패킷 머리 32B 의 frame_id(u16 @2), 첫 열 머리의 measurement_id(u16 @40).
+    LEGACY: 패킷 머리 없이 첫 열이 timestamp(u64 @0) · measurement_id(u16 @8) · frame_id(u16 @10).
+    패킷당 열 수는 metadata 없이 데이터에서 — 같은 프레임 안 연속 패킷의 measurement_id 차이.
+    (/ouster/metadata 는 기동 때 한 번만 나와서 클립에 없는 게 보통이다.)
+    """
+    def modern(b):
+        return struct.unpack_from("<H", b, 2)[0], struct.unpack_from("<H", b, 40)[0]
+
+    def legacy(b):
+        mid, fid = struct.unpack_from("<HH", b, 8)
+        return fid, mid
+
+    for layout in (modern, legacy):
+        try:
+            vals = [layout(b) for b in bufs]
+        except struct.error:
+            continue
+        steps = [m2 - m1 for (f1, m1), (f2, m2) in zip(vals, vals[1:]) if f1 == f2 and m2 > m1]
+        if not vals or len(steps) < len(vals) // 2:
+            continue
+        step = int(statistics.median(steps))
+        mids = [m for _, m in vals]
+        if step <= 0 or sum(1 for m in mids if m % step == 0) < 0.99 * len(mids):
+            continue
+        cols = next((c for c in (512, 1024, 2048, 4096) if c >= max(mids) + step), None)
+        if cols is None:
+            continue
+        per_frame = cols // step
+        return ([f * per_frame + m // step for f, m in vals], 65536 * per_frame,
+                f"센서 패킷 번호 (한 바퀴 {per_frame}패킷)")
+    return None
+
+
+def _ouster_imu_stamps(bufs):
+    """LEGACY IMU 패킷(48B): 진단·가속·자이로 시각(u64 ns) + 값. 가속 시각을 쓴다. 다른 형식이면 None."""
+    if not bufs or any(len(b) != 48 for b in bufs):
+        return None
+    return [struct.unpack_from("<Q", b, 8)[0] for b in bufs]
+
+
+def _cdr_skip_string(buf, off):
+    off = (off + 3) & ~3
+    n = struct.unpack_from("<I", buf, off)[0]
+    return off + 4 + n
+
+
+def _flir_frame_id(head):
+    """FlirMetadata CDR → (header stamp ns, camera_frame_id). 실패하면 None."""
+    try:
+        b = head[4:]                                  # CDR 정렬은 캡슐 헤더 뒤부터 센다
+        sec, nsec = struct.unpack_from("<iI", b, 0)
+        off = _cdr_skip_string(b, 8)                  # header.frame_id
+        off = ((off + 3) & ~3) + 12                   # width, height, step
+        off = _cdr_skip_string(b, off)                # encoding
+        off = _cdr_skip_string(b, off)                # pixel_format
+        off = (off + 7) & ~7
+        return sec * 10**9 + nsec, struct.unpack_from("<Q", b, off)[0]
+    except (struct.error, TypeError):
+        return None
+
+
+def _sensor_sequences(data):
+    """토픽별 센서 기준 판정 재료.
+
+    {name: {"times", "ids", "wrap", "basis"}}  — 번호로 세는 토픽
+    {name: {"stamps", "basis"}}                 — 센서 시각 간격으로 세는 토픽
+    """
+    out = {}
+    frames = {}                                      # 카메라 네임스페이스 -> {stamp: frame_id}
+    for name, info in data.items():
+        if info["type"] == FLIR_META_TYPE and info.get("_heads"):
+            ns = name[:-len("/image_raw/metadata")] if name.endswith("/image_raw/metadata") \
+                else name.rsplit("/", 1)[0]
+            table = {}
+            for head in info["_heads"]:
+                got = _flir_frame_id(head)
+                if got:
+                    table[got[0]] = got[1]
+            if table:
+                frames[ns] = table
+    for name, info in data.items():
+        for ns, table in frames.items():
+            if not name.startswith(ns + "/"):
+                continue
+            pairs = sorted((h, table[h]) for _, h, _ in info["rows"] if h in table)
+            if len(pairs) >= max(MIN_MSGS_FOR_GAPS, 0.95 * len(info["rows"])):
+                out[name] = {"times": [p[0] for p in pairs], "ids": [p[1] for p in pairs],
+                             "wrap": None, "basis": "카메라 frame_id"}
+            break
+
+    for name, info in data.items():
+        if info["type"] != PACKET_TYPE or not info.get("_heads"):
+            continue
+        bufs = [_packet_bytes(h) for h in info["_heads"]]
+        stamps = _ouster_imu_stamps(bufs)
+        if stamps:
+            out[name] = {"stamps": stamps, "basis": "센서 IMU 시각"}
+            continue
+        got = _ouster_lidar_ids(bufs)
+        if got:
+            ids, wrap, basis = got
+            out[name] = {"times": [b for b, _, _ in info["rows"]], "ids": ids,
+                         "wrap": wrap, "basis": basis}
+    return out
+
+
+def _scan_topics(data, sensors):
+    """라이다 패킷과 같은 네임스페이스에서 한 바퀴를 모아 내는 토픽 (points · *_image · scan)."""
+    lidar_ns = {n.rsplit("/", 1)[0] for n, s in sensors.items()
+                if "ids" in s and data[n]["type"] == PACKET_TYPE}
+    return {n for n, info in data.items()
+            if info["type"] in SCAN_TYPES and n.rsplit("/", 1)[0] in lidar_ns}
+
+
+def _seq_loss(ids, wrap=None):
+    """센서 번호 열 → (유실, 중복, 재시작, [(위치, 빠진 개수)])"""
+    lost = dup = restart = 0
+    where = []
+    for i, (a, b) in enumerate(zip(ids, ids[1:])):
+        d = (b - a) % wrap if wrap else b - a
+        if d == 1:
+            continue
+        if d == 0:
+            dup += 1
+        elif d < 0 or d > MAX_SEQ_JUMP or (wrap and d > wrap // 2):
+            restart += 1
+        else:
+            lost += d - 1
+            where.append((i, d - 1))
+    return lost, dup, restart, where
+
+
+def _caught_up(stamps, i, med):
+    """i→i+1 의 긴 간격을 뒤 메시지들이 몰려 와서 메우는가 (늦게 왔을 뿐 빠진 게 없다).
+
+    k 개 뒤까지의 시간이 (k+1) 주기 + 반 주기 안이면 시간선을 따라잡은 것. 빠진 거라면 시간선이
+    영영 한 주기 밀려서 따라잡지 못한다. k=1 이 예전의 "다음 간격과 합이 2.5주기 이내" 규칙이다.
+    """
+    base = stamps[i]
+    limit = base + JITTER_WINDOW_S * NS
+    for k in range(1, JITTER_LOOKAHEAD + 1):
+        j = i + 1 + k
+        if j >= len(stamps) or stamps[j] > limit:
+            break
+        if stamps[j] - base <= (k + 1.5) * med:
+            return True
+    return False
 
 
 # ---------- 페이로드 검사 ----------
@@ -139,7 +358,105 @@ def _check_payload(type_name, msg):
 
 # ---------- 토픽 하나 분석 ----------
 
-def _analyze_topic(name, info, bag_t0, bag_t1, fetch_samples, progress):
+def _loss_by_sequence(r, sensor, bag_t0):
+    """센서 번호로 유실 · 중복 · 재시작을 센다."""
+    lost, dup, restart, where = _seq_loss(sensor["ids"], sensor.get("wrap"))
+    times = sensor["times"]
+    r["loss_basis"] = sensor["basis"]
+    r["lost_mid"] = lost
+    for i, n in where[:20]:
+        r["gaps"].append({"t": round((times[i] - bag_t0) / NS, 3),
+                          "dt_ms": round((times[i + 1] - times[i]) / 1e6, 1), "est_lost": n})
+    if dup:
+        r["level"] = _worse(r["level"], WARN)
+        r["notes"].append(f"같은 {sensor['basis']}가 {dup}번 (중복)")
+    if restart:
+        r["level"] = _worse(r["level"], WARN)
+        r["notes"].append(f"{sensor['basis']}가 {restart}번 크게 뛰거나 되돌아감 (센서/노드 재시작?) — 유실로 세지 않음")
+
+
+def _sender_cadence(skips, n_intervals):
+    """한 칸씩 빈 자리(간격 인덱스)들이 장비 출력 주기처럼 규칙적이고 클립 내내 고른가.
+
+    OxTS RT2000 은 12 ms 격자에서 4칸마다 한 칸을 비우고 보낸다 (12·12·12·24 ms → 실제 67 Hz).
+    2026-09-19 실측: GNSS NIC 에 도착하는 패킷부터 67개/초이고 NIC·소켓 드롭 0 — 녹화에서 빠진 게
+    아니다. 전송·녹화 유실은 부하 따라 몰리거나 무작위로 흩어져서, 같은 비율의 무작위 유실을 흉내 내면
+    빈 자리 사이 간격이 최빈값 ±1 안에 드는 비율이 40% 남짓이다 (RT2000 은 98%).
+    """
+    if len(skips) < CADENCE_MIN_SKIPS:
+        return None
+    spacing = [b - a for a, b in zip(skips, skips[1:])]
+    mode = collections.Counter(spacing).most_common(1)[0][0]
+    if sum(1 for x in spacing if abs(x - mode) <= 1) < CADENCE_REGULAR * len(spacing):
+        return None
+    frac = len(skips) / n_intervals
+    bins = [0] * 10
+    for i in skips:
+        bins[min(9, i * 10 // n_intervals)] += 1
+    per_bin = n_intervals / 10
+    if not all(CADENCE_SPREAD * frac <= b / per_bin <= frac / CADENCE_SPREAD for b in bins):
+        return None
+    return mode
+
+
+def _loss_by_gaps(r, stamps, times, bag_t0):
+    """간격으로 유실을 센다. stamps 가 센서 시각이면 times(같은 순서의 bag 시각)로 위치를 적는다."""
+    dts = [(b - a) for a, b in zip(stamps, stamps[1:])]
+    med = statistics.median(dts)
+    if med <= 0:
+        return
+    gaps = []
+    for i, dt in enumerate(dts):
+        if dt <= med * GAP_FACTOR or _caught_up(stamps, i, med):
+            continue
+        est = int(round(dt / med)) - 1
+        if est >= 1:
+            gaps.append((i, dt, est))
+    # 거의 다 한 칸짜리이고 규칙적이면 보내는 쪽의 출력 주기 — 유실로 세지 않는다 (두 칸 이상 빈 건 그대로 유실)
+    singles = [i for i, _dt, est in gaps if est == 1]
+    mode = _sender_cadence(singles, len(dts)) if len(singles) >= 0.95 * len(gaps) else None
+    if mode:
+        period = (stamps[-1] - stamps[0]) / (len(stamps) - 1)          # 빈칸까지 친 실제 평균 주기
+        r["cadence"] = {"skips": len(singles), "every": mode, "grid_ms": round(med / 1e6, 1),
+                        "rate_hz": round(NS / period, 1)}
+        # 남은 긴 간격은 격자 주기가 아니라 실제 평균 주기로 따라잡았는지 다시 본다. 격자(med) 기준이면
+        # 몇 칸마다 한 칸씩 비는 스트림은 시간선을 영영 못 따라잡아서, 전달이 잠깐 멈췄다 몰려 온 것
+        # (46 ms 멈춤 → 2 ms 안에 3개)까지 유실로 셌다.
+        # 리듬을 깨는 한 칸(주기가 4칸인데 1~2칸 만에 또 빔)은 출력 패턴이 아니라 유실이다.
+        off_beat = {b for a, b in zip(singles, singles[1:]) if b - a < mode - 1}
+        gaps = [g for g in gaps
+                if g[0] in off_beat or (g[2] != 1 and not _caught_up(stamps, g[0], period))]
+    for i, dt, est in gaps:
+        r["lost_mid"] += est
+        if len(r["gaps"]) < 20:
+            at = times[i] if i < len(times) else stamps[i]
+            r["gaps"].append({"t": round((at - bag_t0) / NS, 3),
+                              "dt_ms": round(dt / 1e6, 1), "est_lost": est})
+
+
+def _judge_latency(r, lat, scan):
+    """지연 판정. 백로그 = 클립 동안 지연이 계속 늘어나는 것. 일정하게 늦은 건 처리 지연이다."""
+    p95 = r["lat_p95_ms"]
+    third = len(lat) // 3
+    early = late = None
+    if third >= 3:
+        early, late = statistics.median(lat[:third]), statistics.median(lat[-third:])
+    # 라이다 스캔 토픽은 stamp 가 한 바퀴의 시작이라 한 바퀴(1/rate)는 원래 늦다
+    inherent = r.get("dt_median_ms", 0.0) if scan else 0.0
+    if early is not None and late - early > LAT_GROWTH_MS:
+        r["level"] = _worse(r["level"], WARN)
+        r["notes"].append(f"수신 지연이 클립 동안 계속 늘어남 ({early:.0f} → {late:.0f} ms) — 전송 백로그")
+    elif p95 - inherent > LAT_WARN_MS:
+        r["level"] = _worse(r["level"], WARN)
+        extra = f", 스캔 한 바퀴 {inherent:.0f} ms 를 빼고도 {p95 - inherent:.0f} ms" if scan else ""
+        r["notes"].append(f"수신 지연 p95 {p95:.0f} ms{extra} — 클립 내내 일정하게 늦음 "
+                          "(처리 지연, 쌓이지는 않음)")
+    elif scan and p95 > LAT_WARN_MS:
+        r["notes"].append(f"지연 p95 {p95:.0f} ms = 스캔 한 바퀴 {inherent:.0f} ms (stamp 가 스캔 시작) "
+                          f"+ 처리·전송 {p95 - inherent:.0f} ms — 정상")
+
+
+def _analyze_topic(name, info, bag_t0, bag_t1, fetch_samples, progress, sensor=None, scan=False):
     rows = info["rows"]
     r = {
         "type": info["type"], "count": len(rows),
@@ -171,16 +488,14 @@ def _analyze_topic(name, info, bag_t0, bag_t1, fetch_samples, progress):
     stamps = sorted(h for _, h, _ in rows) if use_header \
         else [b for b, _, _ in rows]
 
-    # 수신 지연 (header 모드에서만 의미 있음)
+    # 수신 지연 (header 모드에서만 의미 있음). 판정은 주기를 안 뒤에 (라이다 스캔은 한 바퀴만큼 원래 늦다)
+    lat = []
     if use_header:
-        lat = sorted((b - h) / 1e6 for b, h, _ in rows if h is not None)
-        r["lat_med_ms"] = round(lat[len(lat) // 2], 1)
-        r["lat_p95_ms"] = round(lat[min(len(lat) - 1, int(0.95 * len(lat)))], 1)
-        r["lat_max_ms"] = round(lat[-1], 1)
-        if r["lat_p95_ms"] > LAT_WARN_MS:
-            r["level"] = _worse(r["level"], WARN)
-            r["notes"].append(
-                f"수신 지연 p95 {r['lat_p95_ms']:.0f} ms — 전송 백로그 의심")
+        lat = [(b - h) / 1e6 for b, h, _ in rows if h is not None]     # 도착 순서 — 추세를 본다
+        ordered = sorted(lat)
+        r["lat_med_ms"] = round(ordered[len(ordered) // 2], 1)
+        r["lat_p95_ms"] = round(ordered[min(len(ordered) - 1, int(0.95 * len(ordered)))], 1)
+        r["lat_max_ms"] = round(ordered[-1], 1)
 
         raw_h = [h for _, h, _ in rows if h is not None]
         r["nonmonotonic"] = sum(1 for a, b2 in zip(raw_h, raw_h[1:]) if b2 < a)
@@ -199,23 +514,30 @@ def _analyze_topic(name, info, bag_t0, bag_t1, fetch_samples, progress):
         if med > 0:
             r["dt_median_ms"] = round(med / 1e6, 2)
             r["rate_hz"] = round(NS / med, 1)
-            for i, dt in enumerate(dts):
-                if dt <= med * GAP_FACTOR:
-                    continue
-                # stamp 흔들림 보정: 다음 간격과 합이 2주기 이내면 지터, 유실 아님
-                if i + 1 < len(dts) and dts[i] + dts[i + 1] < 2.5 * med:
-                    continue
-                est = int(round(dt / med)) - 1
-                if est < 1:
-                    continue
-                r["lost_mid"] += est
-                if len(r["gaps"]) < 20:
-                    r["gaps"].append({
-                        "t": round((stamps[i] - bag_t0) / NS, 3),
-                        "dt_ms": round(dt / 1e6, 1), "est_lost": est})
+            if sensor and "ids" in sensor:
+                _loss_by_sequence(r, sensor, bag_t0)
+                worst = max(dts)
+                if not r["lost_mid"] and worst > med * GAP_FACTOR * 2:
+                    r["notes"].append(
+                        f"도착은 최대 {worst / 1e6:.0f} ms 멈췄다가 몰려 옴 — {sensor['basis']}로는 "
+                        "빠진 것 없음 (드라이버·전송 지터)")
+            elif sensor and "stamps" in sensor:
+                r["loss_basis"] = sensor["basis"]
+                _loss_by_gaps(r, sorted(sensor["stamps"]), [b for b, _, _ in rows], bag_t0)
+            else:
+                _loss_by_gaps(r, stamps, stamps, bag_t0)
             if r["lost_mid"]:
                 r["level"] = FAIL
-                r["notes"].append(f"스트림 중간 유실 {r['lost_mid']}프레임")
+                basis = f" ({r['loss_basis']} 기준)" if r.get("loss_basis") else ""
+                r["notes"].insert(0, f"스트림 중간 유실 {r['lost_mid']}프레임{basis}")
+            cad = r.get("cadence")
+            if cad:
+                r["rate_hz"] = cad["rate_hz"]
+                r["level"] = _worse(r["level"], WARN)
+                r["notes"].append(
+                    f"보내는 간격이 고르지 않음 — {cad['grid_ms']:g} ms 격자에서 {cad['every']}칸마다 한 칸씩 비어 "
+                    f"실제 {cad['rate_hz']:g} Hz ({cad['skips']}칸, 클립 내내 같은 비율). 녹화·전송 유실은 이렇게 "
+                    "규칙적이지 않다 — 장비가 이렇게 보내는 것 (장비의 출력 주기 설정 확인)")
 
             # 클립 경계 잘림 (유실 아님 — 창이 닫힐 때 아직 도착 전이던 프레임)
             r["head_trunc"] = max(0, int((stamps[0] - bag_t0) / med - 0.5))
@@ -230,6 +552,9 @@ def _analyze_topic(name, info, bag_t0, bag_t1, fetch_samples, progress):
             r["expected"] = r["count"] + r["lost_mid"]
     else:
         r["notes"].append("저빈도 토픽 — 간격 분석 생략")
+
+    if lat:
+        _judge_latency(r, lat, scan)
 
     # 샘플 역직렬화 + 페이로드 검증
     cls = _get_msg_class(info["type"])
@@ -274,9 +599,9 @@ def analyze(bag_dir, progress=None):
     bag_dir = Path(bag_dir)
     if not bag_dir.is_dir():
         raise FileNotFoundError(f"클립 디렉터리가 아님: {bag_dir}")
-    db3 = sorted(bag_dir.glob("*.db3"))
+    db3 = _db3_files(bag_dir)
     if db3:
-        data = _read_sqlite(db3[0], progress)
+        data = _read_sqlite(db3, progress)
         fetch = _fetch_samples_sqlite
         storage = "sqlite3"
     else:
@@ -289,9 +614,12 @@ def analyze(bag_dir, progress=None):
         raise RuntimeError("클립에 메시지가 하나도 없음")
     bag_t0, bag_t1 = min(all_bag), max(all_bag)
 
+    sensors = _sensor_sequences(data)
+    scans = _scan_topics(data, sensors)
     topics = {}
     for name, info in sorted(data.items()):
-        topics[name] = _analyze_topic(name, info, bag_t0, bag_t1, fetch, progress)
+        topics[name] = _analyze_topic(name, info, bag_t0, bag_t1, fetch, progress,
+                                      sensors.get(name), name in scans)
 
     # GNSS 품질 (NavSatFix 또는 상태 문자열 토픽이 있을 때만)
     gnss = _gnss_section(bag_dir, topics, progress)
@@ -357,7 +685,10 @@ def render_text(rep):
             line += f", {t['rate_hz']:.1f} Hz"
         if "lat_p95_ms" in t:
             line += f", 지연 p95 {t['lat_p95_ms']:.0f} ms"
-        line += f", stamp={t.get('stamp_mode', '-')})"
+        line += f", stamp={t.get('stamp_mode', '-')}"
+        if t.get("loss_basis"):
+            line += f", 유실 기준={t['loss_basis']}"
+        line += ")"
         L.append(line)
         for note in t["notes"]:
             L.append(f"         - {note}")

@@ -72,6 +72,85 @@ def nic_ipv4(iface):
     return None
 
 
+def nic_is_usb(iface):
+    """USB 어댑터인가 (sysfs 장치 경로에 usb 가 끼어 있다)."""
+    try:
+        return "/usb" in os.path.realpath(SYS_NET / iface / "device")
+    except OSError:
+        return False
+
+
+def nic_carrier(iface):
+    """케이블이 꽂혀 링크가 올라왔는가."""
+    try:
+        return (SYS_NET / iface / "carrier").read_text().strip() == "1"
+    except OSError:
+        return False
+
+
+# ---------- NetworkManager: link-local 장비용 NIC ----------
+
+NM_LINK_LOCAL_PREFIX = "LiDAR link-local"
+
+
+def nm_link_local(iface, timeout=30.0):
+    """NIC 를 link-local(IPv4 169.254.x.x + IPv6 fe80::) 로 잡는 NetworkManager 프로필을 만들고 올린다.
+
+    Ouster 같은 link-local 장비를 새 NIC(USB 이더넷 어댑터 등)에 꽂으면, NetworkManager 가 그 NIC 에
+    기본 DHCP 프로필을 걸어 45초 기다리다 실패하고 연결을 끊는다 (IPv6 주소까지 사라진다). 그걸
+    되풀이하니 PC 가 장비에 영영 못 붙는다. 이 프로필은 그 NIC 이름에 묶이고 autoconnect-priority 가
+    기본 프로필(0)보다 높아서, 다음에 꽂을 때부터는 NetworkManager 가 알아서 이걸 쓴다.
+    기본 경로는 만들지 않는다 (never-default). 되돌리기: nmcli connection delete '<프로필 이름>'.
+
+    권한: 데스크톱 세션 사용자는 polkit 으로 허용된다 (sudo 불필요).
+    반환 (ok, 메시지, 잡힌 IPv4|None)
+    """
+    nmcli = shutil.which("nmcli")
+    if not nmcli:
+        return False, "nmcli 가 없어 NIC 를 설정할 수 없습니다", None
+    env = dict(os.environ, LC_ALL="C")
+    name = f"{NM_LINK_LOCAL_PREFIX} ({iface})"
+
+    def run(args, limit=15.0):
+        return subprocess.run([nmcli] + args, capture_output=True, text=True, timeout=limit, env=env)
+
+    settings = ["ipv4.method", "link-local", "ipv6.method", "link-local",
+                "ipv4.never-default", "yes", "ipv6.never-default", "yes",
+                "connection.autoconnect", "yes", "connection.autoconnect-priority", "50"]
+    try:
+        names = run(["-t", "-f", "NAME", "connection", "show"]).stdout.splitlines()
+        if name in names:
+            res = run(["connection", "modify", name, "connection.interface-name", iface] + settings)
+        else:
+            res = run(["connection", "add", "type", "ethernet", "con-name", name, "ifname", iface]
+                      + settings)
+        if res.returncode:
+            return False, f"프로필 만들기 실패: {(res.stderr or res.stdout).strip()}", None
+        res = run(["--wait", str(int(timeout)), "connection", "up", name, "ifname", iface],
+                  limit=timeout + 10)
+        if res.returncode:
+            return False, f"연결 실패: {(res.stderr or res.stdout).strip()}", None
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"nmcli 실행 실패: {exc}", None
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        addr = nic_ipv4(iface)
+        if addr and addr[0].startswith("169.254."):
+            return True, f"{iface} ← {addr[0]}/{addr[1]} (link-local, 프로필 '{name}')", addr[0]
+        time.sleep(0.5)
+    return False, f"{iface} 에 link-local 주소가 안 잡혔습니다 (프로필 '{name}')", None
+
+
+def route_dev(ip):
+    """그 주소로 나가는 NIC 이름 (ip route get). 모르면 ''."""
+    try:
+        out = subprocess.run(["ip", "-o", "route", "get", ip], capture_output=True, text=True,
+                             timeout=3).stdout.split()
+        return out[out.index("dev") + 1] if "dev" in out else ""
+    except (OSError, subprocess.SubprocessError, IndexError):
+        return ""
+
+
 def _broadcast(ip, plen):
     n = struct.unpack(">I", socket.inet_aton(ip))[0]
     mask = (0xFFFFFFFF << (32 - plen)) & 0xFFFFFFFF
@@ -80,22 +159,46 @@ def _broadcast(ip, plen):
 
 # ---------- GigE Vision 디스커버리 ----------
 
-def gvcp_discover(iface, timeout=1.0):
-    """{ip: {'vendor','model','serial','user_name','mac'}}
-    GVCP DISCOVERY_CMD를 서브넷 브로드캐스트로 보내고 ACK를 모은다. root 불필요."""
+GVCP_PORT = 3956
+
+
+def _gvcp_socket(iface, timeout):
+    """(소켓, 보낼 주소들). NIC 에 묶은 브로드캐스트 소켓.
+
+    제한 브로드캐스트(255.255.255.255)로 보내야 IP 가 아직 없는 새 카메라(링크로컬 169.254.x.x)도
+    듣는다 — 서브넷 브로드캐스트(192.168.1.255)만 쓰면 다른 서브넷 장비는 못 듣는다 (Spinnaker 도
+    제한 브로드캐스트로 찾는다). 그런 장비는 ACK 도 브로드캐스트로 돌려주므로 소켓은 INADDR_ANY 에
+    묶고 SO_BINDTODEVICE 로 NIC 를 고른다 (리눅스 5.7+ 는 root 불필요). 안 되면 예전 방식.
+    """
     addr = nic_ipv4(iface)
     if not addr:
-        return {}
+        return None, []
     local_ip, plen = addr
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     s.settimeout(timeout)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, iface.encode())
+        s.bind(("", 0))
+        return s, ["255.255.255.255"]
+    except OSError:
+        s.bind((local_ip, 0))
+        return s, [_broadcast(local_ip, plen)]
+
+
+def gvcp_discover_all(iface, timeout=1.0):
+    """[{ip, vendor, model, serial, user_name, mac, src}] — 장비마다 한 줄 (MAC 기준).
+
+    IP 로 묶지 않는다: 두 카메라가 같은 IP 를 쓰면(ForceIP 충돌 등) 둘 다 보여야 한다.
+    """
+    s, targets = _gvcp_socket(iface, timeout)
+    if s is None:
+        return []
     found = {}
     try:
-        s.bind((local_ip, 0))
         # key 0x42, flags 0x11 (ack 요구 + 브로드캐스트 ack 허용), DISCOVERY_CMD, len 0, id 1
-        s.sendto(struct.pack(">BBHHH", 0x42, 0x11, 0x0002, 0, 1),
-                 (_broadcast(local_ip, plen), 3956))
+        for target in targets:
+            s.sendto(struct.pack(">BBHHH", 0x42, 0x11, 0x0002, 0, 1), (target, GVCP_PORT))
         t0 = time.time()
         while time.time() - t0 < timeout:
             try:
@@ -110,15 +213,53 @@ def gvcp_discover(iface, timeout=1.0):
             def cstr(off, n):
                 return b[off:off + n].split(b"\0")[0].decode(errors="replace")
             mac = ":".join(f"{x:02x}" for x in b[10:16])
-            ip = socket.inet_ntoa(b[36:40])
-            found[ip] = {"vendor": cstr(72, 32), "model": cstr(104, 32),
-                         "serial": cstr(216, 16), "user_name": cstr(232, 16),
-                         "mac": mac, "src": src[0]}
+            found[mac] = {"ip": socket.inet_ntoa(b[36:40]), "vendor": cstr(72, 32),
+                          "model": cstr(104, 32), "serial": cstr(216, 16),
+                          "user_name": cstr(232, 16), "mac": mac, "src": src[0]}
     except OSError:
         pass
     finally:
         s.close()
-    return found
+    return list(found.values())
+
+
+def gvcp_discover(iface, timeout=1.0):
+    """{ip: {'vendor','model','serial','user_name','mac'}} — IP 로 찾아보는 쪽(네트워크 표)용."""
+    return {d["ip"]: d for d in gvcp_discover_all(iface, timeout)}
+
+
+def gvcp_force_ip(iface, mac, ip, mask="255.255.255.0", gateway="0.0.0.0", timeout=1.0):
+    """GVCP FORCEIP_CMD — MAC 으로 고른 카메라에 임시 IP 를 준다 (전원을 다시 넣으면 풀린다).
+
+    지금 IP 가 무엇이든(다른 서브넷·링크로컬이어도) 브로드캐스트로 닿는다. Spinnaker 의 ForceIP 와
+    같은 명령이다. ACK 를 받으면 True — 그래도 호출하는 쪽에서 다시 찾아 확인하는 게 맞다.
+    """
+    s, targets = _gvcp_socket(iface, timeout)
+    if s is None:
+        return False
+    mac_b = bytes(int(x, 16) for x in mac.split(":"))
+    payload = (b"\0\0" + mac_b + b"\0" * 12 + socket.inet_aton(ip) + b"\0" * 12 +
+               socket.inet_aton(mask) + b"\0" * 12 + socket.inet_aton(gateway))
+    req_id = 0x4242
+    try:
+        for target in targets:
+            s.sendto(struct.pack(">BBHHH", 0x42, 0x01, 0x0004, len(payload), req_id) + payload,
+                     (target, GVCP_PORT))
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            try:
+                data, _src = s.recvfrom(1024)
+            except socket.timeout:
+                break
+            # FORCEIP_ACK = 0x0005, ack_id 가 요청 id 와 같아야 한다
+            if len(data) >= 8 and struct.unpack(">HHHH", data[:8])[1] == 0x0005 and \
+                    struct.unpack(">H", data[6:8])[0] == req_id:
+                return True
+    except OSError:
+        pass
+    finally:
+        s.close()
+    return False
 
 
 # ---------- 플로우 힌트 → 정체 추정 ----------
@@ -196,5 +337,5 @@ if __name__ == "__main__":
     print("NICs:", nic_list())
     print("선택:", iface, nic_stats(iface), nic_ipv4(iface))
     print("net_probe:", find_net_probe(), "cap:", net_probe_has_cap(find_net_probe()))
-    for ip, d in sorted(gvcp_discover(iface).items()):
-        print(f"  {ip:15s} {d['model']:28s} serial={d['serial']:10s} mac={d['mac']}")
+    for d in sorted(gvcp_discover_all(iface), key=lambda d: d["ip"]):
+        print(f"  {d['ip']:15s} {d['model']:28s} serial={d['serial']:10s} mac={d['mac']}")

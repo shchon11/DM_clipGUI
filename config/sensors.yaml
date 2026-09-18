@@ -5,7 +5,14 @@
 # 각 센서군(group)은 세 가지를 선언한다:
 #   discovery : 그 센서를 네트워크에서 어떻게 찾는가
 #   launch    : 어떤 워크스페이스를 소싱해 어떤 런치를 띄우는가
-#   fields    : GUI 폼에 노출할 설정 키 (원본 params YAML의 키 또는 런치 인자)
+#   fields    : 설정 탭 맨 위 '주요 설정' 에 한국어 이름으로 올릴 키 (원본 params YAML의 키 또는 런치 인자)
+#
+# 설정 탭의 '전체 설정' 은 여기 적지 않아도 원본 params YAML 의 모든 키(주석 처리된 키 포함)와
+# 런치 파일의 모든 인자를 파일에서 직접 읽어 보여준다 (scripts/param_doc.py). 그래서 fields 에는
+# "자주 바꾸고, 잘못 바꾸면 위험해서 설명이 필요한 것" 만 올린다.
+#   managed_params / managed_launch_args : 런치나 GUI 가 따로 정해서 '전체 설정' 에서 바꿔 봐야
+#     소용없는 키 — 읽기 전용으로 보여주고 이유를 단다. "network.force_ip.*" 처럼 * 를 쓸 수 있다.
+#   section : 주요 설정 안의 소제목
 #
 # 원본 params YAML은 절대 수정하지 않는다. 폼에서 바꾼 키만 덮어쓴 사본을
 # ~/.config/dm_clip_gui/sensors/<group>.yaml 로 생성해 런치에 넘긴다.
@@ -33,24 +40,65 @@ groups:
     # 카메라 노드의 camera_info.yaml_path / extrinsics_yaml_path 는 리포 루트 기준
     # 상대 경로라 CWD가 리포 루트여야 한다. 아니면 "Failed to open camera_info YAML file".
     workdir: "~/FLIR_control"
-    # 기동 완료 판정에 쓰는 토픽 정규식 (하나라도 뜨면 그 subset은 올라온 것)
+    # topic_regex: 기동 완료 판정용. 보이는 대수만큼 네임스페이스(/thermal0/, /thermal1/ …)가
+    # 떠야 그 subset 이 올라온 것으로 본다.
+    #
+    # inventory / inventory_arg: 기동할 때마다 "지금 보이는 카메라만" 담은 인벤토리 사본을 만들어
+    # 이 런치 인자로 넘긴다. 저장된 인벤토리를 그대로 쓰면 꺼져 있는 카메라까지 노드가 떠서 죽고,
+    # 안 보이는 카메라가 PTP sender 면 받는 쪽 카메라가 트리거를 영원히 기다려 프레임이 0장이 된다.
+    # 리포의 인벤토리는 읽기만 한다 (런치의 auto_update 도 사본에 쓴다).
+    # name_prefix: 인벤토리에 없는 카메라 이름 = <prefix>_<serial> (꽂힌 조합과 무관하게 고정).
+    # sync_roles: PTP/GPIO 동기 역할이 있는 카메라군 — 보내는 쪽이 없으면 기동 때 바로잡는다.
+    # 사본을 넘길 때 런치의 인벤토리 자동 갱신은 끈다. 감지·IP 맞춤·이름·PTP sender 는 GUI 가 하고,
+    # 켜 두면 런치가 GUI 가 일부러 뺀 카메라(예: 업데이터 모드)를 다시 넣어 노드가 죽는다.
+    inventory_launch_args:
+      auto_update_cameras_file: false
+      auto_update_thermal_cameras_file: false
+    # 카메라 노드가 영상 수신을 시작하면 찍는 로그. 노드는 뜨자마자(카메라를 열기 전에) 발행자를 만들어서
+    # 토픽만으로는 영상이 나오는지 모른다 — 이 줄이 찍혀야 그 카메라가 '실행 중'이다 (카드 · 표의 점).
+    ready_log: "Camera acquisition started"
+    # 전체 설정에서 읽기 전용으로 보일 것 (params 쪽은 두 subset 공통)
+    managed_params:
+      camera_serial: "런치가 인벤토리의 serial 로 카메라마다 덮어씁니다"
+      camera_index: "camera_serial 이 있으면 쓰이지 않습니다 (런치가 serial 을 줍니다)"
+      frame_id: "런치가 카메라마다 <이름>_optical_frame 으로 덮어씁니다"
+      camera_info.yaml_path: "런치 인자 camera_info_yaml_path 가 덮어씁니다"
+      hardware_trigger.role: "카메라별 역할 — 인벤토리에서 정합니다"
+      ptp_action.role: "카메라별 역할 — '감지된 장비' 표의 PTP 동기 칸에서 정합니다"
+      "network.force_ip.*": "IP 는 GUI 가 기동 전에 맞춥니다 ([IP 할당] / IP 자동 맞춤)"
+    managed_launch_args:
+      "auto_update_*": "GUI 가 감지 결과로 인벤토리 사본을 만들어 넘기므로 쓰지 않습니다"
+      thermal_model_patterns: "가시광/열화상 구분은 sensors.yaml 의 model_patterns 로 합니다"
+      thermal_force_ip_base: "새 카메라 IP 는 [IP 할당] 이 sensors.yaml 의 force_ip_base 부터 줍니다"
+      "auto_*force_ip*": "IP 는 GUI 가 기동 전에 한 대씩 맞춥니다 ([IP 할당] / IP 자동 맞춤)"
+      force_ip_in_camera_nodes: "IP 는 GUI 가 기동 전에 한 대씩 맞춥니다 — 노드들이 동시에 ForceIP 하면 서로 덮어씁니다"
     subsets:
       - key: visible
         label: "가시광 Blackfly"
+        short_label: "BFS"          # 좁은 칸(녹화 탭 네트워크 표)에 쓰는 이름
         model_patterns: ["Blackfly"]
         enable_arg: enable_visible_cameras
         inventory: "~/FLIR_control/src/flir_spinnaker_camera/config/multicam_cameras.yaml"
+        inventory_arg: cameras_file
+        name_prefix: camera
+        force_ip_base: "192.168.1.1"     # [IP 할당] 이 새 카메라에 줄 첫 주소
+        sync_roles: true
         params: "~/FLIR_control/src/flir_spinnaker_camera/config/flir_camera.yaml"
         params_arg: params_file
-        topic_regex: "^/camera_[a-z0-9_]+/"
+        # camera_center / camera0 / camera_25415251 모두 (auto_update 가 붙이는 cameraN 포함)
+        topic_regex: "^/camera[a-z0-9_]*/"
       - key: thermal
         label: "열화상 A70"
+        short_label: "A70"
         model_patterns: ["FLIR A70", "FLIR A50"]
         enable_arg: enable_thermal_cameras
         inventory: "~/FLIR_control/src/flir_spinnaker_camera/config/multicam_thermal_cameras.yaml"
+        inventory_arg: thermal_cameras_file
+        name_prefix: thermal
+        force_ip_base: "192.168.1.11"
         params: "~/FLIR_control/src/flir_spinnaker_camera/config/thermal_camera.yaml"
         params_arg: thermal_params_file
-        topic_regex: "^/thermal[0-9]+/"
+        topic_regex: "^/thermal[a-z0-9_]*/"
     discovery:
       kind: gvcp
       nics: []          # 비우면 UP 상태인 모든 물리 NIC을 훑는다
@@ -58,25 +106,47 @@ groups:
     fields:
       # --- 가시광 (flir_camera.yaml) ---
       - subset: visible
+        section: "영상"
+        key: "pixel_format"
+        label: "픽셀 포맷"
+        type: enum
+        choices: ["BayerRG8", "BayerRG12p", "BayerRG16", "Mono8", "Mono12p", "Mono16",
+                  "RGB8Packed", "BGR8"]
+        help: "카메라→PC 로 보내는 포맷. 녹화는 image_rgb/compressed(8비트 JPEG)라 BayerRG8 이면 충분하다. 16비트 컨테이너는 링크 대역폭을 두 배로 쓰는데 JPEG 까지 가지 못한다. 12p(packed)는 링크는 아끼지만 image_raw 는 16비트로 풀려 나간다. 대역폭 = 1920×1200 × 바이트/픽셀 × fps."
+      - subset: visible
+        section: "영상"
         key: "camera.AcquisitionFrameRate"
-        label: "프레임레이트"
+        label: "자유 실행 프레임레이트"
         type: float
         min: 1.0
         max: 60.0
         step: 1.0
         unit: "Hz"
-        default: 30.0
-        # 이 키는 원본 YAML에 주석 처리되어 있다 (자유 실행). 값을 지정하면
-        # AcquisitionFrameRateEnable 도 같이 켜야 카메라가 받아들인다.
+        # 이 키는 원본 YAML에 주석 처리되어 있다 (자유 실행). 그래서 default 가 아니라 example —
+        # default 를 주면 폼이 '지정 30' 으로 보이는데 원본과 같다고 판단해 파일에는 안 실려,
+        # 화면과 실제가 어긋난다. 값을 지정하면 AcquisitionFrameRateEnable 도 같이 켜야 카메라가 받아들인다.
+        example: 30.0
         implies: {"camera.AcquisitionFrameRateEnable": true}
         optional: true
-        help: "끄면 카메라가 노출/전송이 허용하는 최대 속도로 자유 실행합니다."
+        help: "PTP 동기 없이 도는 카메라의 프레임 상한. 끄면 노출/전송이 허용하는 최대 속도로 자유 실행합니다. PTP action 동기(보내는 카메라가 있을 때)의 프레임레이트는 아래 'PTP 동기 프레임레이트' 입니다."
       - subset: visible
+        section: "영상"
+        key: "ptp_action.rate_hz"
+        label: "PTP 동기 프레임레이트"
+        type: float
+        min: 1.0
+        max: 60.0
+        step: 1.0
+        unit: "Hz"
+        help: "PTP action 동기일 때 sender 가 모든 카메라를 이 속도로 트리거한다 (fps = 이 값). 노출 시간은 1/이 값보다 짧아야 트리거를 건너뛰지 않는다 (30 Hz 면 33 ms 미만). PTP 역할이 모두 none 이면 쓰이지 않는다."
+      - subset: visible
+        section: "노출 · 게인"
         key: "camera.ExposureAuto"
         label: "노출 auto"
         type: enum
         choices: ["Off", "Once", "Continuous"]
       - subset: visible
+        section: "노출 · 게인"
         key: "camera.ExposureTime"
         label: "노출 시간"
         type: float
@@ -85,26 +155,53 @@ groups:
         step: 500.0
         unit: "µs"
         enabled_when: {"camera.ExposureAuto": "Off"}
+        help: "카메라는 노출이 끝날 때 타임스탬프를 찍어서, 카메라마다 노출이 다르면 동기가 그만큼 어긋나 보인다. 리그 전체를 같은 값으로 두는 게 좋다. PTP 동기면 1/PTP 동기 프레임레이트보다 짧아야 한다."
       - subset: visible
+        section: "노출 · 게인"
         key: "camera.GainAuto"
         label: "게인 auto"
         type: enum
         choices: ["Off", "Once", "Continuous"]
       - subset: visible
-        key: "camera.Gain"
+        section: "노출 · 게인"
+        key: "camera.GainDB_Val"
         label: "게인"
         type: float
         min: 0.0
         max: 40.0
         step: 0.5
         unit: "dB"
-        optional: true
         enabled_when: {"camera.GainAuto": "Off"}
+        help: "게인 auto 가 Off 일 때만 파일에 실린다 (auto 인데 수동 게인을 쓰면 노드가 'not writable' 로 죽는다)."
       - subset: visible
+        section: "네트워크"
+        key: "camera.DeviceLinkThroughputLimit"
+        label: "카메라당 링크 대역폭"
+        type: int
+        scale: 1000000            # 파일은 B/s, 폼은 MB/s
+        min: 10
+        max: 125
+        step: 5
+        unit: "MB/s"
+        help: "카메라 한 대가 스위치로 내보내는 최대 속도. 모든 카메라의 합이 스위치 업링크(10 GbE ≈ 1150 MB/s 실효)를 넘으면 스위치가 패킷을 버려 'Incomplete image' → 스트림 중단이 난다. PTP 동기면 모든 카메라가 같은 순간에 프레임을 쏟아내 순간 합이 더 크다. 1920×1200 BayerRG8 30 fps 는 한 대에 약 69 MB/s 가 필요하니, 13~14대면 70~75 MB/s 가 한 프레임을 프레임 간격 안에 고르게 흘려보내는 값이다."
+      - subset: visible
+        section: "네트워크"
+        key: "camera.GevSCPSPacketSize"
+        label: "GigE 패킷 크기"
+        type: int
+        min: 576
+        max: 9000
+        step: 4
+        unit: "B"
+        help: "PC NIC 의 MTU 안에 들어가야 한다. 넘으면 NIC 가 모든 패킷을 버려 프레임이 한 장도 완성되지 않는다 (ethtool -S 의 rx_long_length_errors). 카메라 NIC(enp3s0f1)와 스위치는 점보 프레임(MTU 9000)이라 9000 — 14대 × 30 Hz 에서 초당 패킷이 ~745k → ~140k 로 줄어 커널 수신 CPU 가 크게 줄고 유실이 21.5% → 0 이 됐다 (2026-09-19). NIC 를 MTU 1500 으로 되돌리면 1400 으로."
+      - subset: visible
+        section: "출력"
         key: "publish_rgb_compressed"
         label: "RGB 압축 발행"
         type: bool
+        help: "image_rgb/compressed — 녹화·미리보기가 쓰는 토픽. 압축은 PC 에서 하므로 카메라→PC 링크 대역폭은 줄지 않는다."
       - subset: visible
+        section: "출력"
         key: "rgb_jpeg_quality"
         label: "JPEG 품질"
         type: int
@@ -112,60 +209,141 @@ groups:
         max: 100
         step: 5
       - subset: visible
+        section: "출력"
         key: "publish_raw"
         label: "image_raw 발행"
         type: bool
         help: "8대 × 1920×1200 raw 는 대역폭이 큽니다. 보통 압축본만 씁니다."
+      - subset: visible
+        section: "호스트 처리 (바꾸기 전에 설명을 읽으세요)"
+        key: "rgb_encoder"
+        label: "RGB 압축 인코더"
+        type: enum
+        choices: ["gpu", "cpu"]
+        help: "gpu: 디모자이킹 + JPEG 을 GPU(RTX, NPP + nvJPEG)가 한다. 2026-09-19 실측 (14대 + A70 2대, 30 Hz, 점보): CPU 유휴 25% → 77%, 카메라 노드 하나 98% → 17%, 16대 다 뜨기까지(3초 간격 기동) 112초 → 52초, GPU 메모리 약 5 GB. 색·JPEG 크기는 CPU 와 같다. GPU 를 못 쓰면 노드가 알아서 cpu 로 돌아간다 (로그에 경고)."
+      - subset: visible
+        section: "호스트 처리 (바꾸기 전에 설명을 읽으세요)"
+        key: "gpu_demosaic"
+        label: "GPU 디모자이킹"
+        type: bool
+        enabled_when: {"rgb_encoder": "gpu"}
+        help: "켜면 Bayer 원본을 GPU 로 올려 디모자이킹까지 GPU 가 한다 (노드 CPU 약 17%). 끄면 디모자이킹은 CPU(아래 '디모자이킹' 방식)가 하고 JPEG 만 GPU (약 36%)."
+      - subset: visible
+        section: "호스트 처리 (바꾸기 전에 설명을 읽으세요)"
+        key: "color_processing"
+        label: "디모자이킹"
+        type: enum
+        # 빠른 순 (대략). 이름은 flir_spinnaker_camera_node 의 ParseColorProcessing 이 받는 값.
+        choices: ["ipp", "nearest_neighbor", "nearest_neighbor_avg", "bilinear", "edge_sensing",
+                  "hq_linear", "directional_filter", "weighted_directional_filter", "rigorous"]
+        caution: true
+        help: |-
+          GPU 인코딩(아래 'RGB 압축 인코더' = gpu, 'GPU 디모자이킹' 켬)이면 이 값은 쓰이지 않는다 — 디모자이킹도 GPU(NPP)가 한다.
+          카메라는 픽셀마다 R·G·B 중 한 색만 잰 Bayer 모자이크(BayerRG8)를 보낸다. 빠진 두 색을 이웃 픽셀로 채워 RGB 를 만드는 게 디모자이킹(debayering)이고, PC 에서 카메라마다 매 프레임 돈다 — 리그에서 가장 빠듯한 CPU 예산이다.
+          · nearest_neighbor — 가장 가까운 같은 색을 복사. 가장 빠름, 경계가 계단·지퍼 무늬.
+          · nearest_neighbor_avg — 위 + 초록 평균. 비용 거의 같음.
+          · bilinear — 주변 같은 색 평균. 빠름, 약간 뭉개지고 경계에 색 번짐.
+          · ipp — Intel IPP(SIMD) 구현. bilinear 수준 비용에 화질은 더 낫다 → 기본값.
+          · edge_sensing — 가로/세로 기울기를 보고 경계를 따라 보간. 경계 선명, 비용 ↑.
+          · hq_linear — 기울기 보정 선형(5×5). 화질 좋음, 비용 큼.
+          · directional_filter / weighted_directional_filter — 방향 적응 필터. 화질 ↑, 느림.
+          · rigorous — 가장 느리고 가장 정확. 실시간용 아님.
+          실측(8대 × 30 Hz × 20초): hq_linear 는 예산을 넘겨 NewestOnly 가 늦은 프레임을 경고 없이 버렸다 — 카메라마다 1.7~3.0% 손실. ipp · bilinear 는 0%.
+      - subset: visible
+        section: "호스트 처리 (바꾸기 전에 설명을 읽으세요)"
+        key: "buffer_handling_mode"
+        label: "수신 버퍼 처리"
+        type: enum
+        choices: ["NewestOnly", "OldestFirst", "OldestFirstOverwrite", "NewestFirst"]
+        caution: true
+        help: |-
+          NewestOnly: 처리가 밀리면 오래된 프레임을 버리고 최신만 처리 — 지연은 작고, 밀리면 프레임이 빠진다 (진단의 카메라 frame_id 로 보인다).
+          OldestFirst: 쌓인 순서대로 전부 처리 — 순간 과부하를 손실 대신 지연으로 넘긴다. 단 이 노드는 header.stamp 를 버퍼에서 꺼낸 시각(now)으로 찍어서, 밀린 프레임은 밀린 만큼 늦은 시각이 찍힌다 (진단에 안 보인다). 버퍼 32장이 다 차면 결국 새 프레임이 빠진다.
+          처리가 따라가는 동안(예: 15 Hz · ipp)은 둘이 똑같이 동작하고, 차이는 순간 과부하 때만 난다. 정확한 촬영 시각은 image_raw/metadata 의 camera_timestamp_ns 에 남는다.
 
       # --- 열화상 (thermal_camera.yaml) ---
       #
       # A70은 Blackfly와 노드맵이 다르다: Exposure/Gain이 없고 프레임레이트는
-      # 실수가 아니라 열거형(IRFrameRate)이다.
+      # 실수가 아니라 열거형(IRFrameRate)이다. 선택지는 thermal_camera.yaml 주석을 따른다.
       - subset: thermal
+        section: "영상"
+        key: "pixel_format"
+        label: "픽셀 포맷"
+        type: enum
+        choices: ["Mono16", "Mono8"]
+        help: "Mono16 이어야 온도값(IRFormat)이 그대로 실린다. Mono8 은 표시용으로 스케일된 값이라 온도로 되돌릴 수 없다."
+      - subset: thermal
+        section: "영상"
         key: "camera.IRFrameRate"
         label: "프레임레이트"
         type: enum
-        choices: ["Rate30Hz", "Rate15Hz", "Rate8Hz"]
+        choices: ["Rate60Hz", "Rate30Hz", "Rate15Hz", "Rate7Hz", "Rate4Hz"]
       - subset: thermal
+        section: "영상"
         key: "camera.IRFormat"
-        label: "출력 포맷"
+        label: "온도 포맷"
         type: enum
         choices: ["TemperatureLinear10mK", "TemperatureLinear100mK", "Radiometric"]
-        help: "TemperatureLinear10mK: mono16 값 × 0.01 = 켈빈."
+        help: "TemperatureLinear10mK: mono16 값 × 0.01 = 켈빈. 100mK: × 0.1. Radiometric: 원시 카운트 (Planck 변환 필요)."
       - subset: thermal
+        section: "영상"
+        key: "camera.IRWindowing"
+        label: "센서 윈도잉"
+        type: enum
+        choices: ["Off", "Half", "Quarter"]
+        example: "Off"
+        optional: true
+        help: "센서 일부만 읽어 최대 프레임레이트를 올린다. 해상도가 줄어든다."
+      - subset: thermal
+        section: "보정"
         key: "camera.NUCMode"
         label: "NUC (셔터 보정)"
         type: enum
-        choices: ["Automatic", "Manual"]
+        choices: ["Automatic", "Off"]
+        help: "Automatic 은 주기적으로 셔터를 닫아 순간 영상이 멈춘다. Off 면 멈춤은 없지만 시간이 지나며 영상이 흐려진다 (NUCAction 으로 수동 보정)."
       - subset: thermal
+        section: "출력"
         key: "publish_raw"
         label: "image_raw 발행"
         type: bool
+        help: "열화상의 출력은 image_raw(mono16) 하나다 — 끄면 녹화할 게 없다."
 
       # --- 런치 인자 (params 파일이 아니라 ros2 launch 인자) ---
       - target: launch_arg
+        key: sequential_start
+        label: "순차 기동"
+        type: bool
+        default: true
+        help: "앞 카메라 노드가 'Camera acquisition started' 를 찍은 뒤에 다음 노드를 띄운다. 노드마다 리그 전체를 열거하는데 (15대면 약 13초) 그동안 모든 카메라를 쥐고 있어서, 고정 간격으로 띄우면 자기 카메라를 설정하던 노드가 -1005/-1010 으로 밀려 죽었다. 대신 기동 시간이 대수 × (열거 + 설정) 으로 늘어난다."
+      - target: launch_arg
+        key: sequential_start_timeout
+        label: "순차 기동 — 한 대 최대 대기"
+        type: float
+        min: 5.0
+        max: 180.0
+        step: 5.0
+        unit: "s"
+        enabled_when: {"sequential_start": true}
+        help: "이 시간 안에 안 뜨는 카메라는 기다리지 않고 다음 카메라를 띄운다 (Init 재시도에 걸린 한 대가 리그 전체를 막지 않게)."
+      - target: launch_arg
         key: camera_start_stagger
-        label: "카메라 순차 기동 간격"
+        label: "고정 간격 기동"
         type: float
         min: 0.0
         max: 20.0
         step: 0.5
         unit: "s"
         default: 3.0
-        help: "GigE 카메라는 한 번에 하나만 Read/Write 접근을 얻습니다. 0이면 동시 Init이 서로 밀어냅니다."
+        enabled_when: {"sequential_start": false}
+        help: "순차 기동을 끄면 카메라 노드를 이 간격으로 띄운다. GigE 카메라는 한 번에 하나만 Read/Write 접근을 얻어서 0 이면 동시 Init 이 서로 밀어낸다."
       - target: launch_arg
         key: ptp_master_interface
         label: "PTP grandmaster NIC"
         type: string
         default: "enp3s0f1"
+        # ros2 launch 는 빈 값 인자를 받지 않는다 ("key:=" 는 malformed) — 비우면 이 값으로 넘긴다
+        empty_value: "none"
         help: "비우면 ptp4l을 띄우지 않습니다 (외부에서 이미 돌고 있을 때)."
-      - target: launch_arg
-        key: auto_apply_force_ip
-        label: "기동 시 ForceIP 재할당"
-        type: bool
-        default: false
-        danger: true
-        help: "기본 끔. A70에서 두 대가 같은 IP로 겹친 전례가 있습니다. 서브넷 불일치가 감지될 때만 켜세요."
       - target: launch_arg
         key: publish_extrinsics_tf
         label: "리그 extrinsics TF 발행"
@@ -185,6 +363,9 @@ groups:
     params: "~/FLIR_control/src/flir_spinnaker_camera/config/lidar_driver_params.yaml"
     params_arg: params_file
     topic_regex: "^/ouster/"
+    managed_launch_args:
+      ouster_ns: "params 파일의 노드 키(ouster/os_driver)와 토픽(/ouster/…)이 이 이름을 전제로 합니다"
+      os_driver_name: "params 파일의 노드 키(ouster/os_driver)와 맞아야 파라미터가 적용됩니다"
     discovery:
       kind: ouster_probe
       # 프로브할 주소. params의 sensor_hostname 은 자동으로 여기에 더해진다.
@@ -216,6 +397,11 @@ groups:
         label: "처리 마스크"
         type: string
         help: "IMG|PCL|IMU|SCAN|RAW. RAW 가 있어야 lidar_packets 가 나옵니다 (녹화용)."
+      - target: launch_arg
+        key: viz
+        label: "RViz 창 띄우기"
+        type: bool
+        help: "켜면 드라이버와 같이 rviz2 가 뜬다. 녹화 탭 미리보기로 충분하면 꺼서 CPU/GPU 를 아낀다."
 
   # ---------------------------------------------------------------------------
   # GNSS / INS — OxTS RT2000
@@ -229,6 +415,8 @@ groups:
     params: "~/rt2000_ws/src/oxford_gps_eth/config/gps_params.yaml"
     params_arg: params_file
     topic_regex: "^/gps/"
+    managed_launch_args:
+      namespace: "기동 완료 판정과 녹화 토픽이 /gps/… 를 전제로 합니다"
     discovery:
       kind: ncom_listen
       port: 3000
