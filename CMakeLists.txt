@@ -52,6 +52,8 @@ install(PROGRAMS scripts/clip_launch.sh
 # clip_gui가 import하는 모듈 — 실행 파일이 아니라 .py 확장자를 유지해야 함
 install(FILES scripts/bag_diagnostics.py scripts/net_tools.py scripts/gnss_tools.py
   scripts/map_widget.py
+  scripts/sensor_discovery.py scripts/sensor_config.py scripts/sensor_launcher.py
+  scripts/sensor_stage.py
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY config launch

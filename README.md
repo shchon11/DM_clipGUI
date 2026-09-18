@@ -419,11 +419,17 @@ GUI 자체를 sudo로 띄우지 않는 이유: 클립/설정이 root 소유가 �
 레코더를 조종하는 PyQt5 프론트엔드. 링 버퍼/트리거/저장은 그대로 C++ `clip_recorder`가 하고,
 GUI는 파라미터·토픽으로 조종한다 (GUI가 죽어도 녹화는 안 죽고, 이미 떠 있는 외부 레코더에 붙을 수도 있다).
 
+창은 탭 두 개다 — **[센서 기동]** (§12) 과 **[녹화]**. 센서를 띄우는 것이 먼저이고
+(아직 안 뜬 센서의 토픽은 목록에 있을 수가 없다), 기동이 끝나면 자동으로 녹화 탭으로 넘어가면서
+토픽 선택 창이 열린다. 이미 떠 있는 센서에 그냥 붙으려면 [녹화] 탭 → 파일 → 토픽 선택.
+
 **흐름**
-1. 시작 → **토픽 선택 창**: 현재 토픽이 전부 뜨고, 이전 세션 선택이 체크된 상태. 토픽별 QoS 콤보
+1. **[센서 기동] 탭**: 감지 → 설정 → 기동 (§12).
+2. **토픽 선택 창**: 현재 토픽이 전부 뜨고, 이전 세션 선택이 체크된 상태. 토픽별 QoS 콤보
    (기본 best_effort/volatile, transient_local 퍼블리셔가 감지된 토픽은 자동으로 transient_local).
    프로파일 저장/불러오기 가능. 설정은 `~/.config/dm_clip_gui/last_session.yaml`에 자동 저장.
-2. **메인 창**: 레코더 자동 실행(없을 때), 트리거 버튼 + 단축키(기본 F9, 설정에서 변경), 라벨 입력.
+3. **[녹화] 탭**: 레코더 자동 실행(없을 때), 트리거 버튼 + 단축키(기본 F9, 설정에서 변경), 라벨 입력.
+   맨 위에 센서 상태 한 줄이 계속 떠 있어서, 녹화 중에 센서가 죽으면 여기서 먼저 보인다.
    - 링 버퍼: 메모리/보관 초/유입 + **디스크 여유** (현재 유입 기준 클립 몇 개 더 저장 가능한지, 부족 시 경고)
    - 네트워크: 스위치 업링크 NIC 합계 (x / 10 Gbps) + **송신 IP별** Mbps·포트 사용률·pps.
      카메라는 GigE Vision 디스커버리 + 드라이버 `camera_serial`로 이름이 자동으로 붙고, 그 외 IP는
@@ -432,12 +438,12 @@ GUI는 파라미터·토픽으로 조종한다 (GUI가 죽어도 녹화는 안 �
      `127.0.0.1`/이 PC 주소는 자동으로 "이 PC"로 표시. 5분 이상 조용한 IP는 목록에서 빠진다.
    - GNSS: pos_type / nav_status / fix 상태 / 위치 / 수평정확도 / 위성 수·HDOP(GGA) 실시간.
    - 토픽별 Hz와 대역폭(B/s·KB/s·MB/s 자동 단위), 하단 로그창 (레코더 /rosout + 클립 진행 상황).
-3. **클립 저장 완료 → 자동 진단** (`bag_diagnostics`) → 결과 창 + `<클립>/diagnostics.txt/.json` 저장.
+4. **클립 저장 완료 → 자동 진단** (`bag_diagnostics`) → 결과 창 + `<클립>/diagnostics.txt/.json` 저장.
    GNSS 품질(fix 비율, 정확도, 점프, 공백)도 포함되고 궤적은 `<클립>/gnss_track.json`에 캐시.
-4. **궤적 지도 (누적)**: 여러 클립을 체크해서 OSM 위에 겹쳐 본다. 진단이 끝난 클립은 자동으로 추가·체크.
+5. **궤적 지도 (누적)**: 여러 클립을 체크해서 OSM 위에 겹쳐 본다. 진단이 끝난 클립은 자동으로 추가·체크.
    지도는 인터랙티브(휠 확대/축소, 드래그 이동, 전국~골목 z3~19, 순수 PyQt5 `map_widget.py` — QtWebEngine 불필요).
    타일은 인터넷에서 받아 `~/.cache/dm_clip_gui/tiles`에 캐시 (오프라인이면 캐시된 곳만 보임). PNG 내보내기 가능.
-5. **GNSS · 지도 창** (상태 + 지도 + 클립 궤적이 한 창): 솔루션(pos_type / GGA 품질: RTK FIXED·FLOAT·DGPS·SPS),
+6. **GNSS · 지도 창** (상태 + 지도 + 클립 궤적이 한 창): 솔루션(pos_type / GGA 품질: RTK FIXED·FLOAT·DGPS·SPS),
    위성 수, HDOP, 정확도, 속도, fix 수신율 + 지도에 **현재 위치**와 **pre 구간(pre_sec 초) 궤적** —
    지금 트리거하면 클립에 담길 경로가 주황선으로 보인다. 왼쪽 목록에서 클립을 체크하면 누적 궤적이 같이 표시된다.
    성능: 수신은 10 Hz로 스로틀되고 그리기는 2 Hz 타이머에서만 — RT2000 100 Hz 출력에도 GUI가 막히지 않는다.
@@ -458,6 +464,77 @@ python3 scripts/bag_diagnostics.py clips/clip_XXXX          # 드랍/손상/GNSS
 python3 scripts/gnss_tools.py clips/clip_XXXX --map out.png  # 궤적 지도만
 ```
 
+## 12. 센서 기동 — `[센서 기동]` 탭
+
+리그의 센서 런처가 워크스페이스별로 흩어져 있어서 (카메라는 `~/FLIR_control`, GNSS는 `~/rt2000_ws`,
+라이다는 ROS 언더레이) 터미널을 서너 개 띄워야 했다. 이 탭이 그걸 한 창에 모은다:
+
+```
+감지  ->  설정  ->  기동  ->  (녹화 탭) 토픽 선택  ->  녹화
+```
+
+**감지** — 센서마다 찾는 방법이 다르다. 전부 읽기만 하고 아무것도 바꾸지 않는다.
+
+| 센서 | 방법 |
+|---|---|
+| 가시광 Blackfly / 열화상 A70 | GVCP 디스커버리 브로드캐스트를 **NIC마다** 쏜다 (root 불필요) |
+| Ouster | 설정에 적힌 주소로 TCP 80 연결 → `api/v1/sensor/metadata` 로 시리얼·펌웨어 |
+| GNSS RT2000 | UDP 3000을 잠깐 듣는다 (NCOM 브로드캐스트, 첫 바이트 `0xE7`) |
+
+**Blackfly와 A70은 따로 센다.** 같은 GigE 카메라이고 같은 런치로 뜨지만 모델도 노드맵도 다르므로,
+대수·상태·설정이 전부 갈려 있다 — `열화상 A70 2/2 · 가시광 Blackfly 0/8 (8대 안 보임)` 처럼.
+합쳐서 `2/10` 이라고 하면 어느 쪽이 빠졌는지 안 보인다.
+
+감지 결과는 인벤토리(`multicam_cameras.yaml` / `multicam_thermal_cameras.yaml`)의 시리얼과 대조해
+네 가지로 나온다: `정상` / `설정에 없음`(새로 꽂은 장비) / `안 보임`(전원·케이블) /
+`서브넷 불일치`(ForceIP 필요).
+
+**설정** — 센서군마다 자주 만지는 키만 폼으로 노출한다 (프레임레이트, 노출/게인, A70 `IRFrameRate`·
+`IRFormat`, 라이다 `lidar_mode`·`timestamp_mode`, GNSS 포트 등). 값은 **그 센서군의 모든 카메라에
+일괄 적용**된다 — 런치가 params 파일 하나를 모든 카메라에 먹이는 구조라서 그렇다.
+
+원본 params YAML(`flir_camera.yaml` 등)은 **절대 수정하지 않는다.** 왜 그 값인지가 파일 안 주석에
+기록돼 있는 것들이 있기 때문이다 (`color_processing: ipp`, `buffer_handling_mode` 등).
+대신 원본 전체 + 바꾼 키만 덮어쓴 **사본**을 만들어 런치에 넘긴다:
+
+```
+~/.config/dm_clip_gui/sensors/flir_cameras__visible.yaml
+~/.config/dm_clip_gui/sensors/flir_cameras__thermal.yaml
+~/.config/dm_clip_gui/sensors/ouster.yaml
+~/.config/dm_clip_gui/sensors/gnss_rt2000.yaml
+```
+
+매 기동마다 원본을 다시 읽어 만들므로 리포의 원본이 바뀌면 그대로 따라간다.
+원본과 다른 값은 폼에서 **굵게** 표시되고, 툴팁에 원본 값이 뜬다.
+
+**기동** — 센서군당 자식 프로세스 하나:
+
+```bash
+bash -c 'source <ws1>; source <ws2>; exec ros2 launch <pkg> <launch> arg:=val ...'
+```
+
+- 모든 센서군에 `RMW_IMPLEMENTATION=rmw_fastrtps_cpp`를 강제한다. `~/flir_ouster_ws`는 cyclonedds가
+  기본이라 섞이면 레코더가 토픽을 아예 못 찾는다.
+- **기동 완료 판정**은 "토픽이 하나 떴다"가 아니라 **감지된 대수만큼 네임스페이스가 떴는가**다.
+  카메라는 `camera_start_stagger` 만큼 한 대씩 올라오므로, 첫 대만 보고 완료라고 하면 나머지가
+  아직 Init 중인데 녹화가 시작된다. 90초 안에 못 채우면 `실패`로 표시하고 무엇이 모자란지 로그에 남긴다.
+- 종료는 SIGINT → 5초 후 SIGKILL (`ros2 launch`가 자식 노드를 정리하는 유일한 신호).
+- 카메라는 가시광·열화상이 **한 프로세스**다. 따로 띄우면 양쪽이 `ptp4l`을 각각 올려 같은 NIC에서
+  충돌하고, ForceIP 시퀀스가 동시에 돌아 서로의 IP를 덮어쓴다 (A70 두 대가 같은 IP에 앉아 스트림이
+  죽은 적이 있다). UI의 "띄울 대상" 체크박스가 `enable_visible_cameras` / `enable_thermal_cameras`로 간다.
+- 센서군을 프로세스로 갈라둔 덕에, 라이다가 센서에 못 붙어 `launch.events.Shutdown`을 쏴도
+  그 폭발이 라이다 프로세스 안에 갇힌다 (한 런치에 합치면 카메라까지 같이 죽는다).
+
+**센서 목록을 고치려면** `config/sensors.yaml` 하나만 고친다 — 소싱할 워크스페이스, 런치, 감지 방법,
+폼에 노출할 키가 전부 거기 있다. 코드는 건드릴 필요가 없다.
+
+**단독 실행** (GUI 없이 감지/설정만 확인)
+```bash
+python3 scripts/sensor_discovery.py              # 전체 감지
+python3 scripts/sensor_discovery.py flir_cameras # 센서군 하나만
+python3 scripts/sensor_config.py                 # params 경로 / 런치 인자 확인
+```
+
 ## 파일
 
 ```
@@ -470,9 +547,14 @@ clip_recorder/
 ├── scripts/gnss_tools.py          GNSS 품질 + 궤적 캐시 + PNG 지도
 ├── scripts/map_widget.py          인터랙티브 OSM 슬리피 맵 위젯 (순수 PyQt5)
 ├── scripts/net_tools.py           NIC 통계 + GigE Vision 디스커버리
+├── scripts/sensor_stage.py        [센서 기동] 탭 UI (§12)
+├── scripts/sensor_discovery.py    센서 감지 (GVCP / Ouster TCP / NCOM) — CLI 겸용
+├── scripts/sensor_config.py       원본 params + 오버라이드 -> 생성 params 파일 — CLI 겸용
+├── scripts/sensor_launcher.py     센서군 런치 프로세스 + 기동 완료 판정
 ├── scripts/buffer_probe.py        버퍼 필요량 측정 툴 (ros2 run clip_recorder buffer_probe)
 ├── scripts/clip_trigger.py        키보드 트리거 (ros2 run clip_recorder clip_trigger)
 ├── config/params.yaml             파라미터 (주석 참고)
+├── config/sensors.yaml            센서군 레지스트리 (센서 추가/교체 시 여기만 수정, §12)
 ├── config/fastdds_shm.xml         Fast DDS SHM 프로파일 (대형 이미지 무손실 전송, §10)
 ├── launch/clip_recorder.launch.py
 ├── CMakeLists.txt / package.xml

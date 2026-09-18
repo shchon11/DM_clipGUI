@@ -33,7 +33,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout, QHeaderView, QKeySequenceEdit, QLabel, QLineEdit,
     QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea,
-    QShortcut, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem,
+    QShortcut, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget,
     QTextEdit, QVBoxLayout, QWidget)
 
 import rclpy
@@ -49,6 +49,7 @@ from std_msgs.msg import Header, String
 import bag_diagnostics
 import gnss_tools
 import net_tools
+import sensor_stage
 from map_widget import MapWidget
 
 CONFIG_DIR = Path.home() / ".config" / "dm_clip_gui"
@@ -61,6 +62,9 @@ HIDDEN_TOPICS = ("/rosout", "/parameter_events",
 
 DEFAULT_CFG = {
     "topics": [],           # [{name, type, reliability, durability}]
+    # 센서군별 설정 오버라이드 — sensor_stage/sensor_config 가 읽고 쓴다.
+    #   {group_key: {subsets: {k: bool}, params: {subset: {키: 값}}, launch_args: {}}}
+    "sensors": {},
     "recorder": {
         "pre_sec": 20.0, "post_sec": 10.0, "trigger_slack_sec": 2.0,
         "max_buffer_mb": 16384.0, "queue_depth": 50,
@@ -1292,14 +1296,35 @@ class MainWindow(QMainWindow):
         self.busy_timer = QTimer(self, singleShot=True,
                                  timeout=self._busy_timeout)
 
+        # 센서 기동 중에만 도는 토픽 폴링 (기동 완료 판정)
+        self.sensor_timer = QTimer(self, interval=2000,
+                                   timeout=self._poll_sensor_topics)
+        self.sensor_timer.start()
+        self._refresh_sensor_summary()
+
         self._apply_shortcut()
         QTimer.singleShot(300, self._startup_recorder)
 
     # --- UI 구성 ---
     def _build_ui(self):
-        central = QWidget()
-        self.setCentralWidget(central)
-        v = QVBoxLayout(central)
+        # 1탭 센서 기동 -> 2탭 녹화. 녹화 UI는 예전 그대로이고 탭 안으로만 들어갔다.
+        self.tabs = QTabWidget()
+        self.setCentralWidget(self.tabs)
+
+        self.stage = sensor_stage.SensorStageWidget(self.cfg)
+        self.stage.sig_log.connect(self.log)
+        self.stage.sig_ready.connect(self._on_sensors_ready)
+        self.stage.sig_state.connect(self._refresh_sensor_summary)
+        self.tabs.addTab(self.stage, "센서 기동")
+
+        page = QWidget()
+        self.tabs.addTab(page, "녹화")
+        v = QVBoxLayout(page)
+
+        # 센서 상태 한 줄 — 녹화 중에 센서가 죽으면 여기서 먼저 보인다
+        self.lbl_sensors = QLabel("센서 정지")
+        self.lbl_sensors.setStyleSheet("color:#666;")
+        v.addWidget(self.lbl_sensors)
 
         # 상단: 레코더 상태
         top = QHBoxLayout()
@@ -1433,6 +1458,8 @@ class MainWindow(QMainWindow):
         m_file.addSeparator()
         m_file.addAction("종료", self.close)
         m_tool = self.menuBar().addMenu("도구(&T)")
+        m_tool.addAction("센서 다시 감지", lambda: self.stage.refresh_discovery())
+        m_tool.addSeparator()
         m_tool.addAction("마지막 클립 진단", self._diag_last)
         m_tool.addAction("클립 폴더에서 진단…", self._diag_pick)
         m_tool.addAction("클립 폴더 열기", self._open_clip_dir)
@@ -1452,11 +1479,44 @@ class MainWindow(QMainWindow):
         self.log_view.moveCursor(QTextCursor.End)
 
     # --- 레코더 관리 ---
+    # --- 센서 기동 탭 연동 ---
+
+    def _poll_sensor_topics(self):
+        """기동 완료 판정에 쓸 토픽 목록을 supervisor 에 넘긴다.
+
+        rclpy 노드를 GUI 스레드에서 건드리므로, 기동 중인 센서군이 있을 때만 돈다.
+        다 뜬 뒤에도 계속 폴링할 이유가 없다.
+        """
+        if not self.stage.has_starting():
+            return
+        try:
+            self.stage.set_topics([t["name"] for t in self.worker.list_topics()])
+        except Exception:
+            pass
+
+    def _on_sensors_ready(self):
+        """기동한 센서군이 전부 올라왔다 — 녹화 탭으로 넘기고 토픽을 다시 고르게 한다."""
+        self.log("OK", "센서 기동 완료 — 녹화할 토픽을 선택하세요")
+        self._refresh_sensor_summary()
+        self.tabs.setCurrentIndex(1)
+        QTimer.singleShot(500, self.open_topic_dialog)
+
+    def _refresh_sensor_summary(self):
+        text = self.stage.summary()
+        running = "실행" in text
+        self.lbl_sensors.setText(text)
+        self.lbl_sensors.setStyleSheet(
+            "color:#2e7d32;" if running else "color:#666;")
+
     def _startup_recorder(self):
         if self.worker.recorder_alive():
             self.owns_recorder = False
             self.log("GUI", "외부 clip_recorder 노드에 연결 — 토픽 설정을 적용합니다")
             self._apply_topics_runtime()
+        elif not self.cfg["topics"]:
+            # 예전에는 시작할 때 토픽 선택 창이 먼저 떠서 선택이 보장됐다. 이제는
+            # 센서를 먼저 띄우는 흐름이라, 선택 전에 자동 시작하면 전체 토픽을 녹화한다.
+            self.log("GUI", "녹화할 토픽이 아직 없습니다 — 센서 기동 후 토픽을 선택하세요")
         elif self.cfg["ui"]["auto_start_recorder"]:
             self._start_recorder()
         self._update_alive()
@@ -1976,6 +2036,18 @@ class MainWindow(QMainWindow):
 
     # --- 종료 ---
     def closeEvent(self, ev):
+        if self.stage.supervisor.any_active():
+            answer = QMessageBox.question(
+                self, "센서 종료",
+                "GUI가 띄운 센서가 아직 실행 중입니다. 같이 종료할까요?\n"
+                "(아니오를 누르면 센서는 계속 돕니다)",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                QMessageBox.Yes)
+            if answer == QMessageBox.Cancel:
+                ev.ignore()
+                return
+            if answer == QMessageBox.Yes:
+                self.stage.stop_all()
         save_config(self.cfg)
         if self.diag_thread and self.diag_thread.isRunning():
             self.diag_thread.wait(1000)
@@ -1993,14 +2065,9 @@ def main():
     worker = RosWorker(cfg)
     worker.start()
 
-    # 시작 시 토픽 선택 (이전 세션 선택이 미리 체크된 상태)
-    dlg = TopicDialog(worker, cfg)
-    if dlg.exec_() != QDialog.Accepted:
-        worker.stop()
-        return 0
-    cfg["topics"] = dlg.selected()
-    save_config(cfg)
-
+    # 예전에는 여기서 토픽 선택 창이 먼저 떴다. 이제는 센서를 띄우는 것이 먼저이고
+    # (아직 안 뜬 센서의 토픽은 목록에 없다), 기동이 끝나면 자동으로 선택 창이 열린다.
+    # 이미 떠 있는 센서에 붙어 바로 녹화하려면 [녹화] 탭 -> 파일 -> 토픽 선택.
     win = MainWindow(worker, cfg)
     win.show()
     rc = app.exec_()

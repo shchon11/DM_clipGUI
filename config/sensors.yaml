@@ -1,0 +1,258 @@
+# sensors.yaml — 센서군 레지스트리.
+#
+# GUI의 "센서 기동" 탭이 읽는 유일한 소스. 센서를 추가/교체하면 코드가 아니라 이 파일을 고친다.
+#
+# 각 센서군(group)은 세 가지를 선언한다:
+#   discovery : 그 센서를 네트워크에서 어떻게 찾는가
+#   launch    : 어떤 워크스페이스를 소싱해 어떤 런치를 띄우는가
+#   fields    : GUI 폼에 노출할 설정 키 (원본 params YAML의 키 또는 런치 인자)
+#
+# 원본 params YAML은 절대 수정하지 않는다. 폼에서 바꾼 키만 덮어쓴 사본을
+# ~/.config/dm_clip_gui/sensors/<group>.yaml 로 생성해 런치에 넘긴다.
+#
+# 경로의 ~ 는 확장된다. 존재하지 않는 워크스페이스/파일은 GUI가 그 센서군을 "설정 없음"으로
+# 표시하고 기동 버튼을 잠근다 (죽지 않는다).
+
+groups:
+
+  # ---------------------------------------------------------------------------
+  # FLIR 카메라 — 가시광 Blackfly + 열화상 A70. 프로세스는 하나다.
+  #
+  # UI에는 두 줄로 보이지만 multicam.launch.py 한 번으로 둘 다 띄운다. 따로 띄우면
+  #   1) 양쪽이 ptp4l을 각각 띄워 같은 NIC에서 충돌하고
+  #   2) ForceIP 시퀀스가 동시에 돌아 서로의 IP를 덮어쓴다
+  # 2번은 실제로 A70 두 대가 같은 192.168.1.12에 앉아 스트림이 죽은 적이 있다.
+  # ---------------------------------------------------------------------------
+  - key: flir_cameras
+    label: "FLIR 카메라"
+    workspaces:
+      - "~/FLIR_control/scripts/setup_flir_env.bash"
+      - "~/FLIR_control/install/setup.bash"
+    launch_package: flir_spinnaker_camera
+    launch_file: multicam.launch.py
+    # 카메라 노드의 camera_info.yaml_path / extrinsics_yaml_path 는 리포 루트 기준
+    # 상대 경로라 CWD가 리포 루트여야 한다. 아니면 "Failed to open camera_info YAML file".
+    workdir: "~/FLIR_control"
+    # 기동 완료 판정에 쓰는 토픽 정규식 (하나라도 뜨면 그 subset은 올라온 것)
+    subsets:
+      - key: visible
+        label: "가시광 Blackfly"
+        model_patterns: ["Blackfly"]
+        enable_arg: enable_visible_cameras
+        inventory: "~/FLIR_control/src/flir_spinnaker_camera/config/multicam_cameras.yaml"
+        params: "~/FLIR_control/src/flir_spinnaker_camera/config/flir_camera.yaml"
+        params_arg: params_file
+        topic_regex: "^/camera_[a-z0-9_]+/"
+      - key: thermal
+        label: "열화상 A70"
+        model_patterns: ["FLIR A70", "FLIR A50"]
+        enable_arg: enable_thermal_cameras
+        inventory: "~/FLIR_control/src/flir_spinnaker_camera/config/multicam_thermal_cameras.yaml"
+        params: "~/FLIR_control/src/flir_spinnaker_camera/config/thermal_camera.yaml"
+        params_arg: thermal_params_file
+        topic_regex: "^/thermal[0-9]+/"
+    discovery:
+      kind: gvcp
+      nics: []          # 비우면 UP 상태인 모든 물리 NIC을 훑는다
+
+    fields:
+      # --- 가시광 (flir_camera.yaml) ---
+      - subset: visible
+        key: "camera.AcquisitionFrameRate"
+        label: "프레임레이트"
+        type: float
+        min: 1.0
+        max: 60.0
+        step: 1.0
+        unit: "Hz"
+        default: 30.0
+        # 이 키는 원본 YAML에 주석 처리되어 있다 (자유 실행). 값을 지정하면
+        # AcquisitionFrameRateEnable 도 같이 켜야 카메라가 받아들인다.
+        implies: {"camera.AcquisitionFrameRateEnable": true}
+        optional: true
+        help: "끄면 카메라가 노출/전송이 허용하는 최대 속도로 자유 실행합니다."
+      - subset: visible
+        key: "camera.ExposureAuto"
+        label: "노출 auto"
+        type: enum
+        choices: ["Off", "Once", "Continuous"]
+      - subset: visible
+        key: "camera.ExposureTime"
+        label: "노출 시간"
+        type: float
+        min: 10.0
+        max: 100000.0
+        step: 500.0
+        unit: "µs"
+        enabled_when: {"camera.ExposureAuto": "Off"}
+      - subset: visible
+        key: "camera.GainAuto"
+        label: "게인 auto"
+        type: enum
+        choices: ["Off", "Once", "Continuous"]
+      - subset: visible
+        key: "camera.Gain"
+        label: "게인"
+        type: float
+        min: 0.0
+        max: 40.0
+        step: 0.5
+        unit: "dB"
+        optional: true
+        enabled_when: {"camera.GainAuto": "Off"}
+      - subset: visible
+        key: "publish_rgb_compressed"
+        label: "RGB 압축 발행"
+        type: bool
+      - subset: visible
+        key: "rgb_jpeg_quality"
+        label: "JPEG 품질"
+        type: int
+        min: 1
+        max: 100
+        step: 5
+      - subset: visible
+        key: "publish_raw"
+        label: "image_raw 발행"
+        type: bool
+        help: "8대 × 1920×1200 raw 는 대역폭이 큽니다. 보통 압축본만 씁니다."
+
+      # --- 열화상 (thermal_camera.yaml) ---
+      #
+      # A70은 Blackfly와 노드맵이 다르다: Exposure/Gain이 없고 프레임레이트는
+      # 실수가 아니라 열거형(IRFrameRate)이다.
+      - subset: thermal
+        key: "camera.IRFrameRate"
+        label: "프레임레이트"
+        type: enum
+        choices: ["Rate30Hz", "Rate15Hz", "Rate8Hz"]
+      - subset: thermal
+        key: "camera.IRFormat"
+        label: "출력 포맷"
+        type: enum
+        choices: ["TemperatureLinear10mK", "TemperatureLinear100mK", "Radiometric"]
+        help: "TemperatureLinear10mK: mono16 값 × 0.01 = 켈빈."
+      - subset: thermal
+        key: "camera.NUCMode"
+        label: "NUC (셔터 보정)"
+        type: enum
+        choices: ["Automatic", "Manual"]
+      - subset: thermal
+        key: "publish_raw"
+        label: "image_raw 발행"
+        type: bool
+
+      # --- 런치 인자 (params 파일이 아니라 ros2 launch 인자) ---
+      - target: launch_arg
+        key: camera_start_stagger
+        label: "카메라 순차 기동 간격"
+        type: float
+        min: 0.0
+        max: 20.0
+        step: 0.5
+        unit: "s"
+        default: 3.0
+        help: "GigE 카메라는 한 번에 하나만 Read/Write 접근을 얻습니다. 0이면 동시 Init이 서로 밀어냅니다."
+      - target: launch_arg
+        key: ptp_master_interface
+        label: "PTP grandmaster NIC"
+        type: string
+        default: "enp3s0f1"
+        help: "비우면 ptp4l을 띄우지 않습니다 (외부에서 이미 돌고 있을 때)."
+      - target: launch_arg
+        key: auto_apply_force_ip
+        label: "기동 시 ForceIP 재할당"
+        type: bool
+        default: false
+        danger: true
+        help: "기본 끔. A70에서 두 대가 같은 IP로 겹친 전례가 있습니다. 서브넷 불일치가 감지될 때만 켜세요."
+      - target: launch_arg
+        key: publish_extrinsics_tf
+        label: "리그 extrinsics TF 발행"
+        type: bool
+        default: true
+        help: "캘리브레이션 전 카메라는 identity(0 0 0)로 발행됩니다."
+
+  # ---------------------------------------------------------------------------
+  # Ouster LiDAR
+  # ---------------------------------------------------------------------------
+  - key: ouster
+    label: "Ouster LiDAR"
+    workspaces:
+      - "/opt/ros/humble/setup.bash"
+    launch_package: ouster_ros
+    launch_file: driver.launch.py
+    params: "~/FLIR_control/src/flir_spinnaker_camera/config/lidar_driver_params.yaml"
+    params_arg: params_file
+    topic_regex: "^/ouster/"
+    discovery:
+      kind: ouster_probe
+      # 프로브할 주소. params의 sensor_hostname 은 자동으로 여기에 더해진다.
+      hosts: []
+      port: 80
+      timeout_s: 3.0
+
+    fields:
+      - key: "sensor_hostname"
+        label: "센서 주소"
+        type: string
+        help: "IP 또는 os-<serial>.local."
+      - key: "lidar_mode"
+        label: "해상도 / 회전수"
+        type: enum
+        choices: ["", "512x10", "512x20", "1024x10", "1024x20", "2048x10", "4096x5"]
+        help: "빈 값이면 센서의 현재 모드를 그대로 씁니다."
+      - key: "timestamp_mode"
+        label: "타임스탬프 기준"
+        type: enum
+        choices: ["TIME_FROM_ROS_TIME", "TIME_FROM_INTERNAL_OSC",
+                  "TIME_FROM_SYNC_PULSE_IN", "TIME_FROM_PTP_1588"]
+        help: "TIME_FROM_ROS_TIME 이어야 카메라 header.stamp 와 같은 시계를 씁니다."
+      - key: "udp_profile_lidar"
+        label: "UDP 프로파일"
+        type: enum
+        choices: ["", "LEGACY", "RNG19_RFL8_SIG16_NIR16", "RNG15_RFL8_NIR8"]
+      - key: "proc_mask"
+        label: "처리 마스크"
+        type: string
+        help: "IMG|PCL|IMU|SCAN|RAW. RAW 가 있어야 lidar_packets 가 나옵니다 (녹화용)."
+
+  # ---------------------------------------------------------------------------
+  # GNSS / INS — OxTS RT2000
+  # ---------------------------------------------------------------------------
+  - key: gnss_rt2000
+    label: "GNSS RT2000"
+    workspaces:
+      - "~/rt2000_ws/install/setup.bash"
+    launch_package: oxford_gps_eth
+    launch_file: gps.launch.py
+    params: "~/rt2000_ws/src/oxford_gps_eth/config/gps_params.yaml"
+    params_arg: params_file
+    topic_regex: "^/gps/"
+    discovery:
+      kind: ncom_listen
+      port: 3000
+      timeout_s: 2.0
+
+    fields:
+      - key: "port"
+        label: "NCOM 포트"
+        type: int
+        min: 1
+        max: 65535
+        step: 1
+        help: "OxTS 기본 3000."
+      - key: "interface"
+        label: "수신 인터페이스"
+        type: string
+        help: "비우면 전체. 지정하면 SO_BINDTODEVICE 라 CAP_NET_RAW 가 필요합니다."
+      - key: "frame_id_gps"
+        label: "GPS frame_id"
+        type: string
+      - key: "use_gps_time"
+        label: "GPS 시각으로 스탬프"
+        type: bool
+        help: "끄면 시스템 시계. 카메라/라이다와 맞추려면 끈 상태가 맞습니다."
+      - key: "publish_imu_when_not_ready"
+        label: "초기화 중에도 IMU 발행"
+        type: bool
