@@ -25,6 +25,7 @@ import bisect
 import collections
 import json
 import math
+import re
 import sqlite3
 import statistics
 import struct
@@ -1015,8 +1016,86 @@ def analyze(bag_dir, progress=None, hold=None):
         rep["lidar_phase"] = _lidar_phase(data, topics)
     except Exception as e:                       # 보조 측정 — 실패해도 진단 전체를 막지 않되 이유는 남긴다
         rep["lidar_phase"] = {"error": f"촬영 때 라이다 각도 측정 실패: {type(e).__name__}: {e}", "cams": {}}
+    try:
+        rep["nodes"] = _node_logs(bag_t0, bag_t1)
+    except Exception as e:                       # 로그가 없거나 못 읽어도 진단 전체를 막지 않는다
+        rep["nodes"] = {"error": f"{type(e).__name__}: {e}"}
     rep["summary"] = summarize(rep)
     return rep
+
+
+NODE_LOG_DIR = Path.home() / ".ros" / "log"
+_STATS_LINE = re.compile(
+    r"\[(\d{10})\.\d+\] \[([A-Za-z_0-9]+)\.flir_camera\]: stream_stats: (.*)")
+_LINK_LINE = re.compile(
+    r"\[(\d{10})\.\d+\] \[([A-Za-z_0-9]+)\.flir_camera\]: Link: (.*)")
+_NODE_ISSUES = (
+    ("Incomplete image", "불완전 프레임 (경고는 5초에 한 번만 찍힘)"),
+    ("Frame info did not advance", "프레임 정보가 이전 프레임 값으로 옴 (leader 패킷 유실)"),
+    ("Host clock moved", "PC 시계가 카메라 시계 대비 튐"),
+    ("not in effect after startup", "기동 설정이 카메라에 안 먹음"),
+    ("Re-applied", "카메라가 되돌린 설정을 다시 적용함"),
+)
+
+
+def _node_logs(bag_t0, bag_t1):
+    """녹화 구간에 카메라 노드가 남긴 수신 상태 — bag 에 없는 정보다 (토픽으로 안 내보낸다).
+
+    노드는 stream_stats.interval_sec 마다 'stream_stats: frames=… incomplete=… missed_packets=…' 를 한 줄
+    찍는다. 여기서 그 줄들을 녹화 구간만 모아 카메라별로 합친다. 로그가 지워졌으면 빈 결과.
+    """
+    t0, t1 = bag_t0 / NS, bag_t1 / NS
+    cams, issues, files = {}, collections.Counter(), 0
+    if not NODE_LOG_DIR.is_dir():
+        return {}
+    for path in NODE_LOG_DIR.glob("flir_spinnaker_camera_node_*.log"):
+        try:
+            started = int(path.name.rsplit("_", 1)[1].split(".")[0]) / 1000.0
+            if started > t1 + 1 or path.stat().st_mtime < t0 - 1:
+                continue                                  # 이 녹화 구간과 안 겹치는 실행
+            body = path.read_text(errors="replace")
+        except (OSError, ValueError, IndexError):
+            continue
+        files += 1
+        for line in body.splitlines():
+            m = _STATS_LINE.search(line)
+            if m and t0 <= int(m.group(1)) <= t1:
+                cam = cams.setdefault(m.group(2), {"frames": 0, "incomplete": 0, "stale": 0, "samples": 0})
+                fields = dict(kv.split("=", 1) for kv in m.group(3).split() if "=" in kv)
+                cam["samples"] += 1
+                for key, field in (("frames", "frames"), ("incomplete", "incomplete"), ("stale", "stale")):
+                    try:
+                        cam[key] += int(fields.get(field, 0))
+                    except ValueError:
+                        pass
+                for field in ("missed_packets", "resend_req", "resent", "stream_lost", "input_buffers"):
+                    try:
+                        value = int(fields.get(field, -1))
+                    except ValueError:
+                        continue
+                    if value >= 0:                        # 누적 카운터 — 구간의 처음과 끝만 본다
+                        cam.setdefault("first_" + field, value)
+                        cam["last_" + field] = value
+                for field in ("limit_MBps", "packet", "mtu", "nic"):
+                    if field in fields:
+                        cam[field] = fields[field]
+                continue
+            m = _LINK_LINE.search(line)
+            if m and t0 - 600 <= int(m.group(1)) <= t1:    # 기동 줄은 녹화보다 앞설 수 있다
+                cams.setdefault(m.group(2), {"frames": 0, "incomplete": 0, "stale": 0, "samples": 0})
+                cams[m.group(2)]["link"] = m.group(3).rstrip(".")
+                continue
+            for needle, label in _NODE_ISSUES:
+                if needle in line:
+                    m2 = re.search(r"\[(\d{10})\.\d+\]", line)
+                    if m2 and t0 <= int(m2.group(1)) <= t1:
+                        issues[label] += 1
+    for cam in cams.values():
+        for field in ("missed_packets", "resend_req", "resent", "stream_lost"):
+            first, last = cam.pop("first_" + field, None), cam.pop("last_" + field, None)
+            if first is not None and last is not None:
+                cam[field] = last - first
+    return {"cameras": cams, "issues": dict(issues), "log_files": files}
 
 
 def _gnss_section(bag_dir, topics, progress):
@@ -1497,6 +1576,30 @@ def render_text(rep):
                     L.append(f"         {k}: {q[k]}")
             for n in q.get("notes", []):
                 L.append(f"         - {n}")
+
+    nodes = rep.get("nodes") or {}
+    cams = nodes.get("cameras") or {}
+    issues = nodes.get("issues") or {}
+    if cams or issues:
+        L += ["", "======== 카메라 수신 상태 (노드 로그, bag 에 없는 정보) ========", ""]
+    if cams:
+        L.append(f"  {'카메라':<18}{'프레임':>8}{'불완전':>8}{'옛정보':>8}{'놓친패킷':>10}{'재전송':>9}  링크")
+        for cam, c in sorted(cams.items()):
+            link = c.get("link") or (f"{c.get('limit_MBps', '?')} MB/s, MTU {c.get('mtu', '?')}"
+                                     if c.get("limit_MBps") else "")
+            L.append(f"  {cam:<18}{c['frames']:>8}{c['incomplete']:>8}{c['stale']:>8}"
+                     f"{c.get('missed_packets', -1):>10}{c.get('resent', -1):>9}  {link}")
+        L.append("")
+    for label, n in sorted(issues.items(), key=lambda kv: -kv[1]):
+        L.append(f"  · {label}: {n}회")
+    if cams:
+        L += ["", "  (노드가 stream_stats.interval_sec 마다 남기는 줄을 녹화 구간만 모은 것. -1 은 카메라가 그 값을 "
+                  "안 주는 경우)"]
+    elif issues:
+        L += ["", f"  이 구간엔 stream_stats 줄이 없어 개수는 위 경고 수뿐입니다 (노드가 옛 버전이거나 "
+                  "stream_stats.interval_sec=0). 경고는 5초에 한 번만 찍히므로 실제로는 더 많습니다."]
+    elif nodes.get("log_files"):
+        L += ["", f"  카메라 노드 로그 {nodes['log_files']}개를 봤지만 이 구간에 남은 수신 상태 기록이 없습니다"]
     return "\n".join(L)
 
 

@@ -166,6 +166,65 @@ def all_argv():
                 continue
 
 
+def status_summary():
+    """GUI 가 쓰는 구조화된 상태 — 화면에 찍지 않고 돌려준다 (sudo 없이 되는 것만).
+
+    {"level": "ok|warn|fail", "headline": str, "items": [(level, text), …]}
+    report() 와 같은 체인을 보지만, GUI 는 "지금 이 센서를 켜도 되나" 만 알면 되므로 짧게 줄였다.
+    """
+    items = []
+
+    def add(level, text):
+        items.append((level, text))
+
+    if not unit_active("ptp-orin"):
+        add("fail", "PC 가 Orin 의 PTP 를 안 받고 있습니다 (ptp-orin 서비스 꺼짐) — 터미널에서 ptp")
+    else:
+        lines = journal("ptp-orin", 20)
+        offs = offsets(lines, r"master offset\s+(-?\d+)\s+(s\d)")
+        state = ptp_state(journal("ptp-orin", 3600))
+        if offs and all(abs(o) < PTP_OFFSET_OK_NS and st == "s2" for o, st in offs[-SETTLE_SAMPLES:]):
+            add("ok", f"Orin → PC 맞춰짐 (오차 {abs(offs[-1][0]) / 1000:.1f} µs)")
+        else:
+            add("fail", f"Orin → PC 가 아직 안 맞음 (상태 {state or '?'}, "
+                        f"최근 오차 {[o for o, _ in offs[-2:]] or '없음'} ns)")
+
+    if not unit_active("phc2sys-orin"):
+        add("fail", "PC 시스템 시계가 PTP 에 안 묶여 있습니다 (phc2sys-orin 꺼짐) — 기록되는 시각이 틀어집니다")
+    else:
+        offs = offsets(journal("phc2sys-orin", 20), r"CLOCK_REALTIME phc offset\s+(-?\d+)\s+(s\d)")
+        if offs and all(abs(o) < PHC2SYS_OFFSET_OK_NS and st == "s2" for o, st in offs[-SETTLE_SAMPLES:]):
+            add("ok", f"PC 시계 맞춰짐 (오차 {abs(offs[-1][0]) / 1000:.1f} µs)")
+        else:
+            add("warn", f"PC 시계가 아직 안 맞음 (최근 오차 {[o for o, _ in offs[-2:]] or '없음'} ns)")
+
+    if run(["timedatectl", "show", "-p", "NTP", "--value"], quiet=True).stdout.strip() == "yes":
+        add("fail", "NTP 가 켜져 있어 phc2sys 와 시스템 시계를 두고 싸웁니다 — ptp 로 끄세요")
+
+    procs = processes()
+    stray = [(pid, argv) for pid, argv in procs if unit_of(pid) not in UNITS and "/tmp/ptp4l-flir" not in argv]
+    for pid, argv in stray:
+        add("fail", f"서비스 밖에서 도는 ptp4l (pid {pid}) — 시계를 두고 싸웁니다: {' '.join(argv[:4])}")
+    if any("/tmp/ptp4l-flir" in a for _, a in procs):
+        add("ok", "카메라용 ptp4l 이 돌고 있습니다 (센서 실행 중)")
+
+    nic = Path(f"/sys/class/net/{CAMERA_NIC}")
+    try:
+        carrier = (nic / "carrier").read_text().strip() == "1"
+    except OSError:
+        carrier = False
+    if not carrier:
+        add("fail", f"{CAMERA_NIC} 링크 없음 — 카메라 스위치 전원 · SFP+ 확인")
+    elif (nic / "mtu").read_text().strip() != "9000":
+        add("fail", f"{CAMERA_NIC} MTU {(nic / 'mtu').read_text().strip()} — 9000 이어야 영상 패킷이 안 버려집니다")
+
+    level = "fail" if any(l == "fail" for l, _ in items) else (
+        "warn" if any(l == "warn" for l, _ in items) else "ok")
+    headline = {"ok": "PTP 정상", "warn": "PTP 확인 필요", "fail": "PTP 문제"}[level]
+    first_bad = next((t for l, t in items if l == level and level != "ok"), "")
+    return {"level": level, "headline": headline + (f" — {first_bad}" if first_bad else ""), "items": items}
+
+
 def report(ask_sudo=True):
     """체인 전체 점검. 문제 없으면 True."""
     good = True

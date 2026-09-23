@@ -84,7 +84,7 @@ DEFAULT_CFG = {
         "record_cache_mb": 256.0,
     },
     "ui": {
-        "shortcut": "F9", "auto_diagnose": True, "auto_start_recorder": True,
+        "shortcut": "F9", "record_shortcut": "F10", "auto_diagnose": True, "auto_start_recorder": True,
         "default_reliability": "best_effort", "default_durability": "volatile",
         # 네트워크: 스위치 업링크 NIC ("auto" = 가장 빠른 UP 인터페이스),
         # 장치(카메라/라이다) 쪽 포트 링크 속도, IP→이름 수동 별칭 (라이다 등)
@@ -100,6 +100,9 @@ DEFAULT_CFG = {
 
 GGA_QUALITY = {0: "INVALID", 1: "GPS (SPS)", 2: "DGPS", 3: "PPS", 4: "RTK FIXED",
                5: "RTK FLOAT", 6: "DR (추측항법)", 7: "MANUAL", 8: "SIMULATION"}
+# 녹화 버튼 높이 — 운행 중에 눈으로 찾아 누르는 버튼이라 크게 (2026-09-24 요청: "위아래로 작아서 눈에 잘 안 띈다")
+RECORD_BUTTON_H = 76
+
 ROSOUT_LEVELS = {10: "DEBUG", 20: "INFO", 30: "WARN", 40: "ERROR", 50: "FATAL"}
 # 녹화 탭 로그는 센서 기동 탭처럼 어두운 배경(#0f172a)이라 밝은 톤을 쓴다. INFO 는 기본 글자색.
 LOG_COLORS = {"INFO": None, "DEBUG": "#94a3b8", "WARN": "#fbbf24",
@@ -1295,6 +1298,7 @@ class SettingsDialog(QDialog):
         self.storage.addItems(["sqlite3", "mcap"])
         self.storage.setCurrentText(rec["storage_id"])
         self.key = QKeySequenceEdit(QKeySequence(ui["shortcut"]))
+        self.key_rec = QKeySequenceEdit(QKeySequence(ui.get("record_shortcut", "F10")))
         self.auto_diag = QCheckBox("녹화가 끝나면 자동 진단 (클립 · 수동 녹화)")
         self.auto_diag.setChecked(ui["auto_diagnose"])
         self.auto_start = QCheckBox("시작 시 레코더 자동 실행 (외부 노드 없을 때)")
@@ -1311,7 +1315,8 @@ class SettingsDialog(QDialog):
         form.addRow("queue_depth", self.qd)
         form.addRow("저장 경로", dir_row)
         form.addRow("스토리지", self.storage)
-        form.addRow("트리거 단축키", self.key)
+        form.addRow("클립 단축키", self.key)
+        form.addRow("수동 녹화 단축키", self.key_rec)
         form.addRow(self.auto_diag)
         form.addRow(self.auto_start)
         nic_note = QLabel("UP 유선 NIC 전부 자동 감시 — USB 어댑터를 꽂으면 자동 인식")
@@ -1343,6 +1348,7 @@ class SettingsDialog(QDialog):
                    output_dir=self.outdir.text(),
                    storage_id=self.storage.currentText())
         ui.update(shortcut=self.key.keySequence().toString() or "F9",
+                  record_shortcut=self.key_rec.keySequence().toString() or "F10",
                   auto_diagnose=self.auto_diag.isChecked(),
                   auto_start_recorder=self.auto_start.isChecked(),
                   per_ip_link_mbps=self.ip_link.value())
@@ -1668,6 +1674,7 @@ class MainWindow(QMainWindow):
         self._refresh_sensor_summary()
 
         self._apply_shortcut()
+        QTimer.singleShot(3000, self._check_undiagnosed)
         QTimer.singleShot(300, self._startup_recorder)
 
     # --- UI 구성 ---
@@ -1828,7 +1835,7 @@ class MainWindow(QMainWindow):
         # 저장 위치 — 누르면 폴더 선택. 설정에 바로 저장돼 GUI 를 다시 켜도 유지되고,
         # 떠 있는 레코더에도 바로 알려 다음 클립·녹화부터 새 위치에 쓴다.
         self.btn_outdir = QPushButton()
-        self.btn_outdir.setMinimumHeight(56)
+        self.btn_outdir.setMinimumHeight(RECORD_BUTTON_H)
         self.btn_outdir.setMaximumWidth(260)
         self.btn_outdir.clicked.connect(self.pick_output_dir)
         h.addWidget(self.btn_outdir)
@@ -1838,9 +1845,9 @@ class MainWindow(QMainWindow):
             placeholderText="클립·녹화 폴더명에 붙일 라벨 (선택)")
         h.addWidget(self.label_edit, 1)
         self.btn_trigger = QPushButton()
-        self.btn_trigger.setMinimumHeight(56)
+        self.btn_trigger.setMinimumHeight(RECORD_BUTTON_H)
         f = self.btn_trigger.font()
-        f.setPointSize(13)
+        f.setPointSize(15)
         f.setBold(True)
         self.btn_trigger.setFont(f)
         self.btn_trigger.setStyleSheet(
@@ -1850,8 +1857,12 @@ class MainWindow(QMainWindow):
         self.btn_trigger.clicked.connect(self.trigger_clip)
         h.addWidget(self.btn_trigger, 1)
         self.btn_record = QPushButton()
-        self.btn_record.setMinimumHeight(56)
+        self.btn_record.setMinimumHeight(RECORD_BUTTON_H)
         self.btn_record.setFont(f)
+        self.btn_record.setStyleSheet(
+            "QPushButton {background:#1f2937; color:white; border:none; border-radius:8px;}"
+            "QPushButton:hover {background:#111827;}"
+            "QPushButton:disabled {background:#d1d5db; color:#f9fafb;}")
         self.btn_record.setToolTip(
             "수동 녹화: 누른 때부터 다시 누를 때까지 선택한 토픽을 전부 bag 하나로 씁니다 "
             "(rec_<시각>[_라벨], 중간에 나누지 않음).\n클립과 같은 구독을 쓰므로 센서 쪽 부하는 "
@@ -1929,6 +1940,7 @@ class MainWindow(QMainWindow):
         m_tool.addAction("센서 다시 감지", lambda: self.stage.refresh_discovery())
         m_tool.addSeparator()
         m_tool.addAction("마지막 녹화 진단 (클립 · 수동)", self._diag_last)
+        m_tool.addAction("진단 안 된 녹화 모두 진단…", self._diag_missing)
         m_tool.addAction("폴더를 골라 진단…", self._diag_pick)
         m_tool.addAction("클립 폴더 열기", self._open_clip_dir)
         m_tool.addSeparator()
@@ -2504,6 +2516,15 @@ class MainWindow(QMainWindow):
             self._shortcut = QShortcut(QKeySequence(key), self)
             self._shortcut.setContext(Qt.ApplicationShortcut)
             self._shortcut.activated.connect(self.trigger_clip)
+        # 수동 녹화도 손을 떼지 않고 시작 · 중지할 수 있게 (버튼 글자에 키를 같이 보여준다)
+        rec_key = self.cfg["ui"].get("record_shortcut", "F10")
+        if hasattr(self, "_record_shortcut"):
+            self._record_shortcut.setKey(QKeySequence(rec_key))
+        else:
+            self._record_shortcut = QShortcut(QKeySequence(rec_key), self)
+            self._record_shortcut.setContext(Qt.ApplicationShortcut)
+            self._record_shortcut.activated.connect(self.toggle_recording)
+        self._tick_recording()
         rec = self.cfg["recorder"]
         self.btn_trigger.setToolTip(f"사건 순간 앞 {rec['pre_sec']:g}초 + 뒤 {rec['post_sec']:g}초를 "
                                     "clip_<시각>[_라벨] 로 씁니다 (길이는 설정 창의 pre/post).\n"
@@ -2721,8 +2742,9 @@ class MainWindow(QMainWindow):
 
     def _tick_recording(self):
         rec = self.recording
+        key = self.cfg["ui"].get("record_shortcut", "F10")
         if not rec:
-            self.btn_record.setText("⏺  수동 녹화")
+            self.btn_record.setText(f"⏺  수동 녹화  ({key})")
             self.lbl_rec.hide()
             return
         sec = time.time() - rec["t0"]
@@ -2731,7 +2753,7 @@ class MainWindow(QMainWindow):
         if rec.get("closing"):
             self.btn_record.setText("파일 닫는 중…")
         else:
-            self.btn_record.setText(f"■  녹화 중지   {clock}")
+            self.btn_record.setText(f"■  녹화 중지  ({key})   {clock}")
         self.lbl_rec.setText(f"● 수동 녹화 중  {Path(rec['uri']).name}  ·  {clock}  ·  {gb:.1f} GB"
                              + (f"  ·  {self._last_rate:.0f} MB/s" if self._last_rate else ""))
         self.lbl_rec.show()
@@ -2833,6 +2855,43 @@ class MainWindow(QMainWindow):
             self.run_diagnostics(self.last_clip)
         else:
             self._diag_pick()
+
+    def _undiagnosed(self):
+        """진단 결과가 없는 녹화 폴더 (오래된 것부터). 아직 쓰는 중인 녹화는 metadata.yaml 이 없어 빠진다."""
+        root = Path(self.cfg["recorder"]["output_dir"]).expanduser()
+        if not root.is_dir():
+            return []
+        return sorted((d for d in root.iterdir()
+                       if d.is_dir() and (d / "metadata.yaml").is_file()
+                       and not (d / "diagnostics.json").is_file()),
+                      key=lambda d: d.name)
+
+    def _diag_missing(self):
+        """진단이 빠진 녹화를 차례로 진단한다 — 자동 진단을 꺼 뒀거나, GUI 를 진단 전에 닫았거나,
+        예전 GUI 가 '진단 도는 중에 끝난 녹화' 를 버렸을 때 생긴 구멍을 메운다."""
+        missing = self._undiagnosed()
+        if not missing:
+            QMessageBox.information(self, "진단", "진단이 빠진 녹화가 없습니다.")
+            return
+        names = "\n".join(f"  · {d.name}" for d in missing[:10])
+        more = f"\n  … 외 {len(missing) - 10}건" if len(missing) > 10 else ""
+        if QMessageBox.question(
+                self, "진단 안 된 녹화",
+                f"진단 결과가 없는 녹화 {len(missing)}건을 차례로 진단할까요?\n"
+                f"큰 녹화는 한 건에 몇 분씩 걸리고, 그동안에도 녹화 · 클립은 계속됩니다.\n\n{names}{more}",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) != QMessageBox.Yes:
+            return
+        for d in missing:
+            self.run_diagnostics(d)
+
+    def _check_undiagnosed(self):
+        """시작할 때 한 번 — 진단이 빠진 녹화가 있으면 로그에 알린다 (조용히 넘어가지 않게)."""
+        if not self.cfg["ui"].get("auto_diagnose", True):
+            self.log("WARN", "자동 진단이 꺼져 있습니다 — 녹화 패널의 '진단 끄기(수집만)' 체크를 풀면 다시 돕니다")
+        missing = self._undiagnosed()
+        if missing:
+            self.log("WARN", f"진단 결과가 없는 녹화 {len(missing)}건 (가장 오래된 것: {missing[0].name}) — "
+                             "[도구 ▸ 진단 안 된 녹화 모두 진단…]")
 
     def _diag_pick(self):
         d = QFileDialog.getExistingDirectory(

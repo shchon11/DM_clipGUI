@@ -14,12 +14,13 @@
 import json
 import sys
 
-from PyQt5.QtCore import QProcess, Qt, QTimer
+from PyQt5.QtCore import QProcess, Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QHBoxLayout, QLabel, QPushButton, QSpinBox, QTableWidget,
+    QAbstractItemView, QFrame, QHBoxLayout, QLabel, QPushButton, QSpinBox, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget)
 
+import sensor_config
 import sensor_launcher
 import ui_theme
 from sensor_discovery import expand
@@ -176,6 +177,107 @@ def _grid_verdict(grid, stamp):
         return OK, (text + f" — 펄스가 격자 위에 있다. '트리거 격자 스냅' 을 {grid['hz']:g} 으로 켜도 된다" + note)
     return OK, (text + f" — 펄스가 격자에서 일정하게 {phase:+.2f} ms 밀려 있다. timestamp.trigger_grid_offset_ns 를 "
                 f"{round(phase * 1e6)} 로 두고 스냅을 켤 수 있다 (래치 측정 오차 1 ms 미만 포함)" + note)
+
+
+# ---------- PTP 상태 줄 (센서가 PTP 에 기댈 때만) ----------
+#
+# dm 이 터미널에서 ptp 점검을 하고 물어보던 것을 GUI 안으로 옮긴 것이다 (2026-09-24 요청: 실행을 막지 말고,
+# PTP 에 기대는 센서를 켤 때 GUI 에서 바로 보이게). 판정 내용은 ptp_setup.status_summary() 가 만든다 — 터미널의
+# ptp status 와 같은 체인을 본다.
+
+def ptp_reasons(group, overrides):
+    """이 센서군이 PTP 에 기대고 있는 이유들. 안 기대면 빈 목록 — 그러면 GUI 에 줄이 안 뜬다."""
+    reasons = []
+    for sub in sensor_config.subsets_of(group):
+        if sub.get("sync_roles"):
+            serials = set(sensor_config.repo_inventory(sub)) | set(sensor_config.camera_overrides(overrides))
+            ptp_cams = [sn for sn in serials
+                        if (sensor_config.sync_mode(sensor_config.camera_entry(sub, sn, overrides)) or "")
+                        .startswith("ptp_")]
+            if ptp_cams:
+                reasons.append(f"{sub['label']} {len(ptp_cams)}대가 PTP 액션 트리거 (카메라가 PTP slave 로 촬영)")
+        if sub.get("params") and sensor_config._param_value(group, sub["key"], "ptp.enable", overrides):
+            reasons.append(f"{sub['label']} 의 'PTP 시각 동기'(ptp.enable)가 켜져 있음 — 못 맞추면 노드가 죽습니다")
+    nic = str((overrides or {}).get("launch_args", {}).get("ptp_master_interface", "") or "").strip()
+    if nic and nic.lower() not in ("none", "off", "false", "-"):
+        reasons.append(f"GUI 가 {nic} 에 카메라용 ptp4l 을 띄웁니다 (PTP grandmaster NIC)")
+    if group.get("params"):
+        mode = str(sensor_config._param_value(group, sensor_config.NO_SUBSET, "timestamp_mode", overrides) or "")
+        if mode == "TIME_FROM_PTP_1588":
+            reasons.append("라이다 타임스탬프 기준이 PTP (TIME_FROM_PTP_1588)")
+    return reasons
+
+
+class _PtpWorker(QThread):
+    sig_done = pyqtSignal(dict)
+
+    def run(self):
+        try:
+            import ptp_setup
+            self.sig_done.emit(ptp_setup.status_summary())
+        except Exception as exc:                                   # noqa: BLE001
+            self.sig_done.emit({"level": "warn", "headline": f"PTP 상태를 못 읽었습니다 ({exc})", "items": []})
+
+
+class PtpBar(QFrame):
+    """PTP 에 기대는 센서군의 카드에만 뜨는 한 줄. 기동을 막지 않고 상태만 보여 준다."""
+
+    def __init__(self, reasons_of, parent=None):
+        super().__init__(parent)
+        self.reasons_of = reasons_of          # () -> [이유]
+        self.status = None
+        self.worker = None
+        self.setObjectName("Warn")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(10, 6, 10, 6)
+        self.text = QLabel("")
+        self.text.setWordWrap(True)
+        self.btn = QPushButton("다시 확인")
+        self.btn.clicked.connect(self.refresh)
+        row.addWidget(self.text, 1)
+        row.addWidget(self.btn)
+        self.hide()
+        self.timer = QTimer(self, interval=10000, timeout=self.refresh)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.timer.start()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self.timer.stop()
+
+    def refresh(self):
+        if not self.reasons_of():
+            self.hide()
+            return
+        if self.worker and self.worker.isRunning():
+            return
+        self.worker = _PtpWorker()
+        self.worker.sig_done.connect(self._show)
+        self.worker.start()
+
+    def _show(self, status):
+        self.status = status
+        reasons = self.reasons_of()
+        if not reasons:
+            self.hide()
+            return
+        mark = {"ok": "●", "warn": "▲", "fail": "✕"}[status["level"]]
+        color = {"ok": ui_theme.OK, "warn": ui_theme.WARN, "fail": ui_theme.ERR}[status["level"]]
+        self.text.setText(f"<span style='color:{color}'>{mark}</span>  {status['headline']}"
+                          f"<br><span style='color:{ui_theme.MUTED}'>이 센서가 PTP 에 기댑니다 — "
+                          f"{reasons[0]}</span>")
+        self.text.setToolTip("\n".join(f"{l}: {t}" for l, t in status["items"]) +
+                             "\n\n이유:\n" + "\n".join(f"· {r}" for r in reasons) +
+                             "\n\n터미널에서 ptp 로 세울 수 있습니다 (ptp status · ptp stop).")
+        self.show()
+
+    def problem(self):
+        """기동을 막지는 않지만 로그에 남길 한 줄 (문제 없으면 None)."""
+        if self.status and self.status["level"] != "ok" and self.reasons_of():
+            return self.status["headline"]
+        return None
 
 
 class SyncCheckPanel(QWidget):

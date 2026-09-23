@@ -1570,7 +1570,7 @@ class DetailPage(QWidget):
         self.btn_stop = QPushButton("■  중지")
         ui_theme.set_variant(self.btn_stop, "danger")
         self.btn_stop.setEnabled(False)
-        self.btn_start.clicked.connect(lambda: self.sig_start.emit(self.card["key"]))
+        self.btn_start.clicked.connect(self._on_start_clicked)
         self.btn_stop.clicked.connect(lambda: self.sig_stop.emit(self.group["key"]))
         head.addWidget(title)
         head.addWidget(self.pill, 0, Qt.AlignVCenter)
@@ -1606,6 +1606,12 @@ class DetailPage(QWidget):
             repo.setTextInteractionFlags(Qt.TextSelectableByMouse)
             repo.setToolTip("런치가 도는 작업 디렉터리 (sensors.yaml 의 workdir) — 실제 경로와 git 브랜치")
             outer.addWidget(repo)
+
+        # PTP 에 기대는 센서군(카메라가 PTP slave 로 촬영 · 라이다 타임스탬프가 PTP)일 때만 뜨는 상태 줄.
+        # dm 이 터미널에서 묻던 것을 여기로 옮겼다 — 기동을 막지 않고, 켜기 전에 눈으로 확인만 시킨다.
+        self.ptp_bar = sync_check.PtpBar(lambda: sync_check.ptp_reasons(self.group, self.overrides))
+        outer.addWidget(self.ptp_bar)
+        QTimer.singleShot(1500, self.ptp_bar.refresh)
 
         gaps = sensor_config.missing_paths(self.group)
         if gaps:
@@ -2813,6 +2819,16 @@ class DetailPage(QWidget):
             self.tuning.show_applied(cameras, failed, labels)
             self._push_failed = {labels.get(key, key) for _node, key, _why in failed}
         self._refresh_restart_banner()
+
+    def _on_start_clicked(self):
+        """기동은 그대로 하고, PTP 에 기대는 센서인데 PTP 가 성치 않으면 로그에 남긴다 (막지 않는다)."""
+        bar = getattr(self, "ptp_bar", None)
+        problem = bar.problem() if bar else None
+        if problem:
+            self.log.appendPlainText(
+                f"[GUI] {problem} — 이 센서는 PTP 에 기댑니다. 그대로 기동하지만, 시각이 틀어지거나 "
+                "카메라가 PTP 를 못 맞춰 죽을 수 있습니다 (터미널에서 ptp).")
+        self.sig_start.emit(self.card["key"])
 
     def _update_sync_targets(self):
         """동기 검증 탭에 지금 떠 있는 이 카드의 카메라와 그 동기 방식을 알려 준다."""

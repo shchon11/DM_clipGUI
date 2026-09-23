@@ -37,22 +37,18 @@ else
   echo "net_probe 없음 ($NP) — IP별 트래픽은 표시되지 않습니다" >&2
 fi
 
-# PTP 점검 — GUI 로 센서를 켜기 전에 시간 동기 체인(Orin GNSS → PC → 카메라)을 눈에 띄게 확인한다.
-# alias ptp 와 같은 스크립트(ptp_setup.py status). 준비가 안 됐으면 그 자리에서 ptp(세우기)를 돌릴지 묻는다.
-# 건너뛰기: DM_SKIP_PTP=1 dm
+# PTP 점검 — 결과만 보여 주고 GUI 는 무조건 연다 (2026-09-24 요청: 실행 자체를 막지 말 것).
+# 물어보지 않는다: PTP 에 기대는 센서(카메라가 PTP slave 로 촬영 · 라이다 타임스탬프가 PTP)를 켤 때
+# GUI 의 그 센서 카드에 같은 점검 결과가 줄로 뜬다 (scripts/sync_check.py PtpBar).
+# 세우려면 터미널에서 ptp — 건너뛰기: DM_SKIP_PTP=1 dm
 PTP_SCRIPT="$WS/scripts/ptp_setup.py"
 if [ -f "$PTP_SCRIPT" ] && [ -z "$DM_SKIP_PTP" ]; then
   echo "================ PTP 점검 (ptp status) ================"
   if python3 "$PTP_SCRIPT" status --no-sudo; then
     echo "================ PTP 준비됨 → GUI 를 엽니다 ================"
-  elif [ -t 0 ]; then
-    echo "======================================================="
-    read -r -p "PTP 가 준비 안 됐습니다. 지금 ptp 로 세울까요? [Y/n] " answer
-    if [ "${answer:-Y}" != "n" ] && [ "${answer:-Y}" != "N" ]; then
-      python3 "$PTP_SCRIPT" start || read -r -p "PTP 세우기 실패 — 그래도 GUI 를 열까요? [Enter] " _
-    fi
   else
-    echo "PTP 준비 안 됨 — 터미널에서 ptp 를 실행하세요 (GUI 는 그대로 엽니다)" >&2
+    echo "=== PTP 준비 안 됨 — GUI 는 그대로 엽니다. 세우려면 다른 터미널에서 'ptp' ==="
+    echo "    (PTP 에 기대는 센서를 켤 때 GUI 카드에도 같은 경고가 뜹니다)"
   fi
 fi
 

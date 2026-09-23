@@ -398,6 +398,14 @@ def _store_for(overrides, subset):
 
 
 
+def _param_value(group, subset, key, overrides):
+    """주요 설정에 없는 키도 포함한 params 값 하나 — GUI 에서 바꾼 값, 없으면 원본 YAML 값."""
+    store = _store_for(overrides, subset)
+    if key in store:
+        return store[key]
+    return (base_values(group).get(subset) or {}).get(key)
+
+
 def changed_keys(group, overrides, base=None):
     """원본과 실제로 다른 키만. 폼에서 굵게 표시하는 데 쓴다."""
     base = base if base is not None else base_values(group)
