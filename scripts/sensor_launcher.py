@@ -163,10 +163,29 @@ def work_dir(group):
     return sensor_config.GENERATED_DIR
 
 
-def build_command(group, overrides, devices=None, notes=None):
-    """(program, [args], 기대 네임스페이스) — bash -c 한 줄로 소싱 + 런치.
+def work_dir_label(group):
+    """'~/FLIR_control → /실제/경로 · 브랜치 x' — 심볼릭 링크로 체크아웃을 바꿔 끼우면 어느 것이 뜨는지
+    화면에 안 보여서 (docs/gnss_pps_sync_gui.md §2). workdir 이 없으면 None."""
+    raw = group.get("workdir")
+    path = expand(raw) if raw else None
+    if not path or not path.is_dir():
+        return None
+    real = path.resolve()
+    text = str(raw) + (f" → {real}" if real != path else "")
+    head = real / ".git" / "HEAD"
+    try:
+        ref = head.read_text(encoding="utf-8").strip()
+        text += (f" · 브랜치 {ref.split('refs/heads/', 1)[-1]}" if ref.startswith("ref:")
+                 else f" · 커밋 {ref[:8]}")
+    except OSError:
+        pass
+    return text
 
-    devices(감지 결과)를 주면 보이는 카메라만 담은 인벤토리 사본으로 띄운다 (sensor_config.plan_launch).
+
+def sourced_script(group, tokens):
+    """bash -c 한 줄 — ROS 언더레이 + 이 센서군의 워크스페이스를 소싱하고 tokens 를 exec.
+
+    런치뿐 아니라 그 워크스페이스의 메시지 타입이 필요한 도구(동기 검증 스크립트)도 이걸로 돌린다.
     """
     sources = []
     workspaces = list(group.get("workspaces") or [])
@@ -176,13 +195,36 @@ def build_command(group, overrides, devices=None, notes=None):
         path = expand(workspace)
         if path and path.is_file():
             sources.append(f"source {shlex.quote(str(path))}")
+    # ROS setup.bash 는 nounset 에 안전하지 않다 — set -u 를 켜면 안 된다.
+    return "; ".join(sources + ["exec " + " ".join(shlex.quote(str(t)) for t in tokens)])
 
+
+def clean_environment():
+    """셸에서 소싱해 둔 워크스페이스가 새어 들어오지 않게 경로 변수를 비운 환경.
+
+    sensors.yaml 이 선언한 워크스페이스만 소싱한다. ~/.bashrc 가 ~/flir_ouster_ws 를 소싱하고 있어서, 안 비우면
+    ouster_ros 가 선언한 언더레이(0.14.2)가 아니라 그 워크스페이스 빌드(0.14.0)로 뜬다.
+    ROS_DOMAIN_ID / ROS_LOCALHOST_ONLY 는 그대로 둔다 — 레코더와 같아야 서로 보인다.
+    """
+    env = QProcessEnvironment.systemEnvironment()
+    for var in LEAKY_ENV:
+        env.remove(var)
+    env.insert("RMW_IMPLEMENTATION", RMW)
+    return env
+
+
+def build_command(group, overrides, devices=None, notes=None):
+    """(program, [args], 기대 네임스페이스) — bash -c 한 줄로 소싱 + 런치.
+
+    devices(감지 결과)를 주면 보이는 카메라만 담은 인벤토리 사본으로 띄운다 (sensor_config.plan_launch).
+    """
     args, namespaces = sensor_config.plan_launch(group, overrides, devices, notes)
     launch = ["ros2", "launch", group["launch_package"], group["launch_file"]] + args
+    return "bash", ["-c", sourced_script(group, launch)], namespaces
 
-    # ROS setup.bash 는 nounset 에 안전하지 않다 — set -u 를 켜면 안 된다.
-    script = "; ".join(sources + ["exec " + " ".join(shlex.quote(t) for t in launch)])
-    return "bash", ["-c", script], namespaces
+
+# 되풀이해 찍히는 문제 줄(프레임 대기 시간 초과 등)이 이만큼 안 보이면 풀린 것으로 본다
+ISSUE_STALE_S = 10.0
 
 
 class SensorGroupProcess(QObject):
@@ -212,6 +254,12 @@ class SensorGroupProcess(QObject):
         self.ns_logged = set()          # 로그가 나오기 시작 = 노드가 떠서 카메라를 여는 중
         self.ns_ready = set()           # ready_log 가 찍힘 = 영상 수신 시작
         self.ns_dead = set()            # "process has died"
+        # 레지스트리의 issue_logs — 떴지만 문제가 있는 장비를 알리는 노드 로그 줄 (설정 일부 미적용 · 프레임이
+        # 안 옴 …). {네임스페이스: {"text", "detail", "t", "recurring"}}. recurring 은 문제가 이어지는 동안 노드가
+        # 되풀이해 찍는 줄이라, ISSUE_STALE_S 넘게 안 찍히면 풀린 것으로 보고 지운다.
+        self.issue_rules = list(group.get("issue_logs") or
+                                ([{"match": group["issue_log"]}] if group.get("issue_log") else []))
+        self.ns_issues = {}
         self.ns_present = set()         # 지금 발행자가 있음
         self.ns_seen = set()            # 한 번이라도 발행자가 있었음 (사라지면 실패)
         self._stopping = None           # begin_stop 이 적어 둔 (프로세스 가족, 기한)
@@ -220,15 +268,7 @@ class SensorGroupProcess(QObject):
         self.proc.readyReadStandardOutput.connect(self._on_output)
         self.proc.finished.connect(self._on_finished)
 
-        env = QProcessEnvironment.systemEnvironment()
-        # 셸에서 소싱해 둔 워크스페이스가 새어 들어오지 않게 경로 변수를 비우고, sensors.yaml 이
-        # 선언한 워크스페이스만 소싱한다. ~/.bashrc 가 ~/flir_ouster_ws 를 소싱하고 있어서, 안 비우면
-        # ouster_ros 가 선언한 언더레이(0.14.2)가 아니라 그 워크스페이스 빌드(0.14.0)로 뜬다.
-        # ROS_DOMAIN_ID / ROS_LOCALHOST_ONLY 는 그대로 둔다 — 레코더와 같아야 서로 보인다.
-        for var in LEAKY_ENV:
-            env.remove(var)
-        env.insert("RMW_IMPLEMENTATION", RMW)
-        self.proc.setProcessEnvironment(env)
+        self.proc.setProcessEnvironment(clean_environment())
         self.proc.setWorkingDirectory(str(work_dir(group)))
 
     # --- 상태 ---
@@ -285,7 +325,7 @@ class SensorGroupProcess(QObject):
         self._elapsed = self._stalled = 0.0
         self._progress = -1
         self.expected_ns = list(namespaces or [])
-        for bucket in (self.ns_logged, self.ns_ready, self.ns_dead, self.ns_present, self.ns_seen):
+        for bucket in (self.ns_logged, self.ns_ready, self.ns_dead, self.ns_present, self.ns_seen, self.ns_issues):
             bucket.clear()
         self.sig_output.emit(self.key, "[GUI] " + args[-1])
         # 프로세스를 먼저 띄우고 상태를 알린다. 거꾸로 하면 STARTING 을 받은 쪽이
@@ -347,6 +387,12 @@ class SensorGroupProcess(QObject):
         if present != self.ns_present:
             self.ns_present = present
             self.ns_seen |= present
+            self.sig_devices.emit(self.key)
+        stale = [ns for ns, issue in self.ns_issues.items()
+                 if issue["recurring"] and time.monotonic() - issue["t"] > ISSUE_STALE_S]
+        for ns in stale:
+            del self.ns_issues[ns]
+        if stale:
             self.sig_devices.emit(self.key)
         if self.state == RUNNING:
             return
@@ -441,6 +487,19 @@ class SensorGroupProcess(QObject):
                 if self.ready_log and self.ready_log in line and ns not in self.ns_ready:
                     self.ns_ready.add(ns)
                     changed = True
+                for rule in self.issue_rules:
+                    if rule["match"] not in line:
+                        continue
+                    detail = line.rsplit(": ", 1)[-1].strip()
+                    text = rule.get("text") or "설정 일부가 카메라에 들어가지 않았습니다"
+                    fresh = self.ns_issues.get(ns, {}).get("text") != text
+                    self.ns_issues[ns] = {"text": text, "detail": "" if rule.get("recurring") else detail,
+                                          "t": time.monotonic(), "recurring": bool(rule.get("recurring"))}
+                    if fresh:
+                        changed = True
+                        self.sig_output.emit(self.key, f"[GUI] ⚠ {ns}: {text}"
+                                                       + ("" if rule.get("recurring") else f" — {detail}"))
+                    break
         if changed:
             self.sig_devices.emit(self.key)
 

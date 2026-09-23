@@ -140,7 +140,13 @@ int main(int argc, char ** argv)
           const uint8_t d0 = (uint8_t)(ntohl(dst) >> 24);
           const uint8_t kind = (dst == 0xFFFFFFFFu || (ntohl(dst) & 0xFF) == 0xFF) ? 1 :
             (d0 >= 224 && d0 <= 239) ? 2 : 0;
-          note_flow(e, proto, dport, kind);
+          // 라이다처럼 MTU 를 넘는 UDP 는 IP 단편화된다. 뒤쪽 단편에는 UDP 헤더가
+          // 없어서 저 dport 는 페이로드 쓰레기값 — 첫 단편만 힌트에 반영한다.
+          const uint16_t frag_off =
+            (uint16_t)(((buf[20] & 0x1F) << 8) | buf[21]);
+          if (frag_off == 0) {
+            note_flow(e, proto, dport, kind);
+          }
         }
         total_bytes += (uint64_t)n;
         total_pkts += 1;

@@ -22,6 +22,7 @@ from pathlib import Path
 
 import yaml
 
+import genicam_doc
 import param_doc
 from sensor_discovery import OK, expand, load_params, load_registry
 
@@ -77,6 +78,50 @@ def fields_for(group, subset):
         if (field.get("subset") or NO_SUBSET) == subset:
             out.append(field)
     return out
+
+
+def matches(value, wanted):
+    """enabled_when 의 값 하나. 목록이면 그중 하나면 된다 ({"pixel_format": ["RGB8Packed", "BGR8"]})."""
+    return value in wanted if isinstance(wanted, list) else value == wanted
+
+
+def condition_met(condition, value_of):
+    """enabled_when / relevant_when 판정. value_of(키) -> 그 키의 현재 값.
+
+    {키: 값, …} 는 키끼리 AND. [{…}, {…}] 처럼 목록이면 그중 하나만 맞으면 된다 (OR).
+    """
+    if isinstance(condition, list):
+        return any(condition_met(c, value_of) for c in condition)
+    return all(matches(value_of(key), wanted) for key, wanted in (condition or {}).items())
+
+
+# 파라미터 접두사 -> 노드맵. 이 접두사 키는 노드가 기동 때 그 GenICam 노드에 그대로 쓴다.
+GENICAM_PREFIXES = ("camera.", "stream.", "tl_device.")
+
+
+def field_route(field):
+    """값이 카메라에 닿는 경로 -> (종류, 설명). 종류: 'genicam' · 'node' · 'pc'.
+
+    genicam : camera.X — 노드가 GenICam 노드 X 에 그대로 쓴다 (기동 때 한꺼번에, 순서는 타입별)
+    node    : 노드 파라미터인데 노드가 자기 로직으로 센서에 쓴다 (레지스트리 writes, 대상은 writes_to —
+              카메라는 GenICam 노드, 라이다는 드라이버가 센서 HTTP 설정으로 넣는 값)
+    pc      : 센서에 가지 않는다 — PC 의 드라이버 노드가 쓰는 설정
+    """
+    key = field["key"]
+    if field.get("target") == "launch_arg":
+        return "pc", "런치 인자 — 노드를 어떻게 띄울지 정합니다 (센서에 가지 않습니다)"
+    if key.startswith(GENICAM_PREFIXES):
+        node = key.split(".", 1)[1]
+        if field.get("alias_of"):
+            return "genicam", f"GenICam {field['alias_of']} 의 레지스터 별칭 {node} 에 노드가 그대로 씁니다"
+        return "genicam", f"GenICam 노드 {node} 에 노드가 그대로 씁니다"
+    if field.get("writes"):
+        target = field.get("writes_to", "GenICam")
+        text = f"노드가 자기 로직으로 {target} " + " · ".join(field["writes"]) + " 를 씁니다"
+        if target == "GenICam":
+            text += " (camera.* 를 적용한 뒤라 같은 노드를 camera.* 로 줘도 이쪽이 이깁니다)"
+        return "node", text
+    return "pc", "센서에 가지 않습니다 — PC 의 드라이버 노드가 쓰는 설정"
 
 
 # ---------- 원본 파일에서 읽는 '전체 설정' ----------
@@ -186,6 +231,7 @@ def _editor_type(value_type, choices):
 def full_fields(group, scope):
     """'전체 설정' 에 올릴 필드들 — [(섹션 제목, [field])]. 주요 설정에 이미 있는 키는 뺀다.
 
+    원본 params YAML 의 키 뒤에, 레지스트리에 genicam 이 있는 subset 은 카메라 XML 의 노드가 붙는다.
     scope: subset 키 / NO_SUBSET / "launch"
     """
     curated = {f["key"] for f in fields_for(group, scope)}
@@ -227,7 +273,72 @@ def full_fields(group, scope):
             })
         if fields:
             out.append((title, fields))
+    return out + genicam_fields(group, scope, curated | set(by_key))
+
+
+def _genicam_conf(group, scope):
+    sub = next((x for x in subsets_of(group) if x["key"] == scope), None)
+    return (sub or {}).get("genicam") or {}
+
+
+def genicam_source(group, scope):
+    """이 subset 의 카메라 GenICam XML 경로 (레지스트리 genicam.xml, glob 가능). 없으면 None."""
+    conf = _genicam_conf(group, scope)
+    return genicam_doc.resolve(conf["xml"]) if conf.get("xml") else None
+
+
+def genicam_fields(group, scope, exclude):
+    """카메라 XML 의 카테고리별 노드 — [(섹션 제목, [field])]. exclude(주요 설정 · 원본 YAML 에 있는 키)는 뺀다.
+
+    원본 YAML 에 없는 키라 전부 '지정' 해야 실리는 선택 항목이다. 예시값이 없는 이유: 기본값은 XML 이 아니라
+    카메라 레지스터에 있다 — 숫자 칸은 비워 두고 사용자가 적게 한다 (0 같은 가짜 값이 실리지 않게).
+    """
+    conf = _genicam_conf(group, scope)
+    path = genicam_source(group, scope)
+    doc = genicam_doc.load(path) if path else None
+    if not doc:
+        return []
+    prefix = conf.get("prefix", "camera")
+    out = []
+    for title, _name, features in genicam_doc.category_sections(doc, conf.get("categories") or []):
+        fields = []
+        for feature in features:
+            key = f"{prefix}.{feature['name']}"
+            if key in exclude:
+                continue
+            rule = (conf.get("rules") or {}).get(feature["name"]) or {}
+            fields.append({
+                "key": key, "label": key, "subset": scope, "generic": True, "genicam": True,
+                "type": _editor_type(feature["type"], feature["choices"]), "value_type": feature["type"],
+                "choices": feature["choices"], "editable_choices": False,
+                "optional": True, "example": None, "section": feature["section"] or None,
+                "help": _genicam_help(feature, path, rule), "managed": managed_reason(group, scope, key),
+                "enabled_when": rule.get("enabled_when"), "relevant_when": rule.get("relevant_when"),
+            })
+        if fields:
+            out.append((f"GenICam · {title}", fields))
     return out
+
+
+def _genicam_help(feature, path, rule=None):
+    parts = [feature["help"]] if feature["help"] else []
+    if (rule or {}).get("why"):
+        parts.append(rule["why"])
+    meta = f"GenICam 노드 {feature['name']}"
+    if feature["display"] and feature["display"] != feature["name"]:
+        meta += f" ({feature['display']})"
+    meta += f" · {feature['visibility']}"
+    if feature["unit"]:
+        meta += f" · 단위 {feature['unit']}"
+    parts.append(meta)
+    if feature["selectors"]:
+        parts.append(f"선택자 {', '.join(feature['selectors'])} 로 고른 한 칸에만 적용됩니다. 파라미터 파일에는 "
+                     "한 값만 넣을 수 있고, 노드는 열거형(선택자)을 먼저 씁니다.")
+    if feature.get("depends"):
+        parts.append(f"잠김이 바뀌는 조건: {', '.join(feature['depends'])} — 이 노드들 값에 따라 쓸 수 있게 되거나 "
+                     "잠깁니다 (XML 의 잠김 레지스터). 기동 때 잠겨 있으면 값이 무시되고, 적용 도중 잠기면 노드가 죽습니다.")
+    parts.append(f"카메라 XML: {path.name}")
+    return "\n".join(parts)
 
 
 def known_keys(group, scope):
@@ -286,6 +397,7 @@ def _store_for(overrides, subset):
     return ((overrides or {}).get("params") or {}).get(subset) or {}
 
 
+
 def changed_keys(group, overrides, base=None):
     """원본과 실제로 다른 키만. 폼에서 굵게 표시하는 데 쓴다."""
     base = base if base is not None else base_values(group)
@@ -324,11 +436,58 @@ def _merged_params(group, target, overrides):
     # 조건이 안 맞는 수동 값은 빼야 한다. 폼에서 회색 처리만 하고 파일에 남겨 두면, 예를 들어
     # ExposureAuto=Once/Continuous 인데 ExposureTime 이 원본 YAML 에서 딸려 와 카메라 노드가
     # "node is not writable in the current camera state" 로 죽는다 (카메라 12대가 실제로 그랬다).
-    for field in fields_for(group, target["subset"]):
-        condition = field.get("enabled_when") or {}
-        if condition and any(merged.get(k) != v for k, v in condition.items()):
+    for field in conditional_fields(group, target["subset"]):
+        if not condition_met(field.get("enabled_when"), merged.get):
             merged.pop(field["key"], None)
+    # 패킷 간 지연(GevSCPD)과 링크 대역폭 제한(DeviceLinkThroughputLimit)은 카메라 안에서 같은 값의 짝이다 — 하나를
+    # 쓰면 카메라가 다른 하나를 다시 계산한다. 둘 다 넘기면 노드가 쓰는 순서에 따라 나중 것이 이긴다. 원본 YAML 의
+    # GevSCPD: 0 이 75 MB/s 제한을 125 MB/s 로 되돌려(14대 중 13대) 동시 트리거에서 스위치가 패킷을 버렸다 (2026-09-22).
+    if merged.get("camera.DeviceLinkThroughputLimit"):
+        merged.pop("camera.GevSCPD", None)
     return merged
+
+
+def conditional_fields(group, subset):
+    """enabled_when 이 있는 필드 — 주요 설정 + 레지스트리 genicam.rules (전체 설정의 GenICam 칸).
+
+    rules 는 XML 을 읽지 않고 레지스트리만으로 만든다 — 생성 파일을 만들 때마다 XML 을 파싱하지 않게.
+    """
+    out = [f for f in fields_for(group, subset) if f.get("enabled_when")]
+    conf = _genicam_conf(group, subset)
+    prefix = conf.get("prefix", "camera")
+    for name, rule in (conf.get("rules") or {}).items():
+        if rule.get("enabled_when"):
+            out.append({"key": f"{prefix}.{name}", "enabled_when": rule["enabled_when"]})
+    return out
+
+
+def restart_only(group, scope, field):
+    """실행 중에는 못 바꾸고 다시 기동해야 들어가는 camera.* 필드인가 (카메라 XML 의 잠김 조건, 또는 레지스트리
+    restart_only). ISP 튜닝 탭이 이런 칸을 잠근다."""
+    if field.get("restart_only") is not None:
+        return bool(field["restart_only"])
+    key = field["key"]
+    if not key.startswith("camera."):
+        return False
+    path = genicam_source(group, scope)
+    doc = genicam_doc.load(path) if path else None
+    if not doc:
+        return False
+    name = (field.get("alias_of") or key.split(".", 1)[1]).split(" (")[0]
+    return genicam_doc.locked_while_streaming(doc, name)
+
+
+def genicam_dependencies(group, scope, field):
+    """camera.* 필드를 잠그거나 풀 수 있는 공개 GenICam 기능들 (XML 이 없거나 camera.* 가 아니면 [])."""
+    key = field["key"]
+    if not key.startswith("camera."):
+        return []
+    path = genicam_source(group, scope)
+    doc = genicam_doc.load(path) if path else None
+    if not doc:
+        return []
+    name = (field.get("alias_of") or key.split(".", 1)[1]).split(" (")[0]
+    return genicam_doc.dependencies(doc, name)
 
 
 def build_params_files(group, overrides):
@@ -361,6 +520,197 @@ def build_params_files(group, overrides):
     return out
 
 
+# ---------- 설정 점검 (기동 전) ----------
+#
+# 한 칸만 보면 멀쩡한데 다른 칸과 엮여서 문제가 되는 조합을 노드가 뜨기 전에 찾는다. 카드 머리와 런치 로그에 뜬다.
+#   - 픽셀 포맷 × 해상도 × fps 가 카메라 링크 제한(DeviceLinkThroughputLimit)을 넘으면 카메라가 fps 를 깎는다.
+#     자유 실행 프레임레이트를 그 위로 지정해 두면 카메라가 값을 거부해 노드가 기동 중에 죽는다 — RGB8Packed
+#     1920×1200 에 30 fps 를 지정했더니 14대가 전부 "must be smaller than or equal 14.387029" 로 죽었다.
+#   - 노출이 프레임 주기보다 길면 트리거를 건너뛴다. auto 노출 한계의 하한 > 상한이면 카메라가 거부한다.
+#   - 노출 auto 는 카메라마다 따로 노출을 정해서 밝기와 노출 끝 타임스탬프가 카메라마다 달라진다.
+#   - 비닝 뒤 Width/Height 가 최대를 넘으면 카메라가 거부하고, 해상도가 바뀌면 캘리브레이션이 안 맞는다.
+#   - 카메라 NIC 의 MTU 가 GigE 패킷 크기보다 작으면 NIC 가 영상 패킷을 전부 버려 프레임이 한 장도 완성되지
+#     않는다. `ip link set mtu 9000` 은 재부팅하면 풀린다 — 2026-09-21 재부팅 뒤 MTU 1500 인 채로 띄웠더니 14대가
+#     전부 'Incomplete image status=3' 이었고 NIC 의 rx_long_length_errors 가 8700만이었다.
+
+def bytes_per_pixel(pixel_format):
+    """링크에 실리는 화소당 바이트. 모르는 포맷이면 None."""
+    name = str(pixel_format or "").replace("Spinnaker::", "").replace("PixelFormat_", "")
+    if name in ("RGB8", "RGB8Packed", "BGR8", "BGR8Packed", "YUV444Packed", "YCbCr8"):
+        return 3.0
+    if name in ("BGRa8", "RGBa8"):
+        return 4.0
+    if name in ("YUV422Packed", "YUV422_8", "YCbCr422_8"):
+        return 2.0
+    if name in ("YUV411Packed", "YCbCr411_8"):
+        return 1.5
+    if re.fullmatch(r"(Mono|Bayer[A-Z]{2}|Polarized)(8|10p|10Packed|12p|12Packed|16)", name):
+        bits = re.search(r"(8|10p|10Packed|12p|12Packed|16)$", name).group(1)
+        return {"8": 1.0, "10p": 1.25, "10Packed": 1.5, "12p": 1.5, "12Packed": 1.5, "16": 2.0}[bits]
+    return None
+
+
+def nic_mtus(devices):
+    """{NIC: MTU} — 감지된 장비가 달린 NIC 들. 못 읽는 NIC 는 뺀다."""
+    out = {}
+    for nic in {d.get("nic") for d in devices or [] if d.get("nic")}:
+        try:
+            out[nic] = int((Path("/sys/class/net") / nic / "mtu").read_text())
+        except (OSError, ValueError):
+            pass
+    return out
+
+
+def check_settings(group, subset, overrides, n_cameras=0, mtus=None, synced=0, ptp_cams=0):
+    """[(level, 글)] — level 은 'error'(노드가 기동 중에 죽거나 프레임이 안 나온다) · 'warn'. 점검할 수 없으면 [].
+
+    mtus: {NIC: MTU} — 이 종류의 카메라가 달린 NIC (nic_mtus). 주면 GigE 패킷 크기와 비교한다.
+    synced: 같은 트리거로 동시에 찍는 카메라 수 (HW 트리거 · PTP 액션). 동시에 프레임을 쏟아내서 순간 합을 본다.
+    ptp_cams: 동기 방식이 PTP 액션(보내기 · 받기)인 카메라 수. 있으면 PC 가 PTP grandmaster 인지(ptp4l) 본다.
+
+    생성 파일과 같은 값(_merged_params)으로 계산한다 — enabled_when 으로 빠지는 키까지 반영된다.
+    레지스트리 subset 의 checks: {sensor: [폭, 높이], uplink_MBps} 가 있어야 점검한다.
+    """
+    sub = next((x for x in subsets_of(group) if x["key"] == subset), None)
+    conf = (sub or {}).get("checks")
+    target = next((t for t in param_targets(group) if t["subset"] == subset), None)
+    if not conf or not target:
+        return []
+    merged = _merged_params(group, target, overrides)
+    if not merged:
+        return []
+    errors, warns = [], []
+
+    # --- 해상도 · 비닝 ---
+    width, height = merged.get("camera.Width"), merged.get("camera.Height")
+    sensor = conf.get("sensor") or []
+    shrunk = False
+    for axis, size, full in (("Horizontal", width, sensor[0] if sensor else None),
+                             ("Vertical", height, sensor[1] if len(sensor) > 1 else None)):
+        shrink = int(merged.get(f"camera.Binning{axis}") or 1) * int(merged.get(f"camera.Decimation{axis}") or 1)
+        shrunk = shrunk or shrink > 1 or bool(full and size and size != full)
+        if full and size and size * shrink > full:
+            name = "Width" if axis == "Horizontal" else "Height"
+            errors.append(f"camera.{name} {size} 이 비닝 · 데시메이션 {shrink} 배 뒤 최대({full // shrink})를 넘습니다 — "
+                          f"카메라가 거부해 노드가 기동 중에 죽습니다. {name} 값을 {full // shrink} 이하로.")
+    if shrunk and sensor:
+        warns.append(f"해상도가 센서 전체({sensor[0]}×{sensor[1]})가 아닙니다 — camera_info 캘리브레이션은 전체 해상도 "
+                     "기준이라 내부 파라미터(초점거리 · 주점)가 안 맞습니다.")
+
+    # --- 프레임레이트 · 노출 ---
+    fps = None
+    if merged.get("camera.AcquisitionFrameRateEnable") and merged.get("camera.AcquisitionFrameRate"):
+        fps = float(merged["camera.AcquisitionFrameRate"])
+    grid = merged.get("timestamp.trigger_grid_hz") or 0
+    rate, source = (grid, "트리거 격자") if grid > 0 else (merged.get("ptp_action.rate_hz"), "PTP 동기 프레임레이트")
+    period_hz = fps or rate
+    exposure_auto = str(merged.get("camera.ExposureAuto") or "")
+    if period_hz:
+        period = 1e6 / period_hz
+        exposure, what = None, ""
+        if exposure_auto == "Off" and merged.get("camera.ExposureTime"):
+            exposure, what = float(merged["camera.ExposureTime"]), "노출 시간"
+        elif exposure_auto in ("Once", "Continuous") and merged.get("camera.AutoExposureExposureTimeUpperLimit"):
+            exposure, what = float(merged["camera.AutoExposureExposureTimeUpperLimit"]), "auto 노출 상한"
+        if exposure and exposure >= period:
+            warns.append(f"{what} {exposure:g} µs 가 프레임 주기 {period:.0f} µs ({period_hz:g} Hz) 이상입니다 — 노출이 "
+                         "끝나기 전에 다음 트리거가 와서 트리거를 건너뜁니다 (fps 가 절반으로).")
+    # 트리거로 찍는 카메라에 '자유 실행 프레임레이트' 상한이 켜져 있다. BFS 는 프레임 주기를 센서 줄 단위로 올려
+    # 잡아서 30 Hz 를 주면 29.9952 Hz (33.3386 ms) 로 돈다 — 30 Hz 트리거보다 매 프레임 5.3 µs 느려 노출 시작이
+    # 조금씩 밀리고, 밀린 게 여유(주기 − 노출)를 넘으면 트리거가 노출 중에 와서 한 번 버려진다. 2026-09-22 PTP 액션:
+    # 노출 30 ms 면 20초마다, 25 ms 면 50초마다 카메라마다 한 장씩 안 찍었다 (frame_id 연속). 카메라가 전부 트리거로
+    # 찍으면 기동할 때 상한을 끈다 (_drop_frame_rate_cap). 섞여 있으면 파일이 하나라 못 끈다 — 알린다.
+    if synced and n_cameras > synced and merged.get("camera.AcquisitionFrameRateEnable") \
+            and merged.get("camera.AcquisitionFrameRate"):
+        warns.append(f"트리거로 찍는 카메라 {synced}대에도 '자유 실행 프레임레이트' 상한 "
+                     f"{float(merged['camera.AcquisitionFrameRate']):g} Hz 가 걸립니다 — 카메라가 이 값을 센서 줄 단위로 "
+                     "올려 잡아 (30 Hz → 29.995 Hz) 트리거보다 조금 느리고, 몇십 초마다 트리거를 한 번씩 놓칩니다. "
+                     "자유 실행 카메라를 빼거나 동기 방식을 통일하면 기동할 때 상한을 알아서 끕니다. 아니면 상한을 "
+                     "트리거보다 높게 (31 Hz 이상).")
+    for name, unit in (("ExposureTime", "µs"), ("Gain", "dB")):
+        low = merged.get(f"camera.AutoExposure{name}LowerLimit")
+        high = merged.get(f"camera.AutoExposure{name}UpperLimit")
+        if low is not None and high is not None and low > high:
+            errors.append(f"auto {'노출' if name == 'ExposureTime' else '게인'} 하한 {low:g} {unit} 가 상한 {high:g} {unit} "
+                          "보다 큽니다 — 카메라가 거부해 노드가 기동 중에 죽습니다.")
+    if exposure_auto in ("Once", "Continuous") and n_cameras > 1:
+        warns.append(f"노출 auto({exposure_auto})는 카메라마다 따로 노출을 정합니다 — 밝기가 카메라마다 다르고, 노출 "
+                     "끝에 찍히는 카메라 타임스탬프도 노출 차이만큼 어긋납니다 (2026-09-21: 3대 1 ms · 나머지 18 ms). "
+                     "동기 데이터면 Off 에 같은 노출 시간을.")
+    # WB auto 도 카메라마다 자기 화면으로 정한다. Once 는 한 번 맞추면 Off 로 돌아가야 하는데, 어두운 장면에서는
+    # 끝내지 못하고 Once 에 머문 채 비율이 치우친다 — 2026-09-21 밤 14대 중 4대가 녹색 · 보라로 틀어졌다
+    # (앞쪽은 흰 가로등을 보고 끝남). 메타데이터의 balance_white_auto 가 계속 Once 면 그 상태다.
+    wb_auto = str(merged.get("camera.BalanceWhiteAuto") or "")
+    if wb_auto in ("Once", "Continuous") and n_cameras > 1:
+        warns.append(f"화이트밸런스 auto({wb_auto})는 카메라마다 자기 화면으로 색을 맞춥니다 — 카메라끼리 색이 달라지고, "
+                     "어두운 장면에서는 끝내지 못해 한쪽으로 치우칩니다 (2026-09-21 밤: Once 가 4대에서 안 끝나 녹색 · "
+                     "보라 색조). 여러 카메라를 이어 붙일 데이터면 Off 에 R · B 비율을 모두 같게.")
+
+    # --- PTP 액션인데 grandmaster(ptp4l)를 끄라고 적어 뒀다 ---
+    # 카메라는 SlaveOnly 라 저희끼리 기준 시계를 못 뽑는다. 'PTP grandmaster NIC' 를 비우면 기동할 때 자동으로
+    # 정한다 (ptp_master_nic). none 같은 값을 직접 적었으면 ptp4l 이 안 떠서, 따로 띄운 게 없으면 카메라가 PTP
+    # Slave 가 못 되고 노드가 ptp.sync_timeout_ms 동안 기다리다 죽는다 (ptp.require_sync).
+    if ptp_cams:
+        field = next((f for f in fields_for(group, "launch") if f["key"] == "ptp_master_interface"), None)
+        nic = str(effective_value(group, field, overrides) or "").strip() if field else ""
+        if nic.lower() in PTP_MASTER_OFF:
+            wait = float(merged.get("ptp.sync_timeout_ms") or 60000) / 1000
+            fate = (f"노드가 {wait:g}초 기다리다 죽습니다" if merged.get("ptp.require_sync", True) else
+                    "카메라끼리 시계가 안 맞은 채 찍습니다")
+            warns.append(f"동기 방식이 PTP 액션인 카메라가 {ptp_cams}대인데 'PTP grandmaster NIC'(카메라 공통 옵션)가 "
+                         f"'{nic}' 입니다 — ptp4l 을 따로 띄우지 않았다면 카메라가 PTP Slave 가 못 되고 {fate}. "
+                         "비워 두면 기동할 때 카메라 NIC 로 알아서 정합니다.")
+
+    # --- NIC MTU 대 GigE 패킷 크기 ---
+    packet_size = merged.get("camera.GevSCPSPacketSize")
+    for nic, mtu in sorted((mtus or {}).items()):
+        if packet_size and mtu < int(packet_size):
+            errors.append(f"카메라 NIC {nic} 의 MTU {mtu} 가 GigE 패킷 크기 {packet_size} 보다 작습니다 — NIC 가 영상 패킷을 "
+                          "전부 버려 프레임이 한 장도 완성되지 않습니다 ('Incomplete image status=3'). ip link 로 올린 MTU 는 "
+                          f"재부팅하면 풀립니다 — NIC 의 NetworkManager 프로파일에 MTU {packet_size} 을 저장해 올리거나, "
+                          "GigE 패킷 크기를 1400 으로.")
+
+    # --- 링크 대역폭 ---
+    bpp = bytes_per_pixel(merged.get("pixel_format"))
+    limit = merged.get("camera.DeviceLinkThroughputLimit")
+    if bpp and width and height and limit:
+        # GVSP 패킷마다 IP · UDP · GVSP 헤더(36 B)가 붙고 링크 제한은 이더넷 헤더(18 B)까지 센다.
+        # 9000 B 패킷이면 0.6% — 카메라가 계산한 14.387 fps 와 맞는다 (단순 나눗셈은 14.47).
+        packet = int(merged.get("camera.GevSCPSPacketSize") or 1400)
+        frame = width * height * bpp * (packet + 18) / max(packet - 36, 1)
+        max_fps = limit / frame
+        what = f"{merged.get('pixel_format')} {width}×{height} · 링크 {limit / 1e6:g} MB/s 에서 카메라당 최대 약 {max_fps:.1f} fps"
+        fix = "픽셀 포맷을 BayerRG8(화소당 1 B)로 · 비닝 2 (Width/Height 도 절반으로) · fps 를 낮추기 중 하나."
+        if fps and fps > max_fps:
+            errors.append(f"자유 실행 프레임레이트 {fps:g} fps 가 {what} 를 넘습니다 — 카메라가 값을 거부해 노드가 "
+                          f"기동 중에 죽습니다. {fix}")
+        elif rate and rate > max_fps:
+            warns.append(f"리그 프레임레이트 {rate:g} Hz ({source})를 못 따라갑니다 — {what}. 트리거를 건너뛰어 "
+                         f"프레임이 빠집니다. {fix}")
+        uplink = conf.get("uplink_MBps")
+        # 동시 트리거: 모든 카메라가 같은 순간 한 프레임을 링크 제한 속도로 보낸다 → 순간 합 = 대수 × 링크 제한.
+        # 평균(대수 × fps × 프레임)이 업링크 안이어도 이 순간 합이 넘으면 스위치가 패킷을 버린다 — 영상이 깨지거나
+        # 시작 패킷을 잃어 frame_id · 카메라 시각이 이전 프레임 것으로 실린다 (2026-09-21). DeviceLinkThroughputLimit
+        # 설명의 '13~14대면 70~75 MB/s' 가 이 계산이다.
+        if uplink and synced > 1 and synced * limit > uplink * 1e6:
+            fair = uplink * 1e6 / synced
+            send_ms = frame / fair * 1000
+            period = f", 한 프레임 전송 {send_ms:.1f} ms" + (" — 프레임 간격보다 길어 fps 도 낮춰야 합니다"
+                                                            if period_hz and send_ms > 1000 / period_hz else "")
+            warns.append(f"동시 트리거 {synced}대가 같은 순간 링크 {limit / 1e6:g} MB/s 로 보내 순간 합 "
+                         f"{synced * limit / 1e6:.0f} MB/s 가 스위치 업링크 {uplink:g} MB/s 를 넘습니다 — 스위치가 패킷을 "
+                         f"버려 프레임이 깨지거나 메타데이터가 틀어집니다. 카메라당 링크 대역폭을 {fair / 1e6 * 0.95:.0f} "
+                         f"MB/s 이하로{period}.")
+        elif uplink and n_cameras:
+            per = min(limit, min(period_hz or max_fps, max_fps) * frame)
+            total = n_cameras * per
+            if total > uplink * 1e6:
+                warns.append(f"카메라 {n_cameras}대 × 약 {per / 1e6:.0f} MB/s = {total / 1e6:.0f} MB/s 가 스위치 업링크 "
+                             f"{uplink:g} MB/s 를 넘습니다 — 스위치가 패킷을 버려 'Incomplete image' 로 프레임이 "
+                             "깨집니다 (동기 트리거면 순간 합이 더 크다).")
+    return [("error", text) for text in errors] + [("warn", text) for text in warns]
+
+
 def _arg_text(value):
     """ros2 launch 인자 값 표기. bool은 반드시 소문자 true/false여야 한다."""
     if isinstance(value, bool):
@@ -381,15 +731,59 @@ def _arg_text(value):
 
 ROS_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 SENDER_ROLES = {"sender", "send", "master"}      # 인벤토리 툴의 EnsurePtpSender 와 같은 기준
-PTP_ROLES = ["sender", "receiver", "none"]
+
+# '감지된 장비' 표의 동기 방식 칸. 카메라 노드의 두 역할(hardware_trigger.role · ptp_action.role)을
+# 한 쌍으로 고른다 — 둘이 같이 켜지면 노드가 예외로 죽는다 (flir_spinnaker_camera_node 의 배타 검사).
+# GPIO master(카메라가 다른 카메라를 때리는 옛 배선)는 고를 수 없다. 리포 인벤토리에 있으면 '기타' 로 보인다.
+#   (키, 표시, hardware_trigger_role, ptp_action_role)
+SYNC_MODES = [
+    ("hw_trigger", "HW 트리거 (GPIO)", "slave", "none"),
+    ("ptp_sender", "PTP 액션 (보내기)", "none", "sender"),
+    ("ptp_receiver", "PTP 액션 (받기)", "none", "receiver"),
+    ("free", "자유 실행", "none", "none"),
+]
+SYNC_ROLE_KEYS = ("hardware_trigger_role", "ptp_action_role")
+SYNCED_MODES = ("hw_trigger", "ptp_sender", "ptp_receiver")   # 같은 트리거로 동시에 찍는 동기 방식
 
 
 def _role(entry, key):
     return str(entry.get(key) or "none").strip().lower()
 
 
+def sync_mode(entry):
+    """이 항목의 동기 방식 키. 표에 없는 조합(GPIO master 등)이면 None."""
+    hw, ptp = _role(entry, "hardware_trigger_role"), _role(entry, "ptp_action_role")
+    ptp = "sender" if ptp in SENDER_ROLES else ptp
+    for key, _label, mode_hw, mode_ptp in SYNC_MODES:
+        if (hw, ptp) == (mode_hw, mode_ptp):
+            return key
+    return None
+
+
+def sync_mode_label(entry):
+    key = sync_mode(entry)
+    if key:
+        return next(label for k, label, *_ in SYNC_MODES if k == key)
+    return (f"기타 (GPIO {_role(entry, 'hardware_trigger_role')} · "
+            f"PTP {_role(entry, 'ptp_action_role')})")
+
+
+def set_sync_mode(sub, overrides, serial, mode):
+    """카메라 하나의 동기 방식을 GUI 설정에 적는다. 원본(인벤토리 · 기본값)과 같으면 지운다."""
+    _key, _label, hw, ptp = next(m for m in SYNC_MODES if m[0] == mode)
+    store = camera_overrides(overrides).setdefault(serial, {})
+    default = default_camera_entry(sub, serial)
+    for role in SYNC_ROLE_KEYS:
+        store.pop(role, None)
+    if sync_mode(default) != mode:
+        # 두 역할을 늘 한 쌍으로 적는다 — 하나만 적으면 camera_entry 가 나머지를 옛 규칙으로 채운다
+        store.update({"hardware_trigger_role": hw, "ptp_action_role": ptp})
+    if not store:
+        camera_overrides(overrides).pop(serial, None)
+
+
 def camera_overrides(overrides):
-    """cfg["sensors"][group]["cameras"] — {serial: {name?, ptp_action_role?}}"""
+    """cfg["sensors"][group]["cameras"] — {serial: {name?, hardware_trigger_role?, ptp_action_role?, force_ip_*?}}"""
     return (overrides or {}).setdefault("cameras", {})
 
 
@@ -412,13 +806,20 @@ def camera_entry(sub, serial, overrides, repo=None):
         entry = {"name": name, "serial": serial, "namespace": name,
                  "frame_id": f"{name}_optical_frame"}
         if sub.get("sync_roles"):
-            entry.update({"hardware_trigger_role": "none", "ptp_action_role": "receiver"})
+            # 트리거가 외부(GNSS PPS 등)면 새 카메라도 그걸 받는다. 아니면 PTP action 을 받는 쪽.
+            entry.update({"hardware_trigger_role": "slave", "ptp_action_role": "none"}
+                         if sub.get("external_trigger") else
+                         {"hardware_trigger_role": "none", "ptp_action_role": "receiver"})
     mine = camera_overrides(overrides).get(serial) or {}
     if mine.get("name"):
         entry["name"] = entry["namespace"] = mine["name"]
         entry["frame_id"] = f"{mine['name']}_optical_frame"
-    if sub.get("sync_roles") and mine.get("ptp_action_role"):
-        entry["ptp_action_role"] = mine["ptp_action_role"]
+    if sub.get("sync_roles") and any(mine.get(role) for role in SYNC_ROLE_KEYS):
+        # 예전 GUI 는 ptp_action_role 만 적었고, 그때 GPIO 역할은 인벤토리 값(새 카메라면 none)이었다.
+        # 그 뜻 그대로 읽어야 'none'(자유 실행)으로 저장해 둔 새 카메라가 HW 트리거로 바뀌지 않는다.
+        entry["hardware_trigger_role"] = mine.get(
+            "hardware_trigger_role", (repo.get(serial) or {}).get("hardware_trigger_role", "none"))
+        entry["ptp_action_role"] = mine.get("ptp_action_role", entry.get("ptp_action_role", "none"))
     if mine.get("force_ip_address"):
         # GUI 에서 [IP 할당] 으로 준 주소 — 인벤토리 사본에도 실어서 다음부터 같은 주소를 쓴다
         entry["force_ip_address"] = mine["force_ip_address"]
@@ -515,8 +916,9 @@ def included_devices(group, overrides, devices):
             for sub in subsets_of(group)}
 
 
-def _fix_sync_roles(entries, repo, label, notes):
+def _fix_sync_roles(entries, repo, sub, notes):
     """보내는 쪽이 안 보이면 받는 쪽은 프레임이 0장이다 — 이번 기동에서만 바로잡는다."""
+    label = sub["label"]
     ptp = [e for e in entries if _role(e, "ptp_action_role") != "none"]
     if ptp and not any(_role(e, "ptp_action_role") in SENDER_ROLES for e in ptp):
         gone = [e.get("namespace") or e.get("name") for e in repo.values()
@@ -529,9 +931,18 @@ def _fix_sync_roles(entries, repo, label, notes):
         e["ptp_action_role"] = "receiver"
         notes.append(f"{label}: sender 는 하나여야 해서 {e['namespace']} 는 receiver 로 띄웁니다")
 
-    # GPIO 트리거는 배선이 필요한 역할이라 master 로 올리지 않는다 — slave 를 자유 실행으로.
     slaves = [e for e in entries if _role(e, "hardware_trigger_role") == "slave"]
-    if slaves and not any(_role(e, "hardware_trigger_role") == "master" for e in entries):
+    masters = [e for e in entries if _role(e, "hardware_trigger_role") == "master"]
+    if sub.get("external_trigger"):
+        # 트리거 발생원은 외부(GNSS PPS 등)라 master 카메라 없이 slave 만 있는 게 정상이다. 오히려 master 가
+        # 있으면 그 카메라만 외부 트리거를 안 받고 자유 실행한다 — slave 로 돌린다.
+        for e in masters:
+            e["hardware_trigger_role"] = "slave"
+            notes.append(f"{label}: 트리거는 외부 발생원이라 GPIO master 인 {e['namespace']} 도 "
+                         "slave 로 띄웁니다")
+        return
+    # GPIO 트리거는 배선이 필요한 역할이라 master 로 올리지 않는다 — slave 를 자유 실행으로.
+    if slaves and not masters:
         for e in slaves:
             e["hardware_trigger_role"] = "none"
         notes.append(f"{label}: GPIO 트리거 master 가 안 보여 slave {len(slaves)}대를 "
@@ -585,7 +996,7 @@ def build_inventory_files(group, overrides, devices, notes):
         if broken:
             notes.append(f"{sub['label']}: 보이지만 못 여는 {len(broken)}대도 뺍니다 ({', '.join(broken)})")
         if sub.get("sync_roles"):
-            _fix_sync_roles(entries, repo, sub["label"], notes)
+            _fix_sync_roles(entries, repo, sub, notes)
 
         node_key, _ = load_params(sub["inventory"])
         path = GENERATED_DIR / f"{group['key']}__{sub['key']}__inventory.yaml"
@@ -618,6 +1029,103 @@ def _auto_sensor_host(group, overrides, devices, notes):
     return patched
 
 
+PTP_MASTER_OFF = ("none", "off", "false", "-")     # 'PTP grandmaster NIC' 에 적으면 ptp4l 을 안 띄운다 (빈 값 = 자동)
+
+
+def _drop_frame_rate_cap(group, overrides, entries, notes):
+    """카메라군의 이번 기동 카메라가 전부 트리거(HW 트리거 · PTP 액션)로 찍으면 '자유 실행 프레임레이트' 상한을 끈다.
+
+    BFS 는 AcquisitionFrameRate 를 센서 줄 단위로 올려 잡는다 — 30 Hz 가 29.9952 Hz (33.3386 ms). 트리거가 정확히
+    30 Hz 면 카메라가 매 프레임 5.3 µs 씩 늦게 찍다가 한 번씩 트리거를 버린다 (check_settings 설명). 트리거로 찍을 땐
+    fps 를 트리거가 정하니 상한이 필요 없다. 노드는 AcquisitionFrameRate 값이 있으면 Enable 을 도로 켜므로
+    (NormalizeFrameRateStartupOverrides) 값까지 뺀다. GUI 설정에는 저장하지 않는다 (이번 기동만)."""
+    patched = None
+    for sub in subsets_of(group):
+        cams = entries.get(sub["key"]) or []
+        if not sub.get("sync_roles") or not cams or any(sync_mode(e) not in SYNCED_MODES for e in cams):
+            continue
+        target = next((t for t in param_targets(group) if t["subset"] == sub["key"]), None)
+        merged = _merged_params(group, target, patched or overrides) if target else None
+        if not merged or not merged.get("camera.AcquisitionFrameRateEnable"):
+            continue
+        rate = merged.get("camera.AcquisitionFrameRate")
+        patched = patched or copy.deepcopy(overrides or {})
+        store = patched.setdefault("params", {}).setdefault(sub["key"], {})
+        for key in ("camera.AcquisitionFrameRate", "camera.FrameRateHz_Val"):
+            store[key] = None
+        store["camera.AcquisitionFrameRateEnable"] = False
+        notes.append(f"{sub['label']}: {len(cams)}대 모두 트리거로 찍어서 이번 기동은 '자유 실행 프레임레이트' 상한"
+                     + (f"({float(rate):g} Hz)" if rate else "") + "을 끕니다 — 카메라가 상한을 센서 줄 단위로 올려 잡아 "
+                     "(30 Hz → 29.995 Hz) 트리거보다 느려지고, 몇십 초마다 트리거를 한 번씩 놓치기 때문 (fps 는 트리거가 정함)")
+    return patched or overrides
+
+
+def running_process(name):
+    """이름이 name 인 프로세스가 돌고 있나 (/proc/*/cmdline 의 실행 파일 이름)."""
+    proc = Path("/proc")
+    for pid_dir in proc.iterdir() if proc.is_dir() else []:
+        if not pid_dir.name.isdigit():
+            continue
+        try:
+            argv0 = (pid_dir / "cmdline").read_bytes().split(b"\0", 1)[0].decode(errors="replace")
+        except OSError:
+            continue
+        if Path(argv0).name == name:
+            return True
+    return False
+
+
+def external_ptp4l_interfaces():
+    """{NIC: 설명} — 지금 돌고 있는 ptp4l 이 맡은 NIC (-i 인자, -f 설정 파일의 [NIC] 절). 기동 전에 부르므로
+    여기 잡히는 ptp4l 은 전부 GUI 밖에서 띄운 것이다 (예: sudo ptp4l -f /etc/linuxptp/ptp4l-bc.conf)."""
+    out = {}
+    proc = Path("/proc")
+    for pid_dir in proc.iterdir() if proc.is_dir() else []:
+        if not pid_dir.name.isdigit():
+            continue
+        try:
+            argv = [a.decode(errors="replace") for a in (pid_dir / "cmdline").read_bytes().split(b"\0") if a]
+        except OSError:
+            continue
+        if not argv or Path(argv[0]).name != "ptp4l":
+            continue
+        label = f"{' '.join(argv)} · pid {pid_dir.name}"
+        for i, arg in enumerate(argv[:-1]):
+            if arg == "-i":
+                out.setdefault(argv[i + 1], label)
+            elif arg == "-f":
+                try:
+                    for line in Path(argv[i + 1]).read_text(errors="replace").splitlines():
+                        m = re.match(r"\s*\[([^\]]+)\]", line)
+                        if m and m.group(1) not in ("global", "unicast_master_table"):
+                            out.setdefault(m.group(1).strip(), label)
+                except OSError:
+                    pass
+    return out
+
+
+def ptp_master_nic(group, overrides, entries, included):
+    """(NIC, 대수) — PC 가 PTP grandmaster 여야 하는 카메라(동기 방식 PTP 액션, 또는 'PTP 시각 동기' 가 켜진
+    카메라군)가 달린 NIC. 그런 카메라가 없으면 (None, 0). 여러 NIC 에 나뉘면 가장 많은 쪽.
+
+    entries: {subset: [인벤토리 항목]} (이번 기동에 들어간 카메라), included: {subset: [감지된 장비]}."""
+    nics, need = [], 0
+    for sub in subsets_of(group):
+        if not sub.get("sync_roles"):            # 열화상 A70 은 PTP Slave 가 안 된다 (자유 실행)
+            continue
+        target = next((t for t in param_targets(group) if t["subset"] == sub["key"]), None)
+        ptp_all = bool((_merged_params(group, target, overrides) or {}).get("ptp.enable")) if target else False
+        nic_of = {d["identity"]: d.get("nic") for d in included.get(sub["key"]) or []}
+        for entry in entries.get(sub["key"]) or []:
+            if ptp_all or sync_mode(entry) in ("ptp_sender", "ptp_receiver"):
+                need += 1
+                if nic_of.get(str(entry.get("serial"))):
+                    nics.append(nic_of[str(entry.get("serial"))])
+    if not nics:
+        return None, need
+    return max(sorted(set(nics)), key=nics.count), need
+
+
 def plan_launch(group, overrides, devices=None, notes=None):
     """이번 기동 계획 -> (런치 인자 목록, 기대 네임스페이스 목록).
 
@@ -635,6 +1143,17 @@ def plan_launch(group, overrides, devices=None, notes=None):
                 notes.append(f"{sub['label']}: 감지된 장비가 없어 이번 기동에서 뺍니다")
         inventory_args, entries = build_inventory_files(
             group, dict(overrides or {}, subsets=enabled), devices, notes)
+    included = included_devices(group, overrides, devices) if devices is not None else {}
+    overrides = _drop_frame_rate_cap(group, overrides, entries, notes)
+    for sub in subsets_of(group):
+        if enabled.get(sub["key"], True):
+            mtus = nic_mtus(included.get(sub["key"]))
+            modes = [sync_mode(e) for e in entries.get(sub["key"]) or []]
+            synced = sum(1 for m in modes if m in SYNCED_MODES)
+            ptp_cams = sum(1 for m in modes if m in ("ptp_sender", "ptp_receiver"))
+            for level, text in check_settings(group, sub["key"], overrides, len(entries.get(sub["key"]) or []),
+                                              mtus, synced, ptp_cams):
+                notes.append(f"{'⛔' if level == 'error' else '⚠'} {sub['label']}: {text}")
 
     args = []
     for sub in subsets_of(group):
@@ -643,6 +1162,40 @@ def plan_launch(group, overrides, devices=None, notes=None):
 
     curated = fields_for(group, "launch")
     values = {f["key"]: effective_value(group, f, overrides) for f in curated}
+    # 'PTP grandmaster NIC' — 비워 두면 알아서 (PTP 를 쓰는 카메라가 있으면 그 NIC 에서 ptp4l, 없으면 안 띄운다).
+    # 이미 다른 ptp4l 이 맡은 NIC 에는 띄우지 않는다 — 외부 grandmaster(Orin GNSS) + boundary clock 을 따로 돌릴 때
+    # 같은 NIC 에 둘이면 PTP 식별자(NIC MAC)가 같아 응답을 서로 가로채고, 소프트웨어 모드 ptp4l 은 slave 가 되면
+    # PC 시스템 시계를 끌고 가서 phc2sys 와 싸운다 (2026-09-22: 'eno1' 을 적어 두어 boundary clock 의 eno1 에 한 개 더 떴다).
+    if "ptp_master_interface" in values and devices is not None:
+        requested = str(values["ptp_master_interface"] or "").strip()
+        nic, need = ptp_master_nic(group, overrides, entries, included)
+        external = external_ptp4l_interfaces()
+        if not requested:
+            if nic and nic in external:
+                notes.append(f"PTP grandmaster: {nic} 은 이미 다른 ptp4l 이 맡고 있어 GUI 는 ptp4l 을 띄우지 않습니다 "
+                             f"({external[nic]}) — 카메라는 그 PTP 를 받습니다")
+            elif nic:
+                values["ptp_master_interface"] = nic
+                notes.append(f"PTP grandmaster: PTP 를 쓰는 카메라 {need}대가 있어 {nic} 에서 ptp4l 을 띄웁니다 "
+                             "(PC = 기준 시계, 자동)")
+                # 카메라는 PC 시계를 받는다 — 그 PC 시계가 GNSS(Orin)를 따라가는지는 phc2sys 가 도는지로 본다.
+                # 안 돌면 카메라끼리는 맞아도 GNSS 시각이 아니다 (config/systemd/ptp-orin · phc2sys-orin).
+                if not running_process("phc2sys"):
+                    notes.append("⚠ phc2sys 가 안 돌고 있어 PC 시계가 GNSS(Orin) 시각을 따라가지 않습니다 — 카메라끼리는 "
+                                 "맞지만 GNSS 시각이 아닙니다. 부팅 서비스 ptp-orin · phc2sys-orin 을 켜세요 "
+                                 "(config/systemd, README 'PTP 처음부터 세팅')")
+            elif need:
+                notes.append(f"⛔ PTP 를 쓰는 카메라가 {need}대인데 달린 NIC 를 몰라 ptp4l 을 못 띄웁니다 — "
+                             "'PTP grandmaster NIC' 에 카메라 NIC 를 직접 적으세요")
+        elif requested.lower() not in PTP_MASTER_OFF:
+            if requested in external:
+                values["ptp_master_interface"] = ""
+                notes.append(f"⛔ 'PTP grandmaster NIC' 가 {requested} 인데 거기엔 이미 다른 ptp4l 이 돌고 있어 띄우지 "
+                             f"않습니다 ({external[requested]}). 같은 NIC 에 둘이면 PTP 식별자가 겹치고 둘 다 PC 시계를 "
+                             "건드립니다. 외부 PTP 를 쓸 거면 이 칸을 비워 두세요 (자동)")
+            elif nic and requested != nic:
+                notes.append(f"⚠ 'PTP grandmaster NIC' 가 {requested} 인데 PTP 를 쓰는 카메라는 {nic} 에 있습니다 — "
+                             f"{requested} 의 ptp4l 시각은 카메라에 닿지 않습니다. 이 칸은 PC 의 카메라 NIC 이름입니다")
     defaults = launch_defaults(group)
 
     def add_arg(key, value, field=None):
@@ -660,8 +1213,7 @@ def plan_launch(group, overrides, devices=None, notes=None):
     for field in curated:
         value = values[field["key"]]
         # 조건이 안 맞는 인자는 넘기지 않는다 (순차 기동이면 고정 간격은 의미가 없다)
-        condition = field.get("enabled_when") or {}
-        if value is None or any(values.get(k) != v for k, v in condition.items()):
+        if value is None or not condition_met(field.get("enabled_when"), values.get):
             continue
         add_arg(field["key"], value, field)
     # '전체 설정' 에서 바꾼 나머지 런치 인자
@@ -812,7 +1364,7 @@ def promote_inventory_plan(group, overrides, subset_key, devices):
             changes.append((serial, f"새 카메라 → {entry['namespace']}"))
         else:
             diff = [f"{k} {repo[serial].get(k, '-')} → {entry[k]}" for k in
-                    ("namespace", "ptp_action_role", "force_ip_address")
+                    ("namespace", "hardware_trigger_role", "ptp_action_role", "force_ip_address")
                     if k in entry and str(repo[serial].get(k, "")) != str(entry[k])]
             if diff:
                 changes.append((serial, " · ".join(diff)))
@@ -827,7 +1379,7 @@ def promote_inventory_apply(group, overrides, subset_key, devices):
     backup = defaults_writer.write_inventory(path, node_key, entries)
     mine = camera_overrides(overrides)
     for serial, _ in changes:
-        for key in ("name", "ptp_action_role", "force_ip_address", "force_ip_subnet_mask"):
+        for key in ("name", *SYNC_ROLE_KEYS, "force_ip_address", "force_ip_subnet_mask"):
             (mine.get(serial) or {}).pop(key, None)
         if not mine.get(serial):
             mine.pop(serial, None)

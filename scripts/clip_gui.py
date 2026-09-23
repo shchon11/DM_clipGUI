@@ -13,6 +13,7 @@
 # 설정은 ~/.config/dm_clip_gui/last_session.yaml 에 자동 저장/복원되고,
 # 파일 메뉴로 다른 프로파일을 저장/불러올 수 있다.
 
+import html
 import json
 import math
 import os
@@ -22,14 +23,15 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from collections import deque
 from pathlib import Path
 
 import yaml
 
-from PyQt5.QtCore import QByteArray, QObject, Qt, QThread, QTimer, QProcess, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QKeySequence, QPixmap, QTextCursor
+from PyQt5.QtCore import QByteArray, QObject, QRectF, Qt, QThread, QTimer, QProcess, pyqtSignal
+from PyQt5.QtGui import QColor, QFont, QKeySequence, QPainter, QPixmap, QTextCursor
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout, QGroupBox,
@@ -37,8 +39,8 @@ from PyQt5.QtWidgets import (
     QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea,
     QShortcut, QSizePolicy, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget,
-    QToolButton,
-    QTextEdit, QVBoxLayout, QWidget)
+    QToolButton, QToolTip,
+    QTextBrowser, QTextEdit, QVBoxLayout, QWidget)
 
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
@@ -86,7 +88,7 @@ DEFAULT_CFG = {
         "default_reliability": "best_effort", "default_durability": "volatile",
         # 네트워크: 스위치 업링크 NIC ("auto" = 가장 빠른 UP 인터페이스),
         # 장치(카메라/라이다) 쪽 포트 링크 속도, IP→이름 수동 별칭 (라이다 등)
-        "nic": "auto", "per_ip_link_mbps": 1000, "ip_aliases": {},
+        "per_ip_link_mbps": 1000, "ip_aliases": {},
         # GNSS 실시간 표시용 토픽
         "gnss_fix_topic": "/gps/fix",
         "gnss_status_topics": ["/gps/pos_type", "/gps/nav_status"],
@@ -139,6 +141,7 @@ class RosWorker(QThread):
     sig_params = pyqtSignal(bool, str)   # 파라미터 적용 결과
     sig_gnss = pyqtSignal(dict)          # 실시간 GNSS 상태 조각
     sig_serials = pyqtSignal(dict)       # {camera_serial: 노드 네임스페이스}
+    sig_node_param = pyqtSignal(str, str, bool, str)   # (노드, 키, 성공, 사유) — set_node_param 결과
 
     def __init__(self, cfg):
         super().__init__()
@@ -391,6 +394,41 @@ class RosWorker(QThread):
 
         self._param_cli.call_async(req).add_done_callback(done)
 
+    def set_node_param(self, node, key, value):
+        """다른 노드의 파라미터 하나를 실행 중에 바꾼다 (ISP 튜닝 — 카메라 노드는 camera.* 를 받는 즉시
+        카메라에 쓴다). 서비스 클라이언트는 스핀하는 스레드에서 만든다. 결과는 sig_node_param."""
+        if isinstance(value, bool):
+            pv = ParameterValue(type=ParameterType.PARAMETER_BOOL, bool_value=value)
+        elif isinstance(value, int):
+            pv = ParameterValue(type=ParameterType.PARAMETER_INTEGER, integer_value=value)
+        elif isinstance(value, float):
+            pv = ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=value)
+        else:
+            pv = ParameterValue(type=ParameterType.PARAMETER_STRING, string_value=str(value))
+
+        def run():
+            svc = f"{node}/set_parameters"
+            cli = self._param_clients.get(svc)
+            if cli is None:
+                cli = self.node.create_client(SetParameters, svc)
+                self._param_clients[svc] = cli
+            if not cli.service_is_ready() and not cli.wait_for_service(timeout_sec=1.0):
+                self.sig_node_param.emit(node, key, False, f"{svc} 서비스가 없습니다 (노드가 떠 있나요?)")
+                return
+            req = SetParameters.Request()
+            req.parameters = [Parameter(name=key, value=pv)]
+
+            def done(fut):
+                try:
+                    bad = [r.reason for r in fut.result().results if not r.successful]
+                    self.sig_node_param.emit(node, key, not bad, "; ".join(bad))
+                except Exception as e:
+                    self.sig_node_param.emit(node, key, False, str(e))
+
+            cli.call_async(req).add_done_callback(done)
+
+        self.call_in_ros_thread(run)
+
     def set_recorder_params(self, topics, qos_entries):
         """topics/topic_qos 파라미터를 비동기로 적용. 결과는 sig_params."""
         if not self._param_cli.service_is_ready():
@@ -486,11 +524,26 @@ class DiagRunner(QThread):
     def __init__(self, bag_dir):
         super().__init__()
         self.bag_dir = str(bag_dir)
+        # 녹화(클립 · 수동) 중에는 bag 을 읽지 않고 기다린다. 진단은 영상 멈춤을 보느라 bag 을 거의 다 다시 읽는다
+        # (31초 녹화 = 5.9 GB) — 그동안 새 녹화가 돌면 같은 디스크를 두고 레코더와 다툰다.
+        self.hold = threading.Event()
+
+    def _wait_if_held(self):
+        if self.isInterruptionRequested():
+            raise RuntimeError("GUI 종료로 진단 중단")
+        if not self.hold.is_set():
+            return
+        self.sig_progress.emit("녹화 중 — 진단 잠시 멈춤 (녹화가 끝나면 이어서)")
+        while self.hold.is_set() and not self.isInterruptionRequested():
+            time.sleep(0.3)
+        if self.isInterruptionRequested():
+            raise RuntimeError("GUI 종료로 진단 중단")
+        self.sig_progress.emit("진단 이어서")
 
     def run(self):
         try:
             rep = bag_diagnostics.analyze(
-                self.bag_dir, progress=self.sig_progress.emit)
+                self.bag_dir, progress=self.sig_progress.emit, hold=self._wait_if_held)
             # 보고서를 클립 옆에 저장
             d = Path(self.bag_dir)
             (d / "diagnostics.json").write_text(
@@ -605,6 +658,81 @@ class NetMonitor(QObject):
             path = net_tools.find_net_probe() or "net_probe"
             self.sig_state.emit(
                 f"IP별 측정 불가 — 한 번만 실행: sudo setcap cap_net_raw+ep {path}")
+
+
+class MultiNetMonitor(QObject):
+    """UP 상태의 유선 NIC 전부를 감시한다. 라이다를 USB-이더넷 어댑터로 옮겨 꽂는
+    식으로 NIC 가 생기고 없어져도 3초 주기 스캔이 알아서 모니터를 붙이고 정리하므로
+    NIC 를 고르는 설정이 필요 없다. 신호는 NIC 별 결과를 병합해 1초 주기로 내보낸다."""
+    sig_totals = pyqtSignal(dict)   # {nic: (rx Mbps, link Mbps)}
+    sig_ips = pyqtSignal(dict)      # {ip: (Mbps, pps, flows, nic)}
+    sig_state = pyqtSignal(str)     # 도우미 상태 ("" = 정상, 권한 문제는 1개만)
+    sig_cams = pyqtSignal(dict)     # 모든 NIC 의 GVCP 결과 병합
+    sig_nic = pyqtSignal(str)       # 핫플러그 이벤트 (로그용)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._mons = {}             # nic -> NetMonitor
+        self._totals = {}
+        self._rates = {}            # nic -> {ip: (mbps, pps, flows)}
+        self._states = {}
+        self._cams = {}
+        self._scan_timer = QTimer(self, interval=3000, timeout=self._scan)
+        self._emit_timer = QTimer(self, interval=1000, timeout=self._emit_merged)
+
+    def start(self):
+        self._scan()
+        self._scan_timer.start()
+        self._emit_timer.start()
+
+    def stop(self):
+        self._scan_timer.stop()
+        self._emit_timer.stop()
+        for m in self._mons.values():
+            m.stop()
+        self._mons.clear()
+
+    def _scan(self):
+        current = {name for name, _ in net_tools.nic_list()}
+        for nic in sorted(current - self._mons.keys()):
+            m = NetMonitor(nic, self)
+            m.sig_total.connect(self._on_total)
+            m.sig_ips.connect(lambda rates, nic=nic:
+                              self._rates.__setitem__(nic, rates))
+            m.sig_state.connect(lambda st, nic=nic:
+                                self._states.__setitem__(nic, st))
+            m.sig_cams.connect(self._on_cams)
+            self._mons[nic] = m
+            m.start()
+            self.sig_nic.emit(f"NIC 감시 시작: {nic}")
+        for nic in sorted(self._mons.keys() - current):
+            self._mons.pop(nic).stop()
+            self._totals.pop(nic, None)
+            self._rates.pop(nic, None)
+            self._states.pop(nic, None)
+            self.sig_nic.emit(f"NIC 분리됨: {nic} — 모니터 정리")
+        if not current:
+            self._totals.clear()
+
+    def _on_total(self, iface, mbps, link):
+        if iface in self._mons:
+            self._totals[iface] = (mbps, link)
+
+    def _on_cams(self, cams):
+        if cams:
+            self._cams.update(cams)
+            self.sig_cams.emit(dict(self._cams))
+
+    def _emit_merged(self):
+        self.sig_totals.emit(dict(self._totals))
+        merged = {}
+        for nic, rates in self._rates.items():
+            for ip, (mbps, pps, flows) in rates.items():
+                if ip not in merged or mbps > merged[ip][0]:
+                    merged[ip] = (mbps, pps, flows, nic)
+        self.sig_ips.emit(merged)
+        msgs = sorted(st for st in self._states.values() if st)
+        self.sig_state.emit(msgs[0] if msgs else "")
 
 
 # ---------------- 누적 궤적 지도 ----------------
@@ -1167,16 +1295,10 @@ class SettingsDialog(QDialog):
         self.storage.addItems(["sqlite3", "mcap"])
         self.storage.setCurrentText(rec["storage_id"])
         self.key = QKeySequenceEdit(QKeySequence(ui["shortcut"]))
-        self.auto_diag = QCheckBox("클립 녹화 완료 시 자동 진단")
+        self.auto_diag = QCheckBox("녹화가 끝나면 자동 진단 (클립 · 수동 녹화)")
         self.auto_diag.setChecked(ui["auto_diagnose"])
         self.auto_start = QCheckBox("시작 시 레코더 자동 실행 (외부 노드 없을 때)")
         self.auto_start.setChecked(ui["auto_start_recorder"])
-        self.nic = QComboBox()
-        self.nic.addItem("auto")
-        for name, speed in net_tools.nic_list():
-            self.nic.addItem(f"{name}" if speed < 0 else f"{name}", name)
-        idx = self.nic.findText(ui.get("nic", "auto"))
-        self.nic.setCurrentIndex(max(0, idx))
         self.ip_link = QSpinBox()
         self.ip_link.setRange(10, 100000)
         self.ip_link.setSuffix(" Mbps")
@@ -1192,7 +1314,9 @@ class SettingsDialog(QDialog):
         form.addRow("트리거 단축키", self.key)
         form.addRow(self.auto_diag)
         form.addRow(self.auto_start)
-        form.addRow("스위치 업링크 NIC", self.nic)
+        nic_note = QLabel("UP 유선 NIC 전부 자동 감시 — USB 어댑터를 꽂으면 자동 인식")
+        nic_note.setStyleSheet("color:#666;")
+        form.addRow("네트워크 감시", nic_note)
         form.addRow("장치 포트 링크 속도", self.ip_link)
         note = QLabel("pre/post/버퍼 설정은 레코더 재시작 시 적용됩니다 "
                       "(레코더는 자동으로 재시작 — 외부에서 띄운 레코더는 제외).")
@@ -1221,100 +1345,229 @@ class SettingsDialog(QDialog):
         ui.update(shortcut=self.key.keySequence().toString() or "F9",
                   auto_diagnose=self.auto_diag.isChecked(),
                   auto_start_recorder=self.auto_start.isChecked(),
-                  nic=self.nic.currentText(),
                   per_ip_link_mbps=self.ip_link.value())
         return before != rec        # 레코더 재시작 필요 여부
 
 
 # ---------------- 진단 결과 다이얼로그 ----------------
 
+DIAG_COLOR = {"OK": ui_theme.OK, "WARN": ui_theme.WARN, "FAIL": ui_theme.ERR}
+DIAG_TINT = {"OK": "#f0fdf4", "WARN": "#fffbeb", "FAIL": "#fef2f2"}
+DIAG_BAR = {"OK": "#86efac", "WARN": "#fcd34d", "FAIL": "#fca5a5"}
+DIAG_MARK = {"OK": "✔", "WARN": "⚠", "FAIL": "✖"}
+EVENT_COLOR = {"lost": "#dc2626", "nocap": "#991b1b", "clock": "#7c3aed",
+               "nuc": "#d97706", "frozen": "#d97706", "absent": "#6b7280"}
+EVENT_NAME = {"lost": "빠짐", "nocap": "카메라가 안 찍음", "frozen": "화면 멈춤 · 셔터 보정",
+              "clock": "시각 튐", "absent": "데이터 없음"}
+
+
+class DiagTimeline(QWidget):
+    """녹화 전체(0 ~ 길이)를 가로 막대로 — 데이터가 들어온 구간과, 빠짐 · 멈춤 · 시각 튐이 언제였는지."""
+
+    def __init__(self, sensor, duration, parent=None):
+        super().__init__(parent)
+        self.sensor, self.duration = sensor, max(duration, 1e-3)
+        self.setMouseTracking(True)
+        self.setMinimumHeight(20)
+
+    def _x(self, t):
+        return 4 + (self.width() - 8) * min(max(t / self.duration, 0.0), 1.0)
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        track = QRectF(4, self.height() / 2 - 5, self.width() - 8, 10)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#eceef1"))
+        p.drawRoundedRect(track, 3, 3)
+        s = self.sensor
+        if s["count"]:
+            x0, x1 = self._x(s["first_t"]), self._x(s["last_t"])
+            p.setBrush(QColor(DIAG_BAR[s["level"]]))
+            p.drawRoundedRect(QRectF(x0, track.top(), max(2.0, x1 - x0), track.height()), 3, 3)
+        for e in s["events"]:
+            x0, x1 = self._x(e["t"]), self._x(e["t"] + e["sec"])
+            p.setBrush(QColor(EVENT_COLOR.get(e["kind"], ui_theme.ERR)))
+            p.drawRect(QRectF(x0, track.top() - 3, max(3.0, x1 - x0), track.height() + 6))
+        p.end()
+
+    def mouseMoveEvent(self, event):
+        t = (event.x() - 4) / max(1, self.width() - 8) * self.duration
+        near = [e for e in self.sensor["events"]
+                if abs(self._x(e["t"]) - event.x()) <= 5 or e["t"] <= t <= e["t"] + e["sec"]]
+        text = "\n".join(f"{e['t']:.1f}초 — {e['text']}" for e in near[:8]) or f"{max(0.0, t):.1f}초 — 이상 없음"
+        QToolTip.showText(event.globalPos(), text, self)
+
+
 class DiagDialog(QDialog):
+    """진단 결과 — 한 줄 판정 → 확인할 것 → 센서별 표(+타임라인) → 고른 센서 자세히. 토픽별 원본은 버튼 뒤로.
+
+    2026-09-22 지적 "진단기가 너무 직관적이지 못하다": 예전 창은 토픽 84개를 OK/WARN/FAIL · p95 · 경계잘림 칸으로
+    늘어놓아, 쓸 수 있는 녹화인지 · 무엇이 문제인지를 읽어 내야 했다. 판정 · 문장은 bag_diagnostics.summarize 가 만든다.
+    """
+
     def __init__(self, report, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"클립 진단 — {Path(report['bag']).name}")
-        ui_theme.fit_to_screen(self, 940, 620)
-        v = QVBoxLayout(self)
-
-        lvl = report["level"]
-        color = {"OK": "#859900", "WARN": "#b58900", "FAIL": "#dc322f"}[lvl]
-        head = QLabel(
-            f"<b style='color:{color}; font-size:14pt'>{lvl}</b> — "
-            f"{report['duration']:.1f}s, {report['total_msgs']}개, "
-            f"{report['total_mb']:.0f} MB"
-            + (f" | 문제 토픽: {', '.join(report['fail_topics'] + report['warn_topics'])}"
-               if lvl != "OK" else " | 모든 토픽 정상"))
-        head.setWordWrap(True)
-        v.addWidget(head)
-
-        table = QTableWidget(0, 7)
-        table.setHorizontalHeaderLabels(
-            ["판정", "토픽", "수신", "중간유실", "경계잘림", "Hz", "지연 p95"])
-        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        table.verticalHeader().setVisible(False)
-        order = {"FAIL": 0, "WARN": 1, "OK": 2}
-        for name, t in sorted(report["topics"].items(),
-                              key=lambda kv: (order[kv[1]["level"]], kv[0])):
-            row = table.rowCount()
-            table.insertRow(row)
-            lvl_item = QTableWidgetItem(t["level"])
-            lvl_item.setForeground(QColor(
-                {"OK": "#859900", "WARN": "#b58900",
-                 "FAIL": "#dc322f"}[t["level"]]))
-            table.setItem(row, 0, lvl_item)
-            table.setItem(row, 1, QTableWidgetItem(name))
-            table.setItem(row, 2, QTableWidgetItem(str(t["count"])))
-            table.setItem(row, 3, QTableWidgetItem(str(t["lost_mid"])))
-            table.setItem(row, 4, QTableWidgetItem(
-                f"{t['head_trunc']}/{t['tail_trunc']}"))
-            table.setItem(row, 5, QTableWidgetItem(
-                str(t.get("rate_hz", "-"))))
-            table.setItem(row, 6, QTableWidgetItem(
-                f"{t['lat_p95_ms']:.0f} ms" if "lat_p95_ms" in t else "-"))
-        v.addWidget(table, 2)
-
-        # GNSS 요약 + 지도
         self.report = report
         self.map_thread = None
+        sm = report.get("summary") or bag_diagnostics.summarize(report)
+        self.summary = sm
+        self.setWindowTitle(f"녹화 진단 — {Path(report['bag']).name}")
+        ui_theme.fit_to_screen(self, 1120, 800)
+        v = QVBoxLayout(self)
+        esc = html.escape
+
+        lvl, c = sm["level"], sm["counts"]
+        banner = QLabel(
+            f"<div style='font-size:17pt; font-weight:700; color:{DIAG_COLOR[lvl]}'>{DIAG_MARK[lvl]}&nbsp; "
+            f"{esc(sm['title'])}</div>"
+            f"<div style='font-size:10.5pt; margin-top:4px'>{esc(sm['sub'])}</div>"
+            f"<div style='color:{ui_theme.MUTED}; margin-top:6px'>{esc(Path(report['bag']).name)} · "
+            f"{report['duration']:.1f}초 · {report['total_mb'] / 1000:.1f} GB · 센서 {sm['n_sensors']}개 — "
+            f"<b style='color:{ui_theme.OK}'>정상 {c['OK']}</b> · <b style='color:{ui_theme.WARN}'>확인 {c['WARN']}</b>"
+            f" · <b style='color:{ui_theme.ERR}'>문제 {c['FAIL']}</b></div>")
+        banner.setTextFormat(Qt.RichText)
+        banner.setWordWrap(True)
+        banner.setStyleSheet(f"QLabel {{ background:{DIAG_TINT[lvl]}; border:1px solid {DIAG_COLOR[lvl]};"
+                             " border-radius:8px; padding:12px 16px; }")
+        v.addWidget(banner)
+
+        if sm["problems"]:
+            rows = "".join(
+                f"<tr><td style='color:{DIAG_COLOR[p['level']]}; padding-right:6px'>{DIAG_MARK[p['level']]}</td>"
+                f"<td><b>{esc(p['sensor'])}</b> — {esc(p['text'])}"
+                + (f"<br><span style='color:{ui_theme.MUTED}'>→ {esc(p['hint'])}</span>" if p.get("hint") else "")
+                + "</td></tr>" for p in sm["problems"])
+            probs = QTextBrowser()
+            probs.setHtml(f"<b>확인할 것 {len(sm['problems'])}가지</b>"
+                          f"<table cellspacing=0 cellpadding=3>{rows}</table>")
+            probs.setMaximumHeight(min(240, 60 + 50 * len(sm["problems"])))
+            v.addWidget(probs)
+
+        legend = QLabel("타임라인: " + " &nbsp; ".join(
+            f"<span style='color:{EVENT_COLOR[k]}'>■</span> {EVENT_NAME[k]}"
+            for k in ("lost", "nocap", "frozen", "clock", "absent"))
+            + " &nbsp; — 막대에 마우스를 올리면 언제 무슨 일인지 나옵니다. 줄을 누르면 아래에 자세히")
+        legend.setTextFormat(Qt.RichText)
+        legend.setObjectName("Hint")
+        legend.setWordWrap(True)
+        v.addWidget(legend)
+
+        split = QSplitter(Qt.Vertical)
+        split.setChildrenCollapsible(False)
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["", "센서", "상태", f"타임라인  0 ─ {report['duration']:.0f}초"])
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.Fixed)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.Stretch)
+        hh.setSectionResizeMode(3, QHeaderView.Fixed)
+        self.table.setColumnWidth(0, 30)
+        self.table.setColumnWidth(3, 320)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(28)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        for sensor in sm["sensors"]:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            level = sensor["level"]
+            mark = QTableWidgetItem(DIAG_MARK[level])
+            mark.setForeground(QColor(DIAG_COLOR[level]))
+            mark.setTextAlignment(Qt.AlignCenter)
+            name = QTableWidgetItem(sensor["label"])
+            state = QTableWidgetItem(sensor["headline"])
+            state.setToolTip(sensor["headline"])
+            if level != "OK":
+                font = name.font()
+                font.setBold(True)
+                name.setFont(font)
+                state.setForeground(QColor(DIAG_COLOR[level]))
+            for col, item in enumerate((mark, name, state)):
+                self.table.setItem(row, col, item)
+            self.table.setCellWidget(row, 3, DiagTimeline(sensor, report["duration"]))
+        self.table.itemSelectionChanged.connect(self._show_sensor)
+        split.addWidget(self.table)
+        self.detail = QTextBrowser()
+        split.addWidget(self.detail)
+        split.setSizes([440, 240])
+        v.addWidget(split, 1)
+
+        bot = QHBoxLayout()
+        btn_raw = QPushButton("토픽별 원본 보고서")
+        btn_raw.setToolTip("예전 형식 — 토픽마다 판정 · 지연 · 유실 지점을 전부 (diagnostics.txt 아래쪽과 같음)")
+        btn_raw.clicked.connect(self._show_raw)
+        bot.addWidget(btn_raw)
         if report.get("gnss"):
-            gl = QHBoxLayout()
-            parts = []
-            for tname, q in report["gnss"].items():
-                seg = f"{tname}: [{q['level']}]"
-                if "fix_ratio" in q:
-                    seg += f" 유효 fix {q['fix_ratio']*100:.0f}%"
-                if "hacc_p95_m" in q:
-                    seg += f", 수평정확도 p95 {q['hacc_p95_m']} m"
-                if "track_m" in q:
-                    seg += f", 이동 {q['track_m']} m"
-                if q.get("pos_type_hist"):
-                    seg += f", pos_type {q['pos_type_hist']}"
-                parts.append(seg)
-            lbl = QLabel("GNSS — " + " | ".join(parts))
-            lbl.setWordWrap(True)
-            gl.addWidget(lbl, 1)
-            self.btn_map = QPushButton("궤적 지도 (OSM)")
+            self.btn_map = QPushButton("GNSS 궤적 지도")
             has_track = any("track_m" in q for q in report["gnss"].values())
             self.btn_map.setEnabled(has_track)
             if not has_track:
                 self.btn_map.setToolTip("유효한 fix가 없어 지도를 그릴 수 없음")
             self.btn_map.clicked.connect(self._show_map)
-            gl.addWidget(self.btn_map)
-            v.addLayout(gl)
-
-        detail = QTextEdit(readOnly=True)
-        detail.setFont(QFont("Monospace", 9))
-        detail.setPlainText(bag_diagnostics.render_text(report))
-        v.addWidget(detail, 1)
-
-        bot = QHBoxLayout()
-        note = QLabel(f"보고서 저장됨: {report['bag']}/diagnostics.txt / .json")
-        note.setStyleSheet("color:#666;")
-        bot.addWidget(note)
-        bot.addStretch()
+            bot.addWidget(self.btn_map)
+        btn_dir = QPushButton("폴더 열기")
+        btn_dir.clicked.connect(lambda: subprocess.Popen(["xdg-open", report["bag"]]))
+        bot.addWidget(btn_dir)
+        note = QLabel(f"보고서 저장됨: {report['bag']}/diagnostics.txt")
+        note.setObjectName("Hint")
+        bot.addWidget(note, 1)
         btn = QPushButton("닫기")
         btn.clicked.connect(self.accept)
         bot.addWidget(btn)
         v.addLayout(bot)
+        if self.table.rowCount():
+            self.table.selectRow(0)
+
+    def _show_sensor(self):
+        picked = self.table.selectionModel().selectedRows()
+        if not picked:
+            return
+        s = self.summary["sensors"][picked[0].row()]
+        topics = self.report["topics"]
+        esc, muted, color = html.escape, ui_theme.MUTED, DIAG_COLOR[s["level"]]
+        H = [f"<h3 style='margin:0; color:{color}'>{DIAG_MARK[s['level']]} {esc(s['label'])} — "
+             f"{bag_diagnostics.WORDS[s['level']]}</h3>"]
+        facts = [f"{s['rate_hz']:g} Hz"] if s.get("rate_hz") else []
+        facts.append(f"{s['count']}개 받음" + (f" (있어야 할 것 {s['expected']}개)" if s["expected"] != s["count"] else ""))
+        facts.append(f"대표 토픽 {esc(s['main'])}")
+        H.append(f"<p style='color:{muted}'>{' · '.join(facts)}</p>")
+        if s["issues"]:
+            H.append("<b>확인할 것</b><ul>" + "".join(
+                f"<li><span style='color:{DIAG_COLOR[i['level']]}'>{esc(i['text'])}</span>"
+                + (f"<br><span style='color:{muted}'>→ {esc(i['hint'])}</span>" if i.get("hint") else "") + "</li>"
+                for i in s["issues"]) + "</ul>")
+        elif s["kind"] != "aux":
+            H.append("<p>빠진 것도, 시각이 틀린 것도 없습니다.</p>")
+        if s["info"]:
+            H.append("<b>참고</b><ul>" + "".join(f"<li>{esc(x)}</li>" for x in s["info"]) + "</ul>")
+        if s["events"]:
+            H.append("<b>언제</b> <span style='color:%s'>(녹화 시작부터)</span><ul>" % muted + "".join(
+                f"<li>{e['t']:.1f}초 — {esc(e['text'])}</li>" for e in s["events"][:30])
+                + (f"<li>… 외 {len(s['events']) - 30}곳</li>" if len(s["events"]) > 30 else "") + "</ul>")
+        H.append(f"<b>토픽</b><table cellspacing=0 cellpadding=3><tr style='color:{muted}'>"
+                 "<th align=left>토픽</th><th align=left>판정</th><th align=right>받음</th><th align=right>빠짐</th>"
+                 "<th align=right>Hz</th><th align=right>지연 p95</th></tr>")
+        for n in s["topics"]:
+            t = topics[n]
+            H.append(f"<tr><td>{esc(n)}</td><td style='color:{DIAG_COLOR[t['level']]}'>"
+                     f"{bag_diagnostics.WORDS[t['level']]}</td><td align=right>{t['count']}</td>"
+                     f"<td align=right>{t['lost_mid'] or ''}</td><td align=right>{t.get('rate_hz', '')}</td>"
+                     f"<td align=right>{'%.0f ms' % t['lat_p95_ms'] if 'lat_p95_ms' in t else ''}</td></tr>")
+        H.append("</table>")
+        self.detail.setHtml("".join(H))
+
+    def _show_raw(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"토픽별 원본 보고서 — {Path(self.report['bag']).name}")
+        lay = QVBoxLayout(dlg)
+        text = QTextEdit(readOnly=True)
+        text.setFont(QFont("Monospace", 9))
+        text.setPlainText(bag_diagnostics.render_text(self.report))
+        lay.addWidget(text)
+        ui_theme.fit_to_screen(dlg, 1000, 700)
+        dlg.show()
 
     def _show_map(self):
         try:
@@ -1352,6 +1605,8 @@ class MainWindow(QMainWindow):
         self.quit_signal = None       # 터미널 신호로 끄는 중이면 그 이름 (SIGINT …) — 종료 대화상자를 건너뛴다
         self.last_clip = None
         self.diag_thread = None
+        self._diag_queue = []         # 진단이 도는 중에 끝난 녹화 — 앞 진단이 끝나면 차례로 (예전엔 경고만 찍고 버렸다)
+        self._diag_held = False
         self._cap_warned = False
         self._disk_warned = False
         self._last_rate = 0.0     # 최근 유입 MB/s (디스크 여유 → 클립 수 환산용)
@@ -1390,15 +1645,8 @@ class MainWindow(QMainWindow):
         worker.sig_serials.connect(self._on_serials)
         self.recorder.readyReadStandardOutput.connect(self._on_proc_out)
 
-        # 네트워크 모니터 (스위치 업링크 NIC)
-        nic = cfg["ui"].get("nic", "auto")
-        self.netmon = NetMonitor(net_tools.auto_nic() if nic == "auto" else nic, self)
-        self.netmon.sig_total.connect(self._on_net_total)
-        self.netmon.sig_ips.connect(self._on_net_ips)
-        self.netmon.sig_state.connect(self._on_net_state)
-        self.netmon.sig_cams.connect(self._on_cams)
-        self.netmon.start()
-        QApplication.instance().aboutToQuit.connect(self.netmon.stop)
+        # 네트워크 모니터: UP 유선 NIC 전부 자동 감시 (라이다 USB 어댑터 핫플러그 인식)
+        self._start_netmon()
         # GNSS 표시는 메시지마다가 아니라 2 Hz 타이머로만 갱신 (RT2000 100 Hz 대비)
         self.gnss_timer = QTimer(self, interval=500, timeout=self._refresh_gnss)
         self.gnss_timer.start()
@@ -1503,12 +1751,13 @@ class MainWindow(QMainWindow):
         row = QSplitter(Qt.Horizontal)
         row.setChildrenCollapsible(False)
         self.net_split = row
-        grp_net = QGroupBox("네트워크 — 스위치 업링크")
+        grp_net = QGroupBox("네트워크 — 유선 NIC 자동 감시")
         gn = QGridLayout(grp_net)
-        self.lbl_nic = QLabel("NIC: -")
-        self.bar_nic = QProgressBar(format="- / - Gbps")
-        gn.addWidget(self.lbl_nic, 0, 0)
-        gn.addWidget(self.bar_nic, 0, 1)
+        # NIC 별 게이지 — 감지된 유선 NIC 수만큼 행이 생기고 없어진다
+        self._nic_rows = {}                     # nic -> (QLabel, QProgressBar)
+        self.nic_grid = QGridLayout()
+        self.nic_grid.setColumnStretch(1, 1)
+        gn.addLayout(self.nic_grid, 0, 0, 1, 2)
         # 센서 18대 — 장치 이름이 제일 중요하다. Mbps·사용률은 한 칸으로, pps 는 툴팁으로.
         self.net_table = QTableWidget(0, 3)
         self.net_table.setHorizontalHeaderLabels(["장치", "IP", "대역폭"])
@@ -1610,6 +1859,15 @@ class MainWindow(QMainWindow):
             "디스크 여유가 1 GB 밑으로 내려가면 자동으로 멈춥니다.")
         self.btn_record.clicked.connect(self.toggle_recording)
         h.addWidget(self.btn_record, 1)
+        # 수집만 하고 싶을 때 — 녹화가 끝나도 진단을 돌리지 않는다 (2026-09-23 요청: "진단기 결과 무시하고 데이터 취득").
+        # 설정의 '녹화가 끝나면 자동 진단' 과 같은 값 (ui.auto_diagnose) 이라 어느 쪽을 켜고 꺼도 맞춰진다.
+        self.chk_no_diag = QCheckBox("진단 끄기\n(수집만)")
+        self.chk_no_diag.setToolTip(
+            "켜면 녹화가 끝나도 진단을 돌리지 않습니다 — 결과 창도 안 뜨고, 디스크도 다시 읽지 않습니다.\n"
+            "데이터만 계속 딸 때 쓰세요. 나중에 [도구 ▸ 마지막 녹화 진단] · [폴더를 골라 진단…] 으로 언제든 볼 수 있습니다.")
+        self.chk_no_diag.setChecked(not self.cfg["ui"].get("auto_diagnose", True))
+        self.chk_no_diag.toggled.connect(self._toggle_no_diag)
+        h.addWidget(self.chk_no_diag)
 
         # 현재 상태 줄: 상태마다 바탕색이 바뀌는 띠 (ui_theme 의 QLabel#StateBar[kind=...])
         self.lbl_state = QLabel()
@@ -1670,8 +1928,8 @@ class MainWindow(QMainWindow):
         m_tool = self.menuBar().addMenu("도구(&T)")
         m_tool.addAction("센서 다시 감지", lambda: self.stage.refresh_discovery())
         m_tool.addSeparator()
-        m_tool.addAction("마지막 클립 진단", self._diag_last)
-        m_tool.addAction("클립 폴더에서 진단…", self._diag_pick)
+        m_tool.addAction("마지막 녹화 진단 (클립 · 수동)", self._diag_last)
+        m_tool.addAction("폴더를 골라 진단…", self._diag_pick)
         m_tool.addAction("클립 폴더 열기", self._open_clip_dir)
         m_tool.addSeparator()
         m_tool.addAction("GNSS · 지도 (상태 / 현재 위치 / 클립 궤적)…", self.open_gnss)
@@ -1818,24 +2076,52 @@ class MainWindow(QMainWindow):
         self.btn_record.setEnabled(alive and not self._rec_pending and
                                    not (self.recording or {}).get("closing"))
         self._update_disk()
+        self._update_diag_hold()
 
     # --- 네트워크 ---
-    def _on_net_total(self, iface, mbps, link):
-        cap = link if link > 0 else 10000
-        self.bar_nic.setMaximum(cap)
-        self.bar_nic.setValue(min(int(mbps), cap))
-        pct = mbps / cap
-        self.bar_nic.setFormat(f"{mbps/1000:.2f} / {cap/1000:.0f} Gbps  ({pct*100:.0f}%)")
-        self.lbl_nic.setText(f"NIC {iface}")
-        self.bar_nic.setStyleSheet(
-            "QProgressBar::chunk{background:#dc322f;}" if pct > 0.9 else
-            "QProgressBar::chunk{background:#b58900;}" if pct > 0.75 else "")
+    def _start_netmon(self):
+        self.netmon = MultiNetMonitor(self)
+        self.netmon.sig_totals.connect(self._on_net_totals)
+        self.netmon.sig_ips.connect(self._on_net_ips)
+        self.netmon.sig_state.connect(self._on_net_state)
+        self.netmon.sig_cams.connect(self._on_cams)
+        self.netmon.sig_nic.connect(lambda m: self.log("GUI", m))
+        self.netmon.start()
+        QApplication.instance().aboutToQuit.connect(self.netmon.stop)
+
+    def _on_net_totals(self, totals):
+        if set(totals) != set(self._nic_rows):
+            for lbl, bar in self._nic_rows.values():
+                self.nic_grid.removeWidget(lbl)
+                self.nic_grid.removeWidget(bar)
+                lbl.deleteLater()
+                bar.deleteLater()
+            self._nic_rows = {}
+            for row, nic in enumerate(sorted(totals)):
+                lbl = QLabel(nic)
+                bar = QProgressBar()
+                self.nic_grid.addWidget(lbl, row, 0)
+                self.nic_grid.addWidget(bar, row, 1)
+                self._nic_rows[nic] = (lbl, bar)
+        for nic, (mbps, link) in totals.items():
+            lbl, bar = self._nic_rows[nic]
+            cap = link if link > 0 else 1000
+            bar.setMaximum(cap)
+            bar.setValue(min(int(mbps), cap))
+            pct = mbps / cap
+            if cap >= 1000:
+                bar.setFormat(f"{mbps/1000:.2f} / {cap/1000:.0f} Gbps  ({pct*100:.0f}%)")
+            else:
+                bar.setFormat(f"{mbps:.0f} / {cap:.0f} Mbps  ({pct*100:.0f}%)")
+            bar.setStyleSheet(
+                "QProgressBar::chunk{background:#dc322f;}" if pct > 0.9 else
+                "QProgressBar::chunk{background:#b58900;}" if pct > 0.75 else "")
 
     def _on_net_ips(self, rates):
         self._last_net_rates = rates
         link = float(self.cfg["ui"].get("per_ip_link_mbps", 1000))
         now = time.monotonic()
-        for ip, (mbps, pps, flows) in rates.items():
+        for ip, (mbps, pps, flows, _nic) in rates.items():
             if flows:
                 self._ip_flows[ip] = flows
             if pps > 0:
@@ -1850,7 +2136,7 @@ class MainWindow(QMainWindow):
         self.net_table.setHorizontalHeaderLabels(labels)
         self.net_table.blockSignals(True)        # 채우는 동안 itemChanged 무시
         self.net_table.setRowCount(len(rows))
-        for r, (ip, (mbps, pps, _)) in enumerate(rows):
+        for r, (ip, (mbps, pps, _flows, nic)) in enumerate(rows):
             pct = mbps / link * 100
             idle = now - self._ip_seen.get(ip, now)
             rate = f"{mbps:.0f}" if mbps >= 10 else f"{mbps:.2f}"
@@ -1871,7 +2157,7 @@ class MainWindow(QMainWindow):
             detail = (f"\n{sensor['subset_label']} · {sensor['model'] or '-'} · "
                       f"시리얼 {sensor['identity'] or '-'} · {sensor['nic'] or '-'}") if sensor else ""
             self.net_table.item(r, 0).setToolTip(
-                f"{ip}{detail}\n{rate} Mbps · 포트({link:.0f}M) 사용률 {pct:.0f}% · {pps:.0f} pps"
+                f"{ip}{detail}\nNIC {nic} · {rate} Mbps · 포트({link:.0f}M) 사용률 {pct:.0f}% · {pps:.0f} pps"
                 f"\n힌트: {net_tools.describe_flows(self._ip_flows.get(ip)) or '-'}"
                 "\n더블클릭해서 이름 지정")
         self.net_table.blockSignals(False)
@@ -1901,7 +2187,8 @@ class MainWindow(QMainWindow):
             self._on_net_ips(self._last_net_rates)
 
     def _net_sort_key(self, col, kv):
-        ip, (mbps, _pps, _flows) = kv
+        ip, vals = kv
+        mbps = vals[0]
         try:
             ip_key = tuple(int(x) for x in ip.split("."))
         except ValueError:
@@ -1954,13 +2241,7 @@ class MainWindow(QMainWindow):
             return
         self.log("OK", "net_probe 권한 부여 완료 — IP별 측정 시작")
         self.netmon.stop()
-        nic = self.cfg["ui"].get("nic", "auto")
-        self.netmon = NetMonitor(net_tools.auto_nic() if nic == "auto" else nic, self)
-        self.netmon.sig_total.connect(self._on_net_total)
-        self.netmon.sig_ips.connect(self._on_net_ips)
-        self.netmon.sig_state.connect(self._on_net_state)
-        self.netmon.sig_cams.connect(self._on_cams)
-        self.netmon.start()
+        self._start_netmon()
 
     def _on_cams(self, cams):
         self._cams = cams
@@ -2392,8 +2673,12 @@ class MainWindow(QMainWindow):
             self.recording = None
             self.rec_timer.stop()
             self.last_clip = uri
-            self.log("OK", f"수동 녹화 저장 완료: {uri} ({nmsg}개, {dur}s, {float(mb or 0) / 1024:.1f} GB) "
-                           "— 진단은 [클립 진단]에서 이 폴더를 고르세요")
+            saved = f"수동 녹화 저장 완료: {uri} ({nmsg}개, {dur}s, {float(mb or 0) / 1024:.1f} GB)"
+            if self.cfg["ui"]["auto_diagnose"]:
+                self.log("OK", saved + " — 진단을 시작합니다")
+                self.run_diagnostics(uri)
+            else:
+                self.log("OK", saved + " — 자동 진단이 꺼져 있습니다 (도구 ▸ 마지막 녹화 진단)")
         elif kind == "rec_busy":
             self._rec_pending = False
             reason = parts[1] if len(parts) > 1 else ""
@@ -2432,6 +2717,7 @@ class MainWindow(QMainWindow):
             self.recording = None
             self.rec_timer.stop()
             self._style_record_button()
+        self._update_diag_hold()
 
     def _tick_recording(self):
         rec = self.recording
@@ -2467,13 +2753,15 @@ class MainWindow(QMainWindow):
 
     # --- 진단 ---
     def run_diagnostics(self, bag_dir):
-        if self.diag_thread and self.diag_thread.isRunning():
-            self.log("WARN", "이전 진단이 아직 실행 중")
-            return
         p = Path(bag_dir)
         if not p.is_absolute():
             # 레코더의 상대 output_dir은 레코더 cwd 기준
             p = Path(self.cfg["recorder"]["output_dir"]).parent / bag_dir
+        if self.diag_thread and self.diag_thread.isRunning():
+            if str(p) != self.diag_thread.bag_dir and p not in self._diag_queue:
+                self._diag_queue.append(p)
+                self.log("GUI", f"진단 대기: {p.name} — 앞 진단이 끝나면 시작합니다 (대기 {len(self._diag_queue)}개)")
+            return
         self.log("GUI", f"진단 시작: {p}")
         self.diag_thread = DiagRunner(p)
         self.diag_thread.sig_progress.connect(
@@ -2482,7 +2770,29 @@ class MainWindow(QMainWindow):
         self.diag_thread.sig_error.connect(
             lambda e: (self.log("ERROR", f"진단 실패: {e}"),
                        self._set_state("대기 중")))
+        self.diag_thread.finished.connect(self._next_diagnostics)
+        self._diag_held = False
+        self._update_diag_hold()
         self.diag_thread.start()
+
+    def _next_diagnostics(self):
+        if self._diag_queue and not (self.diag_thread and self.diag_thread.isRunning()):
+            self.run_diagnostics(self._diag_queue.pop(0))
+
+    def _update_diag_hold(self):
+        """녹화(클립 · 수동)가 도는 동안 진단은 bag 을 읽지 않고 기다린다 — 녹화와 디스크를 다투지 않게."""
+        th = self.diag_thread
+        if th is None or th.isFinished():          # 시작 직전(아직 안 뜸)에도 불러 처음부터 멈춰 둘 수 있게
+            return
+        held = bool(self.recording or self.busy)
+        if held:
+            th.hold.set()
+        else:
+            th.hold.clear()
+        if held != self._diag_held:
+            self.log("GUI", f"녹화 중이라 진단({Path(th.bag_dir).name})을 잠시 멈춥니다 — 녹화가 끝나면 이어서"
+                     if held else f"녹화가 끝나 진단({Path(th.bag_dir).name})을 이어서 합니다")
+        self._diag_held = held
 
     def open_gnss(self):
         if self.gnss_win is None:
@@ -2509,10 +2819,13 @@ class MainWindow(QMainWindow):
             self._add_to_map(report["bag"])
             self.log("GUI", "GNSS 궤적을 누적 지도에 추가")
         lvl = report["level"]
-        self.log({"OK": "OK", "WARN": "WARN", "FAIL": "ERROR"}[lvl],
-                 f"진단 완료 [{lvl}] — FAIL {len(report['fail_topics'])}, "
-                 f"WARN {len(report['warn_topics'])} "
-                 f"(보고서: {report['bag']}/diagnostics.txt)")
+        sm = report.get("summary") or bag_diagnostics.summarize(report)
+        text = f"진단 완료 [{bag_diagnostics.WORDS[lvl]}] {Path(report['bag']).name}: {sm['title']}"
+        if sm["problems"]:
+            text += " — " + " · ".join(f"{p['sensor']}: {p['text']}" for p in sm["problems"][:3])
+            if len(sm["problems"]) > 3:
+                text += f" 외 {len(sm['problems']) - 3}건"
+        self.log({"OK": "OK", "WARN": "WARN", "FAIL": "ERROR"}[lvl], text)
         DiagDialog(report, self).show()
 
     def _diag_last(self):
@@ -2523,7 +2836,7 @@ class MainWindow(QMainWindow):
 
     def _diag_pick(self):
         d = QFileDialog.getExistingDirectory(
-            self, "진단할 클립 폴더", self.cfg["recorder"]["output_dir"])
+            self, "진단할 녹화 폴더 (클립 · 수동 녹화)", self.cfg["recorder"]["output_dir"])
         if d:
             self.run_diagnostics(d)
 
@@ -2543,23 +2856,23 @@ class MainWindow(QMainWindow):
         if self.worker.recorder_alive():
             self._apply_topics_runtime()
 
+    def _toggle_no_diag(self, off):
+        """녹화 칸의 [진단 끄기] — 설정의 '녹화가 끝나면 자동 진단' 과 같은 값."""
+        self.cfg["ui"]["auto_diagnose"] = not off
+        save_config(self.cfg)
+        self.log("GUI", "진단 끄기 — 녹화가 끝나도 진단을 돌리지 않습니다 (도구 메뉴에서 따로 실행)"
+                 if off else "녹화가 끝나면 자동으로 진단합니다")
+
     def open_settings(self):
         dlg = SettingsDialog(self.cfg, self)
         if dlg.exec_() != QDialog.Accepted:
             return
-        nic_before = self.cfg["ui"].get("nic", "auto")
         need_restart = dlg.apply_to(self.cfg)
         save_config(self.cfg)
+        self.chk_no_diag.blockSignals(True)
+        self.chk_no_diag.setChecked(not self.cfg["ui"].get("auto_diagnose", True))
+        self.chk_no_diag.blockSignals(False)
         self._apply_shortcut()
-        if self.cfg["ui"].get("nic", "auto") != nic_before:
-            self.netmon.stop()
-            nic = self.cfg["ui"]["nic"]
-            self.netmon = NetMonitor(net_tools.auto_nic() if nic == "auto" else nic, self)
-            self.netmon.sig_total.connect(self._on_net_total)
-            self.netmon.sig_ips.connect(self._on_net_ips)
-            self.netmon.sig_state.connect(self._on_net_state)
-            self.netmon.sig_cams.connect(self._on_cams)
-            self.netmon.start()
         if need_restart and self.worker.recorder_alive():
             self.log("GUI", "정적 설정 변경 — 레코더 재시작")
             self._restart_recorder()
@@ -2627,7 +2940,10 @@ class MainWindow(QMainWindow):
         save_config(self.cfg)
         self.preview.shutdown()
         if self.diag_thread and self.diag_thread.isRunning():
-            self.diag_thread.wait(1000)
+            self._diag_queue.clear()
+            self.diag_thread.requestInterruption()      # 녹화 대기 중이거나 읽는 중이면 바로 빠져나온다
+            self.diag_thread.hold.clear()
+            self.diag_thread.wait(3000)
         self.netmon.stop()
         if self.owns_recorder:
             if self.recorder.state() != QProcess.NotRunning:

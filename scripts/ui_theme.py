@@ -11,7 +11,9 @@
 
 from pathlib import Path
 
-from PyQt5.QtGui import QColor, QGuiApplication, QPalette
+from PyQt5.QtCore import QPointF
+from PyQt5.QtGui import QColor, QGuiApplication, QPalette, QWheelEvent
+from PyQt5.QtWidgets import QAbstractScrollArea, QAbstractSpinBox, QApplication, QComboBox, QDial, QSlider
 
 ACCENT = "#2563eb"
 OK = "#16a34a"
@@ -200,6 +202,7 @@ QLabel#TileImage {{ background: #0f172a; border-radius: 5px; color: #64748b; }}
 QLabel#PillSmall {{ border-radius: 7px; padding: 0px 6px; font-size: 8pt; font-weight: 600; }}
 QFrame#Banner {{ background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 10px; }}
 QFrame#Warn {{ background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; }}
+QFrame#Info {{ background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; }}
 QPlainTextEdit#Log, QTextEdit#Log {{
     background: #0f172a; color: #e2e8f0; border: none; border-radius: 6px;
     selection-background-color: #334155;
@@ -231,6 +234,12 @@ QLabel#SubHead {{
 QLabel#KeyLabel {{ font-family: "DejaVu Sans Mono", "Monospace"; font-size: 8.5pt; }}
 QLabel#KeyLabel[unset="true"], QLabel#FieldLabel[unset="true"] {{ color: #9ca3af; }}
 QLabel#FieldLabel[caution="true"] {{ color: #b45309; }}
+QLabel#FieldLabel[idle="true"] {{ color: #9ca3af; }}
+/* 주요 설정 행의 경로 태그 — 값이 카메라에 어떻게 닿는가 (sensor_config.field_route) */
+QLabel#RouteTag {{ border-radius: 6px; padding: 0px 5px; font-size: 7.5pt; font-weight: 600; }}
+QLabel#RouteTag[route="genicam"] {{ background: #dbeafe; color: #1e40af; }}
+QLabel#RouteTag[route="node"] {{ background: #ede9fe; color: #5b21b6; }}
+QLabel#RouteTag[route="pc"] {{ background: #f1f5f9; color: #475569; }}
 QLineEdit[invalid="true"], QComboBox[invalid="true"] {{ border-color: {ERR}; background: #fef2f2; }}
 QLabel#BigTitle {{ font-size: 10.5pt; font-weight: 700; color: {TEXT}; }}
 """
@@ -254,6 +263,64 @@ def apply(app):
     app.setPalette(palette)
     arrows = _arrow_files()
     app.setStyleSheet(_qss(arrows["down"], arrows["up"]))
+    lock_wheel()
+
+
+# ---- 마우스 휠로 값이 바뀌지 않게 ----
+# 2026-09-22 요청: 표 · 설정 목록을 휠로 내리다가 지나가는 콤보 · 스핀 · 슬라이더의 값이 바뀌는 일이 없게 (장비 표의
+# 동기 방식, 설정 대화상자 숫자 칸 …). 값을 바로 보며 조정하는 곳(ISP 튜닝 탭)만 allow_wheel(위젯) 으로 연다 —
+# 그 위젯 · 조상 중 가장 가까운 allow_wheel 속성이 정한다 (False 로 다시 막을 수도 있다).
+# 앱 전체 이벤트 필터 대신 이 위젯 종류의 wheelEvent 만 바꾼다 — 전체 필터는 모든 이벤트(그리기 · 마우스 이동)가
+# 파이썬을 거치게 해, 진단 같은 파이썬 스레드가 돌 때 GUI 가 GIL 을 기다리며 버벅인다.
+# 막은 휠은 가장 가까운 스크롤 영역(표 · 목록 · 스크롤 창)에 넘긴다 — 무시(ignore)만 하면 Qt 가 프로그램이 보낸
+# 휠은 부모로 안 올려 보내서, 막힌 칸 위에서는 스크롤도 안 되는 경우가 생긴다.
+
+_WHEEL_ORIGINAL = {}
+
+
+def allow_wheel(widget, allowed=True):
+    """이 위젯과 그 안의 값 칸은 휠로 값을 바꿀 수 있게 (allowed=False 면 그 안에서 다시 막는다)."""
+    widget.setProperty("allow_wheel", bool(allowed))
+
+
+def wheel_allowed(widget):
+    while widget is not None:
+        allowed = widget.property("allow_wheel")
+        if allowed is not None:
+            return bool(allowed)
+        widget = widget.parentWidget()
+    return False
+
+
+def forward_wheel(widget, event):
+    """휠을 widget 을 감싼 가장 가까운 스크롤 영역에 넘긴다 (그 칸 위에서도 목록이 스크롤되게)."""
+    area = widget.parentWidget()
+    while area is not None and not isinstance(area, QAbstractScrollArea):
+        area = area.parentWidget()
+    if area is None:
+        event.ignore()
+        return
+    viewport = area.viewport()
+    moved = QWheelEvent(QPointF(viewport.mapFromGlobal(event.globalPos())), QPointF(event.globalPos()),
+                        event.pixelDelta(), event.angleDelta(), event.buttons(), event.modifiers(),
+                        event.phase(), event.inverted())
+    QApplication.sendEvent(viewport, moved)
+    event.accept()
+
+
+def lock_wheel():
+    """콤보 · 스핀 · 슬라이더 · 다이얼의 휠을 막는다 (allow_wheel 로 연 곳 제외). 위젯을 만들기 전에 한 번."""
+    for cls in (QAbstractSpinBox, QComboBox, QSlider, QDial):
+        if cls in _WHEEL_ORIGINAL:
+            continue
+        _WHEEL_ORIGINAL[cls] = cls.wheelEvent
+
+        def wheelEvent(self, event, _cls=cls):
+            if wheel_allowed(self):
+                _WHEEL_ORIGINAL[_cls](self, event)
+            else:
+                forward_wheel(self, event)
+        cls.wheelEvent = wheelEvent
 
 
 def repolish(widget):

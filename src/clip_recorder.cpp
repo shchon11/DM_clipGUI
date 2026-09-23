@@ -22,6 +22,7 @@
 #include <chrono>
 #include <ctime>
 #include <deque>
+#include <iterator>
 #include <iomanip>
 #include <memory>
 #include <mutex>
@@ -584,8 +585,18 @@ private:
       trigger_time_ = event;
       clip_label_ = label;
       clip_.clear();
-      for (const auto & m : buffer_) {
-        if (m.stamp >= w_start && m.stamp <= w_end) {clip_.push_back(m);}
+      // The ring is in arrival order, so the window is its tail: walk back from the newest message to the
+      // window start instead of scanning the whole ring. Every subscription callback waits on buf_mtx_,
+      // and once the ring had filled to max_buffer_mb the full scan held it for 80-90 ms — longer than the
+      // 640 Hz lidar topics' KeepLast(queue_depth=50) covers (78 ms), so lidar_packets / telemetry lost
+      // packets at exactly t0 + pre_sec in every clip (2026-09-22). Cameras at 30 Hz never filled 50.
+      auto first = buffer_.end();
+      while (first != buffer_.begin() && std::prev(first)->stamp >= w_start) {
+        --first;
+      }
+      clip_.reserve(static_cast<size_t>(std::distance(first, buffer_.end())));
+      for (auto it = first; it != buffer_.end(); ++it) {
+        if (it->stamp <= w_end) {clip_.push_back(*it);}
       }
       // Keep appending live messages only if the window extends into the future.
       clip_active_ = remaining > 0.0;

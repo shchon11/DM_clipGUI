@@ -248,6 +248,17 @@ def decode_jpeg(data, width):
     return image, "", f"{full.width()}×{full.height()} {msg.format or ''} · {len(raw) / 1024:.0f} KB"
 
 
+def jpeg_to_array(data, width=320):
+    """CompressedImage 바이트 → 가로 width 로 줄인 RGB uint8 배열 (ISP 자동 맞추기가 밝기 · 색을 잴 때)."""
+    image, _line, _tip = decode_jpeg(data, width)
+    image = image.convertToFormat(QImage.Format_RGB888)
+    h, w = image.height(), image.width()
+    ptr = image.constBits()
+    ptr.setsize(image.bytesPerLine() * h)
+    rows = np.frombuffer(ptr, np.uint8).reshape(h, image.bytesPerLine())
+    return rows[:, :w * 3].reshape(h, w, 3).copy()
+
+
 def _to_qimage_gray(gray):
     gray = np.ascontiguousarray(gray)
     h, w = gray.shape

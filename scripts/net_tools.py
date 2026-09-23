@@ -27,6 +27,8 @@ def nic_list():
         name = d.name
         if name == "lo" or not (d / "device").exists():
             continue
+        if (d / "wireless").exists():
+            continue        # 무선 제외 — 인터넷 트래픽으로 IP 표가 넘친다
         try:
             if (d / "operstate").read_text().strip() != "up":
                 continue
@@ -108,6 +110,10 @@ def nm_link_local(iface, timeout=30.0):
     nmcli = shutil.which("nmcli")
     if not nmcli:
         return False, "nmcli 가 없어 NIC 를 설정할 수 없습니다", None
+    primary = nic_ipv4(iface)
+    if primary and not primary[0].startswith("169.254."):
+        # 이 NIC 는 이미 다른 용도(인터넷 등)로 쓰는 중 — 프로필을 갈지 말고 보조 주소만 얹는다
+        return _nm_secondary_link_local(nmcli, iface, timeout)
     env = dict(os.environ, LC_ALL="C")
     name = f"{NM_LINK_LOCAL_PREFIX} ({iface})"
 
@@ -139,6 +145,75 @@ def nm_link_local(iface, timeout=30.0):
             return True, f"{iface} ← {addr[0]}/{addr[1]} (link-local, 프로필 '{name}')", addr[0]
         time.sleep(0.5)
     return False, f"{iface} 에 link-local 주소가 안 잡혔습니다 (프로필 '{name}')", None
+
+
+def nic_link_local(iface):
+    """NIC 에 붙은 169.254.x.x 주소 (보조 주소 포함). 없으면 None."""
+    try:
+        out = subprocess.run(["ip", "-4", "-o", "addr", "show", "dev", iface],
+                             capture_output=True, text=True, timeout=3).stdout
+        for tok in out.split():
+            if tok.startswith("169.254.") and "/" in tok:
+                return tok.split("/")[0]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def _stable_link_local(iface):
+    """NIC MAC 에서 유도한 안정적인 link-local 주소 — 재부팅해도 같은 값.
+    센서의 link-local 은 센서 자신의 MAC 에서 나오므로 충돌하지 않는다."""
+    import hashlib
+    try:
+        mac = (Path(f"/sys/class/net/{iface}/address").read_text().strip() or iface)
+    except OSError:
+        mac = iface
+    h = hashlib.sha1(mac.encode()).digest()
+    return f"169.254.{h[0] % 254 + 1}.{h[1] % 254 + 1}"
+
+
+def _nm_secondary_link_local(nmcli, iface, timeout):
+    """이미 일반 IPv4 가 있는 NIC(인터넷 등과 공용)에 link-local 보조 주소를 얹는다.
+
+    프로필을 link-local 로 바꾸면 기존 연결이 죽으므로, 활성 프로필에
+    +ipv4.addresses 로 169.254.x.x/16 을 추가하고 reapply 한다. 그러면 커널이
+    169.254/16 scope-link 라우트를 이 NIC(메트릭 ~100)에 깔아, 다른 NIC 에 있던
+    메트릭 1000짜리 avahi 라우트를 이긴다 — 라우트를 따로 만질 필요가 없다.
+    프로필에 저장되므로 재부팅 후에도 유지된다.
+    되돌리기: nmcli con mod '<프로필>' -ipv4.addresses <주소>/16
+    """
+    env = dict(os.environ, LC_ALL="C")
+
+    def run(args, limit=15.0):
+        return subprocess.run([nmcli] + args, capture_output=True, text=True,
+                              timeout=limit, env=env)
+
+    try:
+        con = run(["-t", "-g", "GENERAL.CONNECTION", "device", "show", iface]).stdout.strip()
+        if not con or con == "--":
+            return False, f"{iface} 의 활성 NetworkManager 프로필을 찾지 못했습니다", None
+        addr = _stable_link_local(iface)
+        have = run(["-t", "-g", "ipv4.addresses", "connection", "show", con]).stdout
+        if "169.254." not in have:
+            res = run(["connection", "modify", con, "+ipv4.addresses", f"{addr}/16"])
+            if res.returncode:
+                return False, f"프로필 수정 실패: {(res.stderr or res.stdout).strip()}", None
+        res = run(["device", "reapply", iface])
+        if res.returncode:                       # reapply 를 못 하는 드라이버면 재접속
+            res = run(["--wait", str(int(timeout)), "connection", "up", con,
+                       "ifname", iface], limit=timeout + 10)
+            if res.returncode:
+                return False, f"적용 실패: {(res.stderr or res.stdout).strip()}", None
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"nmcli 실행 실패: {exc}", None
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        got = nic_link_local(iface)
+        if got:
+            return True, (f"{iface} 에 보조 link-local {got}/16 추가 "
+                          f"(프로필 '{con}' 유지 — 기존 연결/인터넷 그대로)"), got
+        time.sleep(0.5)
+    return False, f"{iface} 에 link-local 주소가 안 잡혔습니다 (프로필 '{con}')", None
 
 
 def route_dev(ip):

@@ -18,12 +18,17 @@
 # 감지/설정/기동 로직은 sensor_discovery / sensor_config / sensor_launcher 에 있고,
 # 여기는 그걸 화면에 붙이는 층이다.
 
+import copy
+import math
 import re
 import time
 from pathlib import Path
 
+import numpy as np
+
 import yaml
-from PyQt5.QtCore import QByteArray, QEvent, QObject, QSize, Qt, QThread, QTimer, pyqtSignal
+from PyQt5.QtCore import (QByteArray, QEvent, QItemSelectionModel, QObject, QSize, Qt, QThread, QTimer,
+                          pyqtSignal)
 from PyQt5.QtGui import QPainter, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QGridLayout,
@@ -36,6 +41,7 @@ import preview_panel
 import sensor_config
 import sensor_discovery
 import sensor_launcher
+import sync_check
 import ui_theme
 from sensor_discovery import NIC, OK, SUBNET, UPDATER
 from sensor_launcher import FAILED, RUNNING, STARTING, STOPPED
@@ -112,6 +118,19 @@ def _answers_ping(ip):
         return False
 
 
+class SensorTimeWorker(QThread):
+    """라이다 센서의 시각 상태 (/api/v1/time) 를 한 번 읽는다 — 읽기만 한다."""
+
+    sig_done = pyqtSignal(object)
+
+    def __init__(self, host):
+        super().__init__()
+        self.host = host
+
+    def run(self):
+        self.sig_done.emit(sensor_discovery.ouster_time_status(self.host))
+
+
 class NicSetupWorker(QThread):
     """[NIC 설정] — 라이다를 꽂은 NIC 를 NetworkManager link-local 프로필로 잡는다 (nmcli, 수 초)."""
 
@@ -152,7 +171,15 @@ class ForceIpWorker(QThread):
                 self.sig_progress.emit(f"{task['label']} {task['serial']}: {task['ip']} 할당 중 "
                                        f"({attempt}/2)…")
                 net_tools.gvcp_force_ip(task["nic"], task["mac"], task["ip"], task["mask"])
-                deadline = time.time() + 6.0
+                # A70 은 새 IP 로 네트워크를 다시 올리는 데 Blackfly(1~2초)보다 훨씬 오래 걸린다. 6초 만에 포기하고
+                # 한 번 더 ForceIP 를 보내면 재시작 중인 카메라를 또 재시작시켜, 결국 '실패' 로 끝나고 감지에서도
+                # 빠졌다 (2026-09-22 thermal1 — 1분쯤 뒤 192.168.1.12 로 멀쩡히 대답). 보이는 즉시 끝나므로
+                # 넉넉히 잡아도 정상일 때는 느려지지 않는다.
+                settle = task.get("settle_s", 6.0)
+                if settle > 6.0:
+                    self.sig_progress.emit(f"{task['label']} {task['serial']}: 새 IP 로 다시 뜨기를 기다립니다 "
+                                           f"(최대 {settle:.0f}초)…")
+                deadline = time.time() + settle
                 while time.time() < deadline and not ok:
                     time.sleep(0.5)
                     now = [d for d in net_tools.gvcp_discover_all(task["nic"], 0.5)
@@ -209,7 +236,8 @@ class LiveView(QFrame):
         self.line.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         v.addWidget(self.line)
         row = QHBoxLayout()
-        row.addWidget(QLabel("이름"))
+        self.name_label = QLabel("이름")
+        row.addWidget(self.name_label)
         self.name = QLineEdit()
         self.name.setPlaceholderText("이 카메라의 이름 (ROS 네임스페이스)")
         self.name.returnPressed.connect(self._apply)
@@ -352,9 +380,618 @@ class LiveView(QFrame):
             self.view.width(), self.view.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
 
+# ISP 자동 맞추기의 밝기 목표 — 8비트 영상의 밝기 중앙값(0~1). 중간 회색 근처.
+AUTO_TARGET = 0.40
+
+
+def _condition_keys(condition):
+    """enabled_when / relevant_when 이 보는 키들 (목록이면 OR 의 모든 갈래)."""
+    if isinstance(condition, list):
+        return {k for c in condition for k in _condition_keys(c)}
+    return set((condition or {}).keys())
+
+
+class TuningPanel(QWidget):
+    """[ISP 튜닝] 탭 — 카메라 한 대를 띄워 놓고 ISP · 노출 칸을 바꾸면 그 자리에서 카메라에 들어간다.
+
+    설정 탭(전역 설정)과 따로 논다. 여기서 바꾼 값은 보고 있는 카메라에만 들어가고, [모든 카메라에 적용] 을
+    누르면 설정 탭(전역 설정 — 다음 기동)에 저장하면서 지금 떠 있는 이 종류의 카메라 전부에 바로 넣는다 (재기동 없음,
+    2026-09-22 전: 설정에만 저장해 리그의 다른 카메라는 재기동 전까지 옛 값이었다). [되돌리기] 는 전역 값으로 돌려
+    카메라에도 다시 넣는다.
+    카메라 노드는 camera.* 파라미터를 실행 중에 받는 즉시 카메라에 쓴다 (OnSetControlParameters).
+    픽셀 포맷은 실행 중에 못 바꾸므로 Bayer 로 떠 있으면 RGB 출력 전용 칸은 잠근다.
+    올릴 칸은 레지스트리 subset 의 tuning: {panels, sections} 이 정한다.
+    """
+
+    sig_start = pyqtSignal(str)                 # serial — 이 카메라만 기동
+    sig_live = pyqtSignal(str, str, object)     # serial, 키, 값 — 실행 중인 카메라에 넣기
+    sig_promote = pyqtSignal(dict)              # {키: 값} — 설정 탭(전역 설정)에 덮어쓰기
+    sig_restart = pyqtSignal(str)               # serial — 튜닝 카메라 재기동 (재기동해야 들어가는 값 적용)
+
+    def __init__(self, page):
+        super().__init__()
+        self.page = page
+        self.group, self.subset = page.group, page.subset
+        conf = self.subset.get("tuning") or {}
+        self.fields = [f for f in sensor_config.fields_for(self.group, self.subset["key"])
+                       if f["key"].startswith("camera.")
+                       and (f.get("panel") in (conf.get("panels") or [])
+                            or f.get("section") in (conf.get("sections") or []))]
+        self.rows = {}               # 키 -> (field, editor, label)
+        self.baseline = {}           # 키 -> 전역 설정의 값 (반영 · 되돌리기 기준)
+        self.global_values = {}      # 이 종류의 주요 설정 전부의 전역 값 (픽셀 포맷 등 조건 판정용)
+        self.serial = None
+        self.running_ns = None
+        self._pending = {}           # 키 -> 값. 스핀을 돌리는 동안 매 칸 보내지 않게 모았다가 보낸다
+        # 사용자가 이 탭에서 직접 바꾼 칸. 변경 · 반영 · 되돌리기는 이것만 본다 — 전역 값이 없는 칸(원본에 없는 노출
+        # 시간)은 스핀 최소값(10 µs)이 보이는데, 그걸 '바뀐 값' 으로 쳐서 전역 설정에 반영하면 안 된다.
+        self.touched = set()
+        self._retried = set()
+        self._debounce = QTimer(self, singleShot=True, interval=150, timeout=self._flush)
+        # 카메라가 막 떴을 때는 영상 토픽이 아직 없다 — 생길 때까지 1초마다 다시 붙는다
+        self._live_retry = QTimer(self, interval=1000, timeout=self._retry_live)
+        self._reapply = False        # 재기동 뒤 영상이 나오면 튜닝 값(반영 안 한 것)을 다시 넣는다
+        # 자동 맞추기 — 값을 넣고, 새 프레임을 기다려 재고, 고친다. 제너레이터가 '기다릴 조건' 을 내놓는다.
+        self._job = None
+        self._job_wait = None
+        self._job_timer = QTimer(self, interval=120, timeout=self._job_tick)
+        self.restart_keys = {f["key"] for f in self.fields
+                             if sensor_config.restart_only(self.group, self.subset["key"], f)}
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(6)
+        bar = QHBoxLayout()
+        bar.addWidget(QLabel("카메라"))
+        # 이 탭의 값 칸만 마우스 휠로 바로 바꿔 볼 수 있다 (칸을 눌러 포커스를 준 뒤). 다른 곳은 ui_theme.lock_wheel 이 막는다
+        ui_theme.allow_wheel(self)
+        self.combo = QComboBox()
+        self.combo.setMinimumWidth(220)
+        self.combo.currentIndexChanged.connect(lambda _i: self.refresh_target())
+        ui_theme.allow_wheel(self.combo, False)      # 튜닝할 카메라 고르기는 휠로 안 바뀌게
+        guard_wheel(self.combo)
+        bar.addWidget(self.combo)
+        self.btn_start = QPushButton("▶  이 카메라만 기동")
+        ui_theme.set_variant(self.btn_start, "primary")
+        self.btn_start.setToolTip("고른 카메라 한 대만 띄웁니다 (열화상 · 다른 카메라는 안 뜸). 멈출 때는 위의 [■ 중지].")
+        self.btn_start.clicked.connect(lambda: self.serial and self.sig_start.emit(self.serial))
+        bar.addWidget(self.btn_start)
+        self.status = QLabel("")
+        self.status.setObjectName("Hint")
+        self.status.setWordWrap(True)
+        self.status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        bar.addWidget(self.status, 1)
+        self.btn_restart = QPushButton("⟳  재기동")
+        self.btn_restart.setToolTip("튜닝 중인 카메라를 내렸다 다시 올립니다 — 🔒 칸(재기동해야 들어가는 값)과 설정 탭의 값이 "
+                                    "이때 들어갑니다. 올라오면 이 탭에서 바꾼 값(전역에 반영 안 한 것)을 다시 넣습니다.")
+        self.btn_restart.clicked.connect(lambda: self.serial and self.sig_restart.emit(self.serial))
+        bar.addWidget(self.btn_restart)
+        outer.addLayout(bar)
+
+        auto = QHBoxLayout()
+        auto.addWidget(QLabel("자동 맞추기"))
+        self.auto_buttons = {}
+        for name, text, tip in (
+                ("wb", "화이트밸런스", "화면 가운데 절반의 R · G · B 평균이 같아지게 R · B 비율을 맞춥니다 (WB auto 는 Off 로). "
+                                    "흰 판이나 회색 판을 가운데에 두면 정확합니다."),
+                ("exposure", "노출", "화면 밝기 중앙값이 중간 회색이 되게 노출 시간을 맞춥니다 (노출 auto 는 Off 로). "
+                                   "트리거 주기의 90% 를 넘지 않습니다."),
+                ("gamma", "감마", "노출은 그대로 두고 화면 밝기 중앙값이 중간 회색이 되게 감마를 찾습니다 (감마 보정 켬)."),
+                ("black", "블랙 레벨", "가장 어두운 곳(하위 1%)이 0 에 붙어 잘리지 않고 살짝 뜨게 블랙 레벨을 맞춥니다. "
+                                      "그림자가 있는 장면이어야 합니다 — 렌즈를 가리면 가장 정확합니다.")):
+            button = QPushButton(text)
+            button.setToolTip(tip + "\n결과는 그 칸의 값을 덮어쓰고 바로 카메라에 들어갑니다 (전역 반영 대상에도 포함).")
+            button.clicked.connect(lambda _=False, n=name: self.start_auto(n))
+            auto.addWidget(button)
+            self.auto_buttons[name] = button
+        self.btn_cancel = QToolButton()
+        self.btn_cancel.setText("그만")
+        self.btn_cancel.clicked.connect(lambda: self._finish_job("중간에 멈췄습니다 — 지금 값 그대로"))
+        self.btn_cancel.hide()
+        auto.addWidget(self.btn_cancel)
+        self.auto_status = QLabel("")
+        self.auto_status.setObjectName("Hint")
+        self.auto_status.setWordWrap(True)
+        self.auto_status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        auto.addWidget(self.auto_status, 1)
+        outer.addLayout(auto)
+
+        split = QSplitter(Qt.Horizontal)
+        self.live = LiveView()
+        for widget in (self.live.name_label, self.live.name, self.live.btn_name, self.live.hint):
+            widget.hide()                                     # 이름 짓기는 감지된 장비 탭에서
+        split.addWidget(self.live)
+        body = QWidget()
+        col = QVBoxLayout(body)
+        col.setContentsMargins(0, 0, 6, 0)
+        self.section = SettingsSection(
+            "튜닝할 값", "바꾸는 즉시 위에서 고른 카메라에 들어갑니다 (재기동 없음). 맞으면 아래 [모든 카메라에 적용] — "
+            "떠 있는 카메라 전부에 바로 넣고 설정(다음 기동)에도 저장합니다. '지정' 을 끈 칸은 카메라에 아무것도 보내지 "
+            "않습니다.", primary=True)
+        last = None
+        for field in self.fields:
+            if field.get("section") != last:
+                self.section.add_subhead(field.get("section") or "")
+                last = field.get("section")
+            self._add_row(field)
+        col.addWidget(self.section)
+        col.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(body)
+        split.addWidget(scroll)
+        split.setStretchFactor(0, 3)
+        split.setStretchFactor(1, 2)
+        outer.addWidget(split, 1)
+
+        foot = QHBoxLayout()
+        self.result = QLabel("")
+        self.result.setObjectName("Hint")
+        self.result.setWordWrap(True)
+        self.result.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        foot.addWidget(self.result, 1)
+        self.btn_revert = QPushButton("되돌리기")
+        self.btn_revert.setToolTip("튜닝 칸을 전역 설정 값으로 돌리고, 실행 중이면 카메라에도 다시 넣습니다.")
+        self.btn_revert.clicked.connect(self.revert)
+        foot.addWidget(self.btn_revert)
+        self.btn_promote = QPushButton("모든 카메라에 적용")
+        ui_theme.set_variant(self.btn_promote, "primary")
+        self.btn_promote.setToolTip("여기서 바꾼 값을 이 종류의 모든 카메라에 적용합니다.\n"
+                                    "· 설정 탭(전역 설정)에 저장 — 다음 기동부터 리그 전체에 들어갑니다.\n"
+                                    "· 지금 떠 있는 카메라가 있으면 전부에 바로 넣습니다 (재기동 없음).\n"
+                                    "바로 못 넣은 값이 있으면 위에 재기동 안내와 [⟳ 지금 재기동] 이 뜹니다.\n"
+                                    "리포 원본 파일까지 바꾸려면 설정 탭의 [기본값으로 저장].")
+        self.btn_promote.clicked.connect(self.promote)
+        foot.addWidget(self.btn_promote)
+        outer.addLayout(foot)
+        self.refresh_baseline(reset=True)
+
+    # --- 칸 ---
+
+    def _add_row(self, field):
+        editor = FieldEditor(field, None)
+        editor.sig_changed.connect(lambda k=field["key"]: self._on_edit(k))
+        label = QLabel(field.get("label") or field["key"])
+        label.setObjectName("FieldLabel")
+        holder = QWidget()
+        left = QHBoxLayout(holder)
+        left.setContentsMargins(0, 0, 0, 0)
+        left.addWidget(label, 1)
+        trailing = QWidget()
+        trailing.setFixedWidth(4)
+        self.section.add_row(field["key"], holder, editor, trailing, f"{field['key']} {field.get('label', '')}")
+        self.rows[field["key"]] = (field, editor, label)
+
+    def _value_of(self, key):
+        row = self.rows.get(key)
+        return row[1].value() if row is not None else self.global_values.get(key)
+
+    def _changes(self):
+        return {k: self.rows[k][1].value() for k in self.touched
+                if self.rows[k][1].value() is not INVALID and not _same(self.rows[k][1].value(), self.baseline.get(k))}
+
+    def refresh_baseline(self, reset=False):
+        """전역 설정 값을 다시 읽는다. 튜닝으로 바꾸지 않은 칸은 새 전역 값을 따라간다."""
+        page = self.page
+        fields = sensor_config.fields_for(self.group, self.subset["key"])
+        old = dict(self.baseline)
+        self.global_values = {f["key"]: sensor_config.effective_value(self.group, f, page.overrides, page._base)
+                              for f in fields}
+        self.baseline = {k: self.global_values.get(k) for k in self.rows}
+        if reset:
+            self.touched.clear()
+        for key, (_field, editor, _label) in self.rows.items():
+            if key not in self.touched or _same(editor.value(), self.baseline[key]):
+                editor.set_value(self.baseline[key])
+                self.touched.discard(key)
+        self._refresh_state()
+
+    def _refresh_state(self):
+        pixel = self.global_values.get("pixel_format")
+        for key, (field, editor, label) in self.rows.items():
+            cond = field.get("enabled_when")
+            ok = sensor_config.condition_met(cond, self._value_of) if cond else True
+            locked = bool(cond) and not ok and "pixel_format" in _condition_keys(cond)
+            restart = key in self.restart_keys
+            editor.setEnabled(ok and not restart)
+            label.setText(("🔒 " if locked or restart else "") + (field.get("label") or key))
+            tip = [key, "경로: " + sensor_config.field_route(field)[1]]
+            if restart:
+                tip.append("영상을 받는 동안 카메라가 잠그는 값이라 튜닝 중에는 못 바꿉니다 (카메라 XML: TLParamsLocked). "
+                           "설정 탭에서 바꾸고 [⟳ 재기동].")
+            elif locked:
+                tip.append(f"픽셀 포맷이 {pixel} 이라 잠겼습니다 — RGB 출력에서만 카메라가 켜는 기능입니다. 픽셀 포맷은 "
+                           "튜닝 중에 못 바꿉니다 (설정 탭에서 바꾸고 다시 기동).")
+            elif cond and not ok:
+                tip.append("위 칸의 조건이 안 맞아 잠겼습니다 (예: WB auto 가 Off 여야 비율을 넣을 수 있음).")
+            if field.get("help"):
+                tip.append(field["help"])
+            label.setToolTip("\n".join(tip))
+            idle = bool(field.get("relevant_when")) and not sensor_config.condition_met(
+                field["relevant_when"], self._value_of)
+            if (label.property("idle") == "true") != idle:
+                label.setProperty("idle", "true" if idle else "false")
+                ui_theme.repolish(label)
+            changed = key in self.touched and not _same(editor.value(), self.baseline.get(key))
+            font = label.font()
+            if font.bold() != changed:
+                font.setBold(changed)
+                label.setFont(font)
+        changes = self._changes()
+        self.btn_promote.setText(f"모든 카메라에 적용 ({len(changes)})" if changes else "모든 카메라에 적용")
+        self.btn_promote.setEnabled(bool(changes))
+        self.btn_revert.setEnabled(bool(changes))
+
+    # --- 대상 카메라 ---
+
+    def refresh_target(self):
+        """콤보(감지된 카메라) · 실행 상태 · 라이브를 맞춘다. 페이지가 장비 · 실행 상태가 바뀔 때 부른다."""
+        page = self.page
+        devices = [d for d in page._devices if d.get("subset", self.subset["key"]) == self.subset["key"]]
+        wanted = [(d["identity"], sensor_config.camera_entry(self.subset, d["identity"], page.overrides)["namespace"])
+                  for d in devices]
+        have = [(self.combo.itemData(i), self.combo.itemText(i)) for i in range(self.combo.count())]
+        keep = self.combo.currentData() or self.serial or page._selected
+        labels = [(sn, f"{name} · {sn}") for sn, name in wanted]
+        if [h[0] for h in have] != [w[0] for w in labels] or [h[1] for h in have] != [w[1] for w in labels]:
+            self.combo.blockSignals(True)
+            self.combo.clear()
+            for sn, text in labels:
+                self.combo.addItem(text, sn)
+            index = self.combo.findData(keep)
+            self.combo.setCurrentIndex(index if index >= 0 else 0)
+            self.combo.blockSignals(False)
+        self.serial = self.combo.currentData()
+        running = page.launched.get(self.serial) if (self.serial and page._locked and page._included) else None
+        dev = next((d for d in devices if d["identity"] == self.serial), {})
+        if running and not self.running_ns and self.touched:
+            self._reapply = True
+        if running != self.running_ns or (running and (self.live.serial != self.serial or not self.live.topics)):
+            self.running_ns = running
+            if running:
+                self.live.show_camera(self.serial, running, running, False, None)
+            else:
+                self.live.clear_camera("카메라가 실행 중이 아닙니다.\n[▶ 이 카메라만 기동] 을 누르세요.")
+        if running and not self.live.topics:
+            self._live_retry.start()
+        else:
+            self._live_retry.stop()
+            self._reapply_touched()
+        self.btn_start.setEnabled(bool(self.serial) and not page._locked and dev.get("state") == OK)
+        # 재기동은 튜닝 기동(이 카메라 한 대만 떠 있음)일 때만 — 리그 전체를 내리지 않게
+        solo = bool(running) and set(page.launched) == {self.serial}
+        self.btn_restart.setEnabled(solo and self._job is None)
+        self.btn_restart.setToolTip(self.btn_restart.toolTip().split("\n")[0] + (
+            "" if solo or not running else "\n리그 전체가 떠 있어 재기동은 막아 둡니다 — [■ 중지] 후 [이 카메라만 기동]."))
+        self._update_auto_buttons()
+        if not self.serial:
+            text = "감지된 카메라가 없습니다."
+        elif running:
+            others = len(page.launched) - 1
+            text = (f"실행 중 — /{running}/ 에 바로 적용됩니다"
+                    + (f" (리그 전체가 떠 있어 이 카메라만 다른 값이 됩니다: 다른 {others}대는 그대로)" if others > 0 else ""))
+        elif page._locked:
+            text = "리그가 실행 중인데 이 카메라는 이번 기동에 없습니다 — 중지한 뒤 [이 카메라만 기동]"
+        elif dev.get("state") != OK:
+            text = "이대로는 못 여는 카메라입니다 (감지된 장비 탭 확인)"
+        else:
+            text = "멈춰 있습니다 — [▶ 이 카메라만 기동] 후 값을 바꾸면 바로 들어갑니다"
+        self.status.setText(text)
+
+    # --- 적용 ---
+
+    def _on_edit(self, key):
+        self.touched.add(key)
+        self._queue(key)
+        # 이 칸 때문에 풀린 칸의 값도 같이 넣는다 (WB auto Off → R · B 비율, 노출 auto Off → 노출 시간).
+        # 전역 값도 없고 손대지도 않은 칸은 보이는 숫자가 스핀 최소값일 뿐이라 보내지 않는다.
+        for other, (field, _editor, _label) in self.rows.items():
+            cond = field.get("enabled_when")
+            if other != key and cond and key in _condition_keys(cond) and \
+                    sensor_config.condition_met(cond, self._value_of) and \
+                    (other in self.touched or self.baseline.get(other) is not None):
+                self._queue(other)
+        self._refresh_state()
+
+    def _queue(self, key):
+        field, editor, _label = self.rows[key]
+        value = editor.value()
+        if value is None or value is INVALID or not self.running_ns or not editor.isEnabled():
+            return
+        self._pending[key] = value
+        self._debounce.start()
+
+    def _flush(self):
+        pending, self._pending = self._pending, {}
+        for key, value in pending.items():
+            self._retried.discard(key)
+            self.sig_live.emit(self.serial, key, value)
+        if pending:
+            self.result.setText("보내는 중… " + ", ".join(pending))
+
+    def on_result(self, key, ok, reason):
+        """카메라 노드의 응답. 기동 때 잠겨 등록이 안 된 노드면 레지스트리 live_alias(늘 등록되는 별칭)로 다시 보낸다."""
+        field = next((row[0] for k, row in self.rows.items() if key in (k, row[0].get("live_alias"))), None)
+        label = (field or {}).get("label") or key
+        if not ok and field and field.get("live_alias") and key == field["key"] and key not in self._retried \
+                and "declared" in reason:
+            self._retried.add(key)
+            self.sig_live.emit(self.serial, field["live_alias"], self.rows[key][1].value())
+            return
+        if ok:
+            self.result.setText(f"✓ {label} → 카메라에 들어감")
+        elif "not writable" in reason:
+            self.result.setText(f"✗ {label}: 지금 카메라 상태에서 잠겨 있습니다 — 영상을 받는 중에는 못 바꾸는 값일 수 "
+                                "있습니다 ([모든 카메라에 적용] 뒤 재기동하면 들어갑니다)")
+        else:
+            self.result.setText(f"✗ {label}: {reason}")
+
+    def _reapply_touched(self):
+        """재기동 뒤 — 카메라는 전역 설정으로 돌아왔다. 이 탭에서 바꿔 둔 값(전역에 반영 안 한 것)을 다시 넣는다."""
+        if not self._reapply or not self.running_ns or not self.live.topics:
+            return
+        self._reapply = False
+        keys = [k for k in self.touched if self.rows[k][1].isEnabled()]
+        for key in keys:
+            self._queue(key)
+        if keys:
+            self.result.setText(f"재기동 뒤 이 탭에서 바꾼 {len(keys)}칸을 다시 넣었습니다")
+
+    # --- 자동 맞추기 ---
+
+    def _update_auto_buttons(self):
+        ready = bool(self.running_ns) and self._image_meter() is not None and self._job is None
+        for button in self.auto_buttons.values():
+            button.setEnabled(ready)
+
+    def _image_meter(self):
+        if not self.live.topics or self.live.hub is None:
+            return None
+        topic, type_name = self.live.topics["image"]
+        if type_name != "sensor_msgs/msg/CompressedImage":
+            return None
+        return self.live.hub.meters.get(topic)
+
+    def _frames(self, n=5, min_s=0.4):
+        """새 프레임 n 장이 올 때까지 (값을 넣은 뒤 카메라가 그 값으로 찍은 프레임을 재려고)."""
+        meter = self._image_meter()
+        start = meter.count if meter else 0
+        t0 = time.monotonic()
+
+        def ready():
+            m = self._image_meter()
+            if time.monotonic() - t0 > 8.0:
+                raise RuntimeError("영상이 안 들어옵니다 (미리보기 확인)")
+            return m is not None and m.count >= start + n and time.monotonic() - t0 >= min_s
+        return ready
+
+    def _grab(self, center=False):
+        meter = self._image_meter()
+        if meter is None or meter.latest is None:
+            raise RuntimeError("미리보기 영상이 없습니다")
+        img = preview_panel.jpeg_to_array(meter.latest, 320).astype(np.float32) / 255.0
+        if center:
+            h, w, _ = img.shape
+            img = img[h // 4: h - h // 4, w // 4: w - w // 4]
+        return img
+
+    def _set_live(self, key, value):
+        """자동 맞추기의 결과를 칸에 넣고(수동 값을 덮어씀) 바로 카메라에 보낸다."""
+        _field, editor, _label = self.rows[key]
+        editor.set_value(value)
+        self.touched.add(key)
+        value = editor.value()
+        if value is not None and value is not INVALID:
+            self.sig_live.emit(self.serial, key, value)
+        self._refresh_state()
+
+    def _say(self, text):
+        self.auto_status.setText(text)
+
+    def _max_exposure(self):
+        g = self.global_values
+        fps = g.get("camera.AcquisitionFrameRate") if g.get("camera.AcquisitionFrameRateEnable", True) else None
+        fps = fps or g.get("timestamp.trigger_grid_hz") or g.get("ptp_action.rate_hz") or 30.0
+        return min(0.9e6 / float(fps), 100000.0)
+
+    def start_auto(self, name):
+        if self._job is not None or not self.running_ns:
+            return
+        jobs = {"wb": self._job_wb, "exposure": self._job_exposure, "gamma": self._job_gamma, "black": self._job_black}
+        self._job = jobs[name]()
+        self._job_wait = None
+        for button in self.auto_buttons.values():
+            button.setEnabled(False)
+        self.btn_restart.setEnabled(False)
+        self.btn_cancel.show()
+        self._job_timer.start()
+        self._job_step()
+
+    def _job_tick(self):
+        try:
+            if self._job_wait is not None and not self._job_wait():
+                return
+        except Exception as exc:                                  # noqa: BLE001
+            self._finish_job(f"✗ {exc}")
+            return
+        self._job_step()
+
+    def _job_step(self):
+        try:
+            self._job_wait = next(self._job)
+        except StopIteration as done:
+            self._finish_job(done.value or "끝")
+        except Exception as exc:                                  # noqa: BLE001
+            self._finish_job(f"✗ {exc}")
+
+    def _finish_job(self, text):
+        self._job_timer.stop()
+        self._job, self._job_wait = None, None
+        self.btn_cancel.hide()
+        self._say(text)
+        self.refresh_target()
+
+    def _job_wb(self):
+        red, blue = "camera.BalanceRatioRed_Val", "camera.BalanceRatioBlue_Val"
+        self._set_live("camera.BalanceWhiteAuto", "Off")
+        r = (self.rows[red][1].value() or 13926) / 8192.0
+        b = (self.rows[blue][1].value() or 13107) / 8192.0
+        self._set_live(red, int(round(r * 8192)))
+        self._set_live(blue, int(round(b * 8192)))
+        yield self._frames()
+        for i in range(8):
+            img = self._grab(center=True)
+            ok = (img.max(axis=2) < 0.97) & (img.mean(axis=2) > 0.06)
+            if ok.sum() < 300:
+                raise RuntimeError("화면 가운데가 너무 어둡거나 하얗게 날아갔습니다 — 노출을 먼저 맞추세요")
+            mr, mg, mb = (float(img[..., c][ok].mean()) for c in range(3))
+            er, eb = mg / mr, mg / mb
+            self._say(f"화이트밸런스 {i + 1}회 — R {r:.2f} · B {b:.2f} (G 대비 R {1 / er:.3f} · B {1 / eb:.3f})")
+            if abs(er - 1) < 0.01 and abs(eb - 1) < 0.01:
+                break
+            r = min(4.0, max(0.5, r * min(1.4, max(0.7, er ** 1.2))))
+            b = min(4.0, max(0.5, b * min(1.4, max(0.7, eb ** 1.2))))
+            self._set_live(red, int(round(r * 8192)))
+            self._set_live(blue, int(round(b * 8192)))
+            yield self._frames()
+        return f"✓ 화이트밸런스 — R {r:.2f} · B {b:.2f} (WB auto Off)"
+
+    def _job_exposure(self):
+        key = "camera.ExposureTime"
+        self._set_live("camera.ExposureAuto", "Off")
+        known = key in self.touched or self.baseline.get(key) is not None
+        e = float(self.rows[key][1].value()) if known else 5000.0
+        e_max = self._max_exposure()
+        e = min(max(e, 20.0), e_max)
+        self._set_live(key, e)
+        yield self._frames()
+        note = ""
+        for i in range(10):
+            m = float(np.median(self._grab().mean(axis=2)))
+            self._say(f"노출 {i + 1}회 — {e:.0f} µs · 밝기 중앙값 {m:.2f} (목표 {AUTO_TARGET:.2f})")
+            if abs(m - AUTO_TARGET) < 0.025:
+                break
+            factor = 4.0 if m < 0.005 else min(4.0, max(0.25, (AUTO_TARGET / m) ** 1.25))
+            new = min(e_max, max(20.0, e * factor))
+            if abs(new - e) < 1.0:
+                note = f" — 한계({e_max:.0f} µs, 트리거 주기의 90%)에 붙음: 더 밝히려면 게인 · 감마" if new >= e_max else ""
+                break
+            e = float(round(new))
+            self._set_live(key, e)
+            yield self._frames()
+        return f"✓ 노출 — {e:.0f} µs (노출 auto Off){note}"
+
+    def _job_gamma(self):
+        key = "camera.Gamma_FloatVal"
+        self._set_live("camera.GammaEnable", True)
+        g = float(self.rows[key][1].value() or 0.8)
+        self._set_live(key, g)
+        yield self._frames()
+        history = []
+        for i in range(8):
+            m = float(np.median(self._grab().mean(axis=2)))
+            history.append((g, m))
+            self._say(f"감마 {i + 1}회 — {g:.2f} · 밝기 중앙값 {m:.2f} (목표 {AUTO_TARGET:.2f})")
+            if abs(m - AUTO_TARGET) < 0.02:
+                break
+            if m <= 0.003 or m >= 0.997:
+                raise RuntimeError("화면이 너무 어둡거나 밝아 감마로는 못 맞춥니다 — 노출을 먼저 맞추세요")
+            if len(history) >= 2 and abs(history[-1][1] - history[-2][1]) > 1e-3:
+                (g1, m1), (g2, m2) = history[-2], history[-1]
+                new = g2 + (AUTO_TARGET - m2) * (g2 - g1) / (m2 - m1)     # 잰 기울기로 — 감마 방향 관례와 무관
+            else:
+                new = g * math.log(AUTO_TARGET) / math.log(m)             # 첫 걸음: 출력 = 입력^감마 가정
+            new = min(2.0, max(0.5, new))
+            if abs(new - g) < 0.005:
+                break
+            g = new
+            self._set_live(key, g)
+            yield self._frames()
+        return f"✓ 감마 — {g:.2f} (감마 보정 켬)"
+
+    def _job_black(self):
+        key = "camera.BlackLevel"
+        bl = float(self.rows[key][1].value() or 0.0)
+        self._set_live(key, bl)
+        yield self._frames()
+        target = 0.03
+        for i in range(8):
+            low = float(np.percentile(self._grab().mean(axis=2), 1))
+            self._say(f"블랙 레벨 {i + 1}회 — {bl:.2f}% · 하위 1% 밝기 {low:.3f} (목표 {target:.3f})")
+            if abs(low - target) < 0.008:
+                break
+            new = min(5.0, max(0.0, bl + (target - low) * 100 * 0.8))
+            if abs(new - bl) < 0.05:
+                break
+            bl = new
+            self._set_live(key, round(bl, 2))
+            yield self._frames()
+        return f"✓ 블랙 레벨 — {bl:.2f}%"
+
+    def revert(self):
+        """전역 값으로 되돌린다. 실행 중이면 카메라에도 다시 넣는다 (지정 안 함인 칸은 넣을 값이 없어 그대로)."""
+        skipped = []
+        for key in sorted(self.touched):
+            _field, editor, label = self.rows[key]
+            if _same(editor.value(), self.baseline.get(key)):
+                continue
+            editor.set_value(self.baseline.get(key))
+            if self.baseline.get(key) is None:
+                skipped.append(label.text())
+            else:
+                self._queue(key)
+        self.touched.clear()
+        self._refresh_state()
+        self.result.setText("전역 값으로 되돌렸습니다" + (f" — '지정 안 함' 인 {len(skipped)}칸은 카메라에 이미 들어간 값이 "
+                                                     "그대로입니다 (다시 기동하면 카메라 값)" if skipped else ""))
+
+    def promote(self):
+        """[모든 카메라에 적용] — 설정에 저장하고 떠 있는 카메라 전부에 넣는다. 결과는 페이지가 show_applied 로 알린다."""
+        changes = self._changes()
+        if not changes:
+            return
+        self.result.setText(f"{len(changes)}칸을 모든 카메라에 적용하는 중…")
+        self.sig_promote.emit(changes)
+        self.touched -= set(changes)
+        self.refresh_baseline()
+
+    def show_applied(self, cameras, failed, labels):
+        """cameras: 값을 넣으려 한 떠 있는 카메라 수 (0 = 떠 있는 카메라 없음). failed: [(노드, 키, 사유)]."""
+        if not cameras:
+            self.result.setText("✓ 설정에 저장했습니다 — 지금 떠 있는 카메라가 없어 다음 기동부터 모든 카메라에 들어갑니다 "
+                                "(재기동할 필요 없음)")
+        elif not failed:
+            self.result.setText(f"✓ 떠 있는 카메라 {cameras}대 전부에 바로 들어갔고 설정에도 저장했습니다 — 재기동할 필요 "
+                                "없습니다")
+        else:
+            nodes = sorted({node.strip("/").split("/")[0] for node, _key, _why in failed})
+            keys = sorted({labels.get(key, key) for _node, key, _why in failed})
+            self.result.setText(f"⚠ {cameras}대 중 {len(nodes)}대({', '.join(nodes[:4])}{' …' if len(nodes) > 4 else ''})에 "
+                                f"{', '.join(keys)} 이(가) 바로 안 들어갔습니다 ({failed[0][2]}). 설정에는 저장됨 — 위의 "
+                                "[⟳ 지금 재기동] 을 누르면 들어갑니다")
+
+    def _retry_live(self):
+        if not self.running_ns or self.live.topics:
+            self._live_retry.stop()
+            return
+        if self.isVisible():
+            self.live.show_camera(self.serial, self.running_ns, self.running_ns, False, None)
+            if self.live.topics:
+                self._live_retry.stop()
+                self._reapply_touched()
+                self._update_auto_buttons()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.refresh_baseline()
+        self.refresh_target()
+
+
 # 장비 행의 상태 점. 카드의 색 띠 · 점과 같은 색.
-WAITING, EXCLUDED = "waiting", "excluded"
+WAITING, EXCLUDED, DEGRADED = "waiting", "excluded", "degraded"
 ROW_STATE_TEXT = {RUNNING: "실행 중 — 영상 수신 중", STARTING: "기동 중 — 카메라를 여는 중",
+                  DEGRADED: "실행 중이지만 문제가 있음 — 런치 로그 확인",
                   WAITING: "대기 — 순차 기동 차례를 기다리는 중", FAILED: "실패",
                   EXCLUDED: "이번 기동에 미포함", STOPPED: "정지"}
 _DOT_ICONS = {}
@@ -366,7 +1003,7 @@ def dot_icon(state, lit=True):
     if key not in _DOT_ICONS:
         from PyQt5.QtGui import QColor, QIcon, QPen
         color = {RUNNING: ui_theme.OK, STARTING: ui_theme.WARN if lit else "#fde68a",
-                 WAITING: ui_theme.WARN, FAILED: ui_theme.ERR}.get(state, "#c4c9d0")
+                 WAITING: ui_theme.WARN, DEGRADED: ui_theme.WARN, FAILED: ui_theme.ERR}.get(state, "#c4c9d0")
         hollow = state in (WAITING, EXCLUDED, STOPPED)
         pix = QPixmap(16, 16)
         pix.fill(Qt.transparent)
@@ -384,15 +1021,13 @@ INVALID = object()          # 글자로 적는 칸에 아직 값이 안 되는 �
 
 
 class _WheelGuard(QObject):
-    """설정 목록을 휠로 내리다가 지나가는 콤보/스핀 박스의 값이 바뀌지 않게.
-
-    포커스가 없으면 휠을 무시(ignore)하고 걸러낸다 — 무시된 휠 이벤트는 부모로 올라가
-    스크롤 영역이 받는다. 칸을 한 번 누르면(포커스) 휠이 그 칸에 먹는다.
-    """
+    """ISP 튜닝 탭(휠 허용)에서도 칸을 눌러 포커스가 있을 때만 휠이 값에 먹게 — 튜닝 칸 목록을 휠로 내리다가
+    지나가는 칸의 값이 바뀌지 않게. 포커스가 없으면 휠을 목록(스크롤 영역)에 넘긴다.
+    그 밖의 곳은 ui_theme.lock_wheel 이 휠을 아예 막는다."""
 
     def eventFilter(self, obj, event):
         if event.type() == QEvent.Wheel and not obj.hasFocus():
-            event.ignore()
+            ui_theme.forward_wheel(obj, event)
             return True
         return False
 
@@ -483,7 +1118,10 @@ class FieldEditor(QWidget):
             widget.toggled.connect(self.sig_changed)
         elif kind == "enum":
             widget = QComboBox()
-            widget.addItems([str(c) for c in field.get("choices") or []])
+            # choice_labels: {값: 보이는 이름} — 콤보는 이름을 보이고 value() 는 원래 값을 돌려준다
+            labels = field.get("choice_labels") or {}
+            for choice in field.get("choices") or []:
+                widget.addItem(str(labels.get(choice, choice)), choice)
             if field.get("editable_choices"):
                 # 주석에서 뽑은 목록은 전부가 아닐 수 있다 (Line0 | Line2 | ...) — 직접 적을 수도 있게
                 widget.setEditable(True)
@@ -503,6 +1141,8 @@ class FieldEditor(QWidget):
             widget = QLineEdit()
             if kind == "list":
                 widget.setPlaceholderText("[값, 값, …]")
+            elif self.field.get("placeholder"):             # 비워 두면 어떻게 되는지 (예: '자동')
+                widget.setPlaceholderText(self.field["placeholder"])
             widget.textChanged.connect(self._on_text)
         widget.setMinimumWidth(90)
         return widget
@@ -529,10 +1169,12 @@ class FieldEditor(QWidget):
         if kind == "bool":
             self.editor.setChecked(bool(value))
         elif kind == "enum":
-            text = "" if value is None else str(value)
-            if self.editor.findText(text) < 0:
-                self.editor.addItem(text)
-            self.editor.setCurrentText(text)
+            index = self.editor.findData(value)
+            if index < 0:
+                text = "" if value is None else str(value)
+                self.editor.addItem(text, text)
+                index = self.editor.count() - 1
+            self.editor.setCurrentIndex(index)
         elif kind in ("float", "int"):
             try:
                 shown = float(value) / self.scale
@@ -574,9 +1216,15 @@ class FieldEditor(QWidget):
         if kind == "bool":
             return self.editor.isChecked()
         if kind == "enum":
-            return self.editor.currentText()
+            data = self.editor.currentData()
+            if data is None or (self.editor.isEditable() and self.editor.currentText() != self.editor.itemText(
+                    self.editor.currentIndex())):
+                return self.editor.currentText()         # 직접 적은 값 (전체 설정의 고르기 칸)
+            return data
         if kind == "float":
-            return float(self.editor.value()) * self.scale
+            value = float(self.editor.value()) * self.scale
+            # 폼은 실수, 파일은 정수 레지스터 (BalanceRatioRed_Val = 비율 × 8192) — ROS 파라미터 타입이 엄격하다
+            return int(round(value)) if self.field.get("file_type") == "int" else value
         if kind == "int":
             return int(round(self.editor.value() * self.scale))
         text = self.editor.text()
@@ -867,6 +1515,11 @@ class DetailPage(QWidget):
     sig_assign_ip = pyqtSignal(str)             # card key — [IP 할당]
     sig_promote = pyqtSignal(str)               # card key — [기본값으로 저장] (설정)
     sig_promote_inventory = pyqtSignal(str)     # card key — [인벤토리에 저장] (이름 · 역할 · IP)
+    sig_tune = pyqtSignal(str, str)             # card key, serial — [ISP 튜닝] 이 카메라만 기동
+    sig_retune = pyqtSignal(str, str)           # card key, serial — [ISP 튜닝] 재기동
+    sig_live_param = pyqtSignal(str, str, str, object)   # card key, serial, 키, 값 — 실행 중인 카메라에 넣기
+    sig_push_params = pyqtSignal(str, dict)     # card key, {키: 값} — [모든 카메라에 적용]: 떠 있는 카메라 전부에 넣기
+    sig_restart = pyqtSignal(str)               # group key — [⟳ 지금 재기동] (기동 뒤 바꾼 설정 넣기)
     sig_splitter = pyqtSignal(QByteArray)
 
     def __init__(self, card, overrides, ui_state=None, parent=None):
@@ -895,7 +1548,10 @@ class DetailPage(QWidget):
         self._locked = False
         self._included = False           # 지금 돌고 있는 프로세스가 이 카드의 종류를 띄웠는가
         self.launched = {}               # {serial: 지금 실행 중인 네임스페이스}
+        # 이번 기동 때의 설정 (스테이지가 넘겨 줌) — 지금 설정과 달라진 칸은 재기동해야 들어간다 → 머리에 안내 띠
+        self.launch_snapshot = None
         self._selected = None            # 표에서 고른 시리얼 (다시 그려도 유지)
+        self._picked = set()             # Ctrl·Shift 로 여러 행을 고른 시리얼들 (동기 방식 일괄 적용 대상)
         self._build()
 
     # --- UI ---
@@ -919,6 +1575,14 @@ class DetailPage(QWidget):
         head.addWidget(title)
         head.addWidget(self.pill, 0, Qt.AlignVCenter)
         head.addStretch()
+        # ISP 튜닝은 탭 줄 끝의 작은 탭이라 아무도 못 찾았다 (2026-09-22) — 머리에 버튼으로 꺼내 둔다
+        self.btn_isp = QPushButton("🎨  ISP 튜닝 · 화질")
+        self.btn_isp.setToolTip("카메라 영상을 보면서 노출 · 게인 · 화이트밸런스 · 감마 · 채도 · 샤프닝을 바꾸면 그 자리에서 "
+                                "들어갑니다 (재기동 없음).\n맞으면 [모든 카메라에 적용] — 떠 있는 카메라 전부에 바로 넣고 "
+                                "설정에도 저장합니다.")
+        self.btn_isp.clicked.connect(self.open_tuning)
+        self.btn_isp.hide()
+        head.addWidget(self.btn_isp)
         head.addWidget(self.btn_start)
         head.addWidget(self.btn_stop)
         outer.addLayout(head)
@@ -934,6 +1598,15 @@ class DetailPage(QWidget):
                 "(따로 띄우면 ptp4l 이 두 번 뜨고 ForceIP 가 서로의 IP를 덮어씁니다.)")
             outer.addWidget(note)
 
+        # 어느 체크아웃이 뜨는지 — ~/FLIR_control 을 심볼릭 링크로 바꿔 끼우면 화면에 안 보인다
+        where = sensor_launcher.work_dir_label(self.group)
+        if where:
+            repo = QLabel(f"리포  {where}")
+            repo.setObjectName("Hint")
+            repo.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            repo.setToolTip("런치가 도는 작업 디렉터리 (sensors.yaml 의 workdir) — 실제 경로와 git 브랜치")
+            outer.addWidget(repo)
+
         gaps = sensor_config.missing_paths(self.group)
         if gaps:
             warn = QFrame()
@@ -945,12 +1618,88 @@ class DetailPage(QWidget):
             outer.addWidget(warn)
             self.btn_start.setEnabled(False)
 
+        # 링크 대역폭 경고 — 설정을 바꿀 때마다 다시 계산 (탭을 넘겨도 보이게 머리에)
+        self.budget_banner = QFrame()
+        self.budget_banner.setObjectName("Warn")
+        budget_layout = QVBoxLayout(self.budget_banner)
+        budget_layout.setContentsMargins(10, 6, 8, 6)
+        self.budget_text = QLabel("")
+        self.budget_text.setWordWrap(True)
+        self.budget_text.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        budget_layout.addWidget(self.budget_text)
+        self.budget_banner.hide()
+        outer.addWidget(self.budget_banner)
+
+        # 기동한 뒤 바꾼 설정 — 실행 중인 노드는 기동 때 값을 쓰고 있다. 무엇이 아직 안 들어갔는지와 [⟳ 지금 재기동]
+        self.restart_banner = QFrame()
+        self.restart_banner.setObjectName("Warn")
+        rb = QHBoxLayout(self.restart_banner)
+        rb.setContentsMargins(10, 6, 8, 6)
+        self.restart_text = QLabel("")
+        self.restart_text.setWordWrap(True)
+        self.restart_text.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        rb.addWidget(self.restart_text, 1)
+        self.btn_restart_group = QPushButton("⟳  지금 재기동")
+        self.btn_restart_group.setToolTip("이 센서군을 내렸다가 같은 구성으로 다시 올립니다 — 바꾼 설정이 전부 들어갑니다.\n"
+                                          "그동안(수십 초) 이 센서군의 데이터가 끊깁니다.")
+        self.btn_restart_group.clicked.connect(lambda: self.sig_restart.emit(self.group["key"]))
+        rb.addWidget(self.btn_restart_group, 0, Qt.AlignVCenter)
+        self.restart_banner.hide()
+        outer.addWidget(self.restart_banner)
+
         # 위: [감지된 장비 | 설정] 탭 — 각자 전체 높이를 쓴다 (800x600 화면에서도 읽힌다)
         # 아래: 런치 로그 — 탭을 넘겨도 계속 보인다. 경계는 끌어서 조절.
         self.tabs = QTabWidget()
         self.tabs.setObjectName("Inner")
-        self.tabs.addTab(self._devices_panel(), "감지된 장비")
-        self.tabs.addTab(self._settings_panel(), "설정")
+        self.sync_state = None
+        if self.group.get("single_device"):
+            # 장비가 하나뿐인 센서(라이다) — 장비 표와 설정을 탭으로 나누지 않고 한 화면에:
+            # 위에 장비 한 줄 · 센서 동기 상태, 아래 설정
+            combined = QWidget()
+            cv = QVBoxLayout(combined)
+            cv.setContentsMargins(0, 0, 0, 0)
+            cv.setSpacing(4)
+            devices = self._devices_panel()
+            devices.setMaximumHeight(150)
+            cv.addWidget(devices)
+            if self.group.get("sync_status"):
+                self.sync_state = QLabel("센서 동기 상태 — 읽는 중…")
+                self.sync_state.setObjectName("Hint")
+                self.sync_state.setWordWrap(True)
+                self.sync_state.setContentsMargins(10, 0, 10, 0)
+                self.sync_state.setToolTip("센서 HTTP API (/api/v1/time) 에서 5초마다 읽습니다 — 읽기만 하고 센서 설정은 "
+                                           "바꾸지 않습니다.")
+                cv.addWidget(self.sync_state)
+                self._time_worker = None
+                self._pulse_prev = None          # (센서 monotonic, 펄스 수) — 지금 PPS 가 들어오는지 재려고
+                self._time_status = None
+                self._time_timer = QTimer(self, interval=5000, timeout=self._poll_sensor_time)
+            cv.addWidget(self._settings_panel(), 1)
+            self.tabs.addTab(combined, "장비 · 설정")
+            self.tabs.tabBar().hide()
+        else:
+            self.tabs.addTab(self._devices_panel(), "감지된 장비")
+            self.tabs.addTab(self._settings_panel(), "설정")
+        # 동기 역할이 있는 카메라군만 — 실행 중인 카메라들이 같은 트리거로 찍는지 GUI 에서 잰다
+        self.sync_panel = None
+        if self.sync_roles and self.group.get("sync_check"):
+            self.sync_panel = sync_check.SyncCheckPanel(self.group)
+            self.tabs.addTab(self.sync_panel, "동기 검증")
+            self._update_sync_targets()
+        # ISP 튜닝 — 레지스트리에 tuning 이 있는 카메라 종류만 (카메라 한 대를 띄워 놓고 값을 바로 넣어 본다)
+        self.tuning = None
+        if self.cameras_editable and self.subset.get("tuning"):
+            self.tuning = TuningPanel(self)
+            if self.tuning.fields:
+                self.tuning.sig_start.connect(lambda sn: self.sig_tune.emit(self.card["key"], sn))
+                self.tuning.sig_restart.connect(lambda sn: self.sig_retune.emit(self.card["key"], sn))
+                self.tuning.sig_live.connect(
+                    lambda sn, key, value: self.sig_live_param.emit(self.card["key"], sn, key, value))
+                self.tuning.sig_promote.connect(self.apply_tuned)
+                self.tabs.addTab(self.tuning, "🎨 ISP 튜닝")
+                self.btn_isp.show()
+            else:
+                self.tuning = None
         self.split = QSplitter(Qt.Vertical)
         self.split.setChildrenCollapsible(False)
         self.split.addWidget(self.tabs)
@@ -1009,16 +1758,43 @@ class DetailPage(QWidget):
         self.ip_banner.hide()
         layout.addWidget(self.ip_banner)
 
+        # 동기 방식 일괄 — 여러 대를 한 대씩 바꾸다 한 대를 빠뜨리면 그 카메라만 트리거를 안 받는다.
+        # 대상: 표에서 2대 이상 골랐으면 고른 카메라, 아니면 표의 전부 (한 대 고른 건 라이브 보기라 전체로 본다).
+        self.sync_bar = QWidget()
+        sb = QHBoxLayout(self.sync_bar)
+        sb.setContentsMargins(0, 0, 0, 0)
+        sb.setSpacing(6)
+        title = QLabel("동기 방식 일괄")
+        title.setObjectName("Section")
+        sb.addWidget(title)
+        self.sync_target = QLabel("")
+        self.sync_target.setObjectName("Hint")
+        sb.addWidget(self.sync_target)
+        sb.addStretch()
+        for mode, label in (("hw_trigger", "HW 트리거"), ("ptp", "PTP 액션"), ("free", "자유 실행")):
+            btn = QPushButton(label)
+            btn.setToolTip({"hw_trigger": "GPIO 트리거 입력으로 찍습니다 (전부 받는 쪽)",
+                            "ptp": "PTP 액션 명령으로 찍습니다 — 보내기 1대 + 나머지 받기.\n"
+                                   "이미 보내기인 카메라가 있으면 그대로 두고, 없으면 대상의 첫 카메라가 맡습니다.",
+                            "free": "트리거 없이 각자 프레임레이트대로 찍습니다"}[mode]
+                           + "\n\n다음 기동부터 적용")
+            btn.clicked.connect(lambda _=False, m=mode: self._bulk_sync_mode(m))
+            sb.addWidget(btn)
+        self.sync_bar.setVisible(self.sync_roles)
+        layout.addWidget(self.sync_bar)
+
         self.table = QTableWidget(0, 5)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
         self.table.itemChanged.connect(self._on_table_item)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        # Ctrl·Shift 로 여러 대를 골라 동기 방식을 한 번에 (고른 행의 콤보를 바꾸면 고른 행 전부 바뀐다)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setAlternatingRowColors(True)
         self.table.setShowGrid(False)
         self.table.horizontalHeader().setStretchLastSection(True)
         # 헤더를 누르면 그 열로 오름차순, 한 번 더 누르면 내림차순 (다시 오름…). Qt 의 자체 정렬
-        # (setSortingEnabled)은 쓰지 않는다 — PTP 동기 칸의 콤보(셀 위젯)가 행을 못 따라가고,
+        # (setSortingEnabled)은 쓰지 않는다 — 동기 방식 칸의 콤보(셀 위젯)가 행을 못 따라가고,
         # 이름을 고치는 중에 행이 튀어 다닌다. 감지 목록을 정렬해서 다시 그린다.
         # 정렬 방향은 제목 글자에 ▲/▼ 로 붙인다 — Qt 의 정렬 표시는 오름차순을 ▾(아래)로 그려 헷갈린다.
         header = self.table.horizontalHeader()
@@ -1050,10 +1826,10 @@ class DetailPage(QWidget):
         self.table_msg.setWordWrap(True)
         foot = QHBoxLayout()
         foot.addWidget(self.table_msg, 1)
-        # 카메라 이름 · PTP 역할 · IP 를 리포 인벤토리에 — GUI 없이 ros2 launch 로 띄워도 같은 이름이 된다
+        # 카메라 이름 · 동기 방식 · IP 를 리포 인벤토리에 — GUI 없이 ros2 launch 로 띄워도 같은 이름이 된다
         self.btn_promote_inv = QPushButton("이름·역할을 인벤토리에 저장")
         self.btn_promote_inv.setToolTip(
-            "GUI 에서 정한 카메라 이름 · PTP 역할 · IP 를 리포의 인벤토리 YAML 에 씁니다\n"
+            "GUI 에서 정한 카메라 이름 · 동기 방식 · IP 를 리포의 인벤토리 YAML 에 씁니다\n"
             "(multicam_cameras.yaml 등 — 원본은 ~/.config/dm_clip_gui/backups 에 복사해 둡니다).")
         self.btn_promote_inv.clicked.connect(lambda: self.sig_promote_inventory.emit(self.card["key"]))
         self.btn_promote_inv.setVisible(self.cameras_editable)
@@ -1100,13 +1876,24 @@ class DetailPage(QWidget):
         main = self.card["subset"] or sensor_config.NO_SUBSET
         subs = sensor_config.subsets_of(self.group)
 
-        # 1) 주요 설정
+        # 1) 주요 설정 — panel 이 붙은 필드(ISP 등)는 레지스트리 panels 의 제목으로 따로 묶는다
         curated = sensor_config.fields_for(self.group, main)
-        if curated:
+        plain = [f for f in curated if not f.get("panel")]
+        if plain:
             hint = "이 종류의 모든 장비에 똑같이 적용됩니다. 칸에 마우스를 올리면 설명이 나옵니다." \
                 if self.card["subset"] else "칸에 마우스를 올리면 설명이 나옵니다."
             self._add_section(SettingsSection(f"주요 설정 — {self.card['label']}", hint, primary=True),
-                              col, main, curated)
+                              col, main, plain)
+        tuned_panels = ((self.subset or {}).get("tuning") or {}).get("panels") or []
+        for name, panel in (self.group.get("panels") or {}).items():
+            fields = [f for f in curated if f.get("panel") == name]
+            if fields and name in tuned_panels and self.cameras_editable:
+                col.addWidget(self._tuning_link(panel["title"]))
+            if fields:
+                self._add_section(SettingsSection(f"{panel['title']} — {self.card['label']}", panel.get("hint", ""),
+                                                  collapsible=True, expanded=panel.get("expanded", True),
+                                                  primary=True),
+                                  col, main, fields)
         launch = sensor_config.fields_for(self.group, "launch")
         if launch:
             title, hint = "런치 옵션", ""
@@ -1125,7 +1912,9 @@ class DetailPage(QWidget):
             title = QLabel("전체 설정")
             title.setObjectName("BigTitle")
             bar.addWidget(title)
-            note = QLabel(f"{source} 의 모든 키와 런치 인자 · 회색 = 원본에서 주석 처리된 키 ('지정' 해야 실림) "
+            xml = sensor_config.genicam_source(self.group, main)
+            extra = f" · GenICam = 카메라 XML({xml.name})의 노드" if xml else ""
+            note = QLabel(f"{source} 의 모든 키와 런치 인자{extra} · 회색 = 원본에서 주석 처리된 키 ('지정' 해야 실림) "
                           "· 잠긴 칸 = 런치/GUI 가 정함")
             note.setObjectName("Hint")
             note.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
@@ -1162,6 +1951,11 @@ class DetailPage(QWidget):
         return frame
 
     def _add_section(self, section, column, scope, fields):
+        # 같은 소제목끼리 모은다 (처음 나온 순서) — 레지스트리에서 흩어져 있어도 소제목이 두 번 나오지 않게
+        order = {}
+        for field in fields:
+            order.setdefault(field.get("section"), len(order))
+        fields = sorted(fields, key=lambda f: order[f.get("section")])
         last = None
         for field in fields:
             if field.get("section") and field["section"] != last:
@@ -1196,6 +1990,14 @@ class DetailPage(QWidget):
         left.setSpacing(4)
         left.addWidget(mark)
         left.addWidget(label, 1)
+        if not generic:
+            # 값이 카메라에 닿는 경로 — GenICam 에 그대로 / 노드 로직이 GenICam 여러 개를 / PC 에서만
+            kind = sensor_config.field_route(field)[0]
+            node_tag = "노드→GenICam" if field.get("writes_to", "GenICam") == "GenICam" else "노드→센서"
+            tag = QLabel({"genicam": "GenICam", "node": node_tag, "pc": "PC"}[kind])
+            tag.setObjectName("RouteTag")
+            tag.setProperty("route", kind)
+            left.addWidget(tag)
 
         # 되돌리기(↺)는 바뀐 줄에만 보이지만, 칸 너비는 늘 잡아 둔다 — 줄마다 편집 칸이 흔들리지 않게
         trailing = QWidget()
@@ -1384,11 +2186,32 @@ class DetailPage(QWidget):
         editor.set_value(sensor_config.effective_value(self.group, field, self.overrides, self._base))
         self._refresh_marks()
 
+    def _condition_ok(self, scope, condition):
+        """폼의 지금 값으로 enabled_when / relevant_when 판정 (목록이면 OR). 폼에 없는 키는 맞는 것으로 친다."""
+        if isinstance(condition, list):
+            return any(self._condition_ok(scope, c) for c in condition)
+        return all(self.rows.get((scope, key)) is None or
+                   sensor_config.matches(self.rows[(scope, key)][1].value(), wanted)
+                   for key, wanted in condition.items())
+
     def _tooltip(self, field, is_changed):
         parts = [field["key"]]
+        if not field.get("generic"):
+            parts.append("경로: " + sensor_config.field_route(field)[1])
+            scope = field.get("subset") or sensor_config.NO_SUBSET
+            depends = sensor_config.genicam_dependencies(self.group, scope, field)
+            if depends:
+                parts.append(f"잠김이 바뀌는 조건 (카메라 XML): {', '.join(depends)}")
+        if field.get("relevant_when") and not self._condition_ok(
+                "launch" if field.get("target") == "launch_arg" else (field.get("subset") or sensor_config.NO_SUBSET),
+                field["relevant_when"]):
+            parts.append("지금 설정에서는 효과가 없습니다 (값은 그대로 파일에 실립니다)")
         if field.get("managed"):
             parts.append(f"🔒 {field['managed']}")
-        if field.get("optional") and field.get("generic"):
+        if field.get("genicam"):
+            parts.append("원본 YAML 에 없는 카메라 노드 — '지정' 을 켜야 파일에 실립니다. 범위는 카메라가 정해서, "
+                         "범위 밖 값이면 노드가 기동 중에 죽습니다.")
+        elif field.get("optional") and field.get("generic"):
             parts.append(f"원본 YAML 에서 주석 처리된 키 — '지정' 을 켜야 파일에 실립니다 (예시값 {field.get('example')!r})")
         if is_changed and not field.get("custom"):
             parts.append(f"원본: {sensor_config.base_value(self.group, field, self._base)!r}")
@@ -1421,17 +2244,22 @@ class DetailPage(QWidget):
                 editor.setToolTip(tip)
         for section in self.sections:
             section.set_changed(per_section.get(section, 0))
+        self._refresh_restart_banner()
 
-        # enabled_when: 노출 auto=Continuous 면 노출 시간 칸은 의미가 없다 → 회색
-        for (scope, _key), (field, editor, *_rest) in self.rows.items():
-            condition = field.get("enabled_when") or {}
-            if not condition:
-                continue
-            ok = all(self.rows.get((scope, dk)) is None or
-                     self.rows[(scope, dk)][1].value() == dv
-                     for dk, dv in condition.items())
-            editor.setEnabled(ok)
+        # enabled_when: 잠긴 노드라 쓰면 안 되는 칸 (노출 auto 면 노출 시간) → 칸 전체가 회색, 파일에서도 빠진다
+        # relevant_when: 지금 설정에선 효과가 없을 뿐인 칸 → 이름만 흐리게, 편집 가능, 파일에는 그대로
+        for (scope, _key), (field, editor, label, *_rest) in self.rows.items():
+            if field.get("enabled_when"):
+                editor.setEnabled(self._condition_ok(scope, field["enabled_when"]))
+            if field.get("relevant_when"):
+                idle = not self._condition_ok(scope, field["relevant_when"])
+                if (label.property("idle") == "true") != idle:
+                    label.setProperty("idle", "true" if idle else "false")
+                    ui_theme.repolish(label)
 
+        self._refresh_budget()
+        if getattr(self, "sync_state", None) is not None:
+            self._show_sensor_time()
         self.lbl_changed.setText(f"● 원본과 다른 값 {changed}개" if changed
                                  else "원본 그대로")
         self.lbl_changed.setObjectName("Changed" if changed else "Hint")
@@ -1443,7 +2271,7 @@ class DetailPage(QWidget):
 
     # --- 표시 ---
 
-    NAME_COL = 0          # 이름 · 시리얼 · IP · (PTP 동기) · 모델 · NIC — 이름 짓기가 목적이라 맨 앞
+    NAME_COL = 0          # 이름 · 시리얼 · IP · (동기 방식) · 모델 · NIC — 이름 짓기가 목적이라 맨 앞
     SERIAL_COL = 1
 
     def set_devices(self, devices, probe, error, candidates=None):
@@ -1451,7 +2279,85 @@ class DetailPage(QWidget):
         self._candidates = list(candidates or [])
         self._render_devices()
 
+    # --- 센서 동기 상태 (라이다) ---
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.sync_state is not None:
+            self._poll_sensor_time()
+            self._time_timer.start()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        if self.sync_state is not None:
+            self._time_timer.stop()
+
+    def _poll_sensor_time(self):
+        host = next((d.get("ip") for d in self._devices if d.get("ip")), None)
+        if not host:
+            scope = sensor_config.NO_SUBSET
+            row = self.rows.get((scope, "sensor_hostname"))
+            host = row[1].value() if row else None
+        if not host or (self._time_worker is not None and self._time_worker.isRunning()):
+            if not host:
+                self.sync_state.setText("센서 동기 상태 — 감지된 라이다가 없습니다")
+            return
+        self._time_worker = SensorTimeWorker(host)
+        self._time_worker.sig_done.connect(self._on_sensor_time)
+        self._time_worker.start()
+
+    def _on_sensor_time(self, status):
+        rate = None
+        if status is not None:
+            now = (status["monotonic"], status["pps_count"])
+            if self._pulse_prev and now[0] > self._pulse_prev[0]:
+                rate = (now[1] - self._pulse_prev[1]) / (now[0] - self._pulse_prev[0])
+            self._pulse_prev = now
+        self._time_status = (status, rate)
+        self._show_sensor_time()
+
+    def _show_sensor_time(self):
+        if self.sync_state is None or self._time_status is None:
+            return
+        status, rate = self._time_status
+        row = self.rows.get((sensor_config.NO_SUBSET, "timestamp_mode"))
+        mode = row[1].value() if row else ""
+        offset_row = self.rows.get((sensor_config.NO_SUBSET, "ptp_utc_tai_offset"))
+        if offset_row:
+            offset = offset_row[1].value()
+        else:                  # 전체 설정에 칸이 안 보이면 생성 파일에 들어갈 값으로
+            target = next((t for t in sensor_config.param_targets(self.group)
+                           if t["subset"] == sensor_config.NO_SUBSET), None)
+            offset = (sensor_config._merged_params(self.group, target, self.overrides) or {}).get(
+                "ptp_utc_tai_offset") if target else None
+        lock_row = self.rows.get((sensor_config.NO_SUBSET, "phase_lock_enable"))
+        angle_row = self.rows.get((sensor_config.NO_SUBSET, "phase_lock_offset"))
+        # 칸의 value() 는 파일 값(밀리도) — 도로 바꿔 센서 값과 비교한다
+        angle = (float(angle_row[1].value() or 0) / (angle_row[0].get("scale") or 1)) if angle_row else 0.0
+        wanted_lock = (lock_row[1].value(), angle) if lock_row else None
+        line, warns = sensor_discovery.ouster_sync_summary(status, mode, rate, offset, wanted_lock)
+        self.sync_state.setText(line + "".join(f"\n⚠ {w}" for w in warns))
+        self.sync_state.setObjectName("Hint" if not warns else "")
+        self.sync_state.setStyleSheet("" if not warns else f"color: {ui_theme.WARN};")
+
+    def _refresh_budget(self):
+        """엮인 설정끼리의 문제 (sensor_config.check_settings). 문제가 없으면 숨긴다."""
+        if not self.card["subset"]:
+            return
+        modes = [sensor_config.sync_mode(sensor_config.camera_entry(self.subset, d["identity"], self.overrides))
+                 for d in self._devices] if self.subset else []
+        synced = sum(1 for m in modes if m in sensor_config.SYNCED_MODES)
+        ptp_cams = sum(1 for m in modes if m in ("ptp_sender", "ptp_receiver"))
+        found = sensor_config.check_settings(self.group, self.card["subset"], self.overrides, len(self._devices),
+                                             sensor_config.nic_mtus(self._devices), synced, ptp_cams)
+        self.budget_text.setText("\n".join(f"{'⛔' if level == 'error' else '⚠'} {text}" for level, text in found))
+        self.budget_banner.setVisible(bool(found))
+
     def _render_devices(self):
+        self._refresh_budget()
+        self._refresh_restart_banner()
+        if getattr(self, "tuning", None) is not None:
+            self.tuning.refresh_target()
         devices = self._devices
         self.sub.setText(("⚠ " + self._error) if self._error else f"감지 방법 — {self._probe}")
         edited = sum(1 for d in devices
@@ -1492,7 +2398,7 @@ class DetailPage(QWidget):
         self.dev_split.show()
 
         headers = ([("이름" if self.cameras_editable else "비고"), "시리얼", "IP"]
-                   + (["PTP 동기"] if self.sync_roles else []) + ["모델", "NIC"])
+                   + (["동기 방식"] if self.sync_roles else []) + ["모델", "NIC"])
         self._col_ids = ["name", "serial", "ip"] + (["ptp"] if self.sync_roles else []) + ["model", "nic"]
         tail = 4 if self.sync_roles else 3          # 모델 칸 위치
         col_id, descending = self._sort_spec()
@@ -1545,25 +2451,36 @@ class DetailPage(QWidget):
 
             if self.sync_roles:
                 combo = QComboBox()
-                combo.addItems(sensor_config.PTP_ROLES)
-                role = entry.get("ptp_action_role", "none")
-                if combo.findText(role) < 0:
-                    combo.addItem(role)
-                combo.setCurrentText(role)
+                for mode_key, label, _hw, _ptp in sensor_config.SYNC_MODES:
+                    combo.addItem(label, mode_key)
+                key = sensor_config.sync_mode(entry)
+                if key is None:
+                    # 표에 없는 조합 (GPIO master 등 인벤토리 값) — 보여만 주고 고르면 교체
+                    combo.addItem(sensor_config.sync_mode_label(entry), None)
+                    combo.setCurrentIndex(combo.count() - 1)
+                else:
+                    combo.setCurrentIndex(combo.findData(key))
                 combo.setEnabled(editable)
-                combo.setToolTip(f"원본: {default.get('ptp_action_role', 'none')}\n"
-                                 "sender 는 하나. 보이는 카메라 중 sender 가 없으면 기동 때 "
-                                 "첫 카메라가 sender 로 쓰입니다.")
-                combo.currentTextChanged.connect(
-                    lambda text, sn=serial: self._on_role(sn, text))
+                combo.setToolTip(
+                    f"원본: {sensor_config.sync_mode_label(default)}\n"
+                    "GPIO 트리거와 PTP 액션은 함께 켤 수 없어 늘 한 쌍으로 바뀝니다.\n"
+                    "PTP 보내기(sender)는 하나면 됩니다 — 보이는 카메라 중 없으면 "
+                    "기동 때 첫 카메라가 맡습니다.")
+                combo.currentIndexChanged.connect(
+                    lambda idx, sn=serial, cb=combo:
+                        self._on_sync_mode(sn, cb.itemData(idx)))
                 self.table.setCellWidget(r, 3, combo)
-        # 고른 행 유지 (다시 그려도 라이브가 끊기지 않게)
-        if self._selected:
+        # 고른 행 유지 (다시 그려도 라이브가 끊기지 않고, 여러 대 고른 것도 풀리지 않게)
+        keep = self._picked | ({self._selected} if self._selected else set())
+        if keep:
+            model = self.table.selectionModel()
             for r in range(self.table.rowCount()):
                 cell = self.table.item(r, self.SERIAL_COL)
-                if cell and cell.text() == self._selected:
-                    self.table.selectRow(r)
-                    break
+                if cell and cell.text() in keep:
+                    model.select(self.table.model().index(r, 0),
+                                 QItemSelectionModel.Select | QItemSelectionModel.Rows)
+                    if cell.text() == self._selected:
+                        self.table.setCurrentCell(r, self.SERIAL_COL, QItemSelectionModel.NoUpdate)
         self.table.blockSignals(False)
         self._apply_marks()
         self.table.resizeColumnsToContents()
@@ -1578,10 +2495,12 @@ class DetailPage(QWidget):
             if not self.table_msg.text():          # 방금 한 동작의 결과 메시지는 남겨 둔다
                 self.table_msg.setText("행을 고르면 오른쪽에 라이브 (기동 중일 때) · 이름은 더블클릭 "
                                        "또는 오른쪽 칸 · 다음 기동부터 적용")
-                self.table_msg.setToolTip("이름·PTP 역할은 GUI 설정에 저장됩니다 — 리포 인벤토리 YAML 은 "
+                self.table_msg.setToolTip("이름·동기 방식은 GUI 설정에 저장됩니다 — 리포 인벤토리 YAML 은 "
                                           "바뀌지 않습니다.")
         else:
             self.table_msg.hide()
+        self._update_bulk_target()
+        self._update_sync_targets()
 
     def _lidar_banner(self, devices):
         """라이다가 PC 에 못 붙는 이유와 [NIC 설정] 버튼. 보일 게 없으면 False."""
@@ -1592,6 +2511,9 @@ class DetailPage(QWidget):
         fixable = [d for d in stuck if d.get("fix_nic")]
         self.fix_nic = (fixable[0]["fix_nic"] if fixable
                         else self._candidates[0]["nic"] if self._candidates else None)
+        # 라이다를 실제로 본 NIC 인가, 'IPv4 없는 유선 NIC' 이라 짐작한 후보인가. 기동 전 자동 설정은 본 경우에만 —
+        # 짐작 후보는 부팅 직후 링크가 늦게 올라온 카메라 NIC 일 수 있다 (2026-09-22, 아래 _lidar_fix).
+        self.fix_nic_seen = bool(fixable)
         if stuck:
             text = "⚠ " + " · ".join(f"{d['identity'] or '라이다'}: {d['note']}" for d in stuck)
         elif self._candidates:
@@ -1707,9 +2629,10 @@ class DetailPage(QWidget):
                 name = dev["note"]
             return self._natural(name), serial
         if col_id == "ptp":
-            role = sensor_config.camera_entry(self.subset, dev["identity"], self.overrides).get(
-                "ptp_action_role", "none")
-            return [{"sender": 0, "receiver": 1}.get(role, 2)], serial
+            entry = sensor_config.camera_entry(self.subset, dev["identity"], self.overrides)
+            key = sensor_config.sync_mode(entry)
+            order = [k for k, *_ in sensor_config.SYNC_MODES]
+            return [order.index(key) if key in order else len(order)], serial
         if col_id == "model":
             return self._natural(dev["model"]), serial
         if col_id == "nic":
@@ -1762,8 +2685,14 @@ class DetailPage(QWidget):
         """고른 카메라를 라이브에 — 실행 중이고 이번 기동에 들어간 카메라면 스트림, 아니면 이름만."""
         if not self.cameras_editable:
             return
-        rows = self.table.selectionModel().selectedRows() if self.table.selectionModel() else []
-        item = self.table.item(rows[0].row(), self.SERIAL_COL) if rows else None
+        rows = [i.row() for i in self.table.selectionModel().selectedRows()] if self.table.selectionModel() else []
+        self._picked = {self.table.item(r, self.SERIAL_COL).text() for r in rows
+                        if self.table.item(r, self.SERIAL_COL)}
+        self._update_bulk_target()
+        # 여러 대를 고르면 마지막으로 누른 행(현재 행)을 라이브에
+        current = self.table.currentRow()
+        row = current if current in rows else (rows[0] if rows else None)
+        item = self.table.item(row, self.SERIAL_COL) if row is not None else None
         serial = item.text() if item else None
         if not serial:
             self.live.clear_camera("표에서 카메라를 고르세요.")
@@ -1792,16 +2721,192 @@ class DetailPage(QWidget):
 
     def set_launched(self, mapping):
         self.launched = dict(mapping)
+        self._update_sync_targets()
+        if self.tuning is not None:
+            self.tuning.refresh_target()
 
-    def _on_role(self, serial, role):
-        default = sensor_config.default_camera_entry(self.subset, serial).get("ptp_action_role", "none")
-        store = self._camera_store(serial)
-        if role == default:
-            store.pop("ptp_action_role", None)
+    def open_tuning(self):
+        if self.tuning is not None:
+            self.tabs.setCurrentWidget(self.tuning)
+
+    def _tuning_link(self, title):
+        """설정 탭의 ISP 상자 위 — 여기서 바꾸면 다음 기동부터라는 것과, 영상을 보며 바로 바꾸는 탭이 따로 있다는 것."""
+        frame = QFrame()
+        frame.setObjectName("Info")
+        row = QHBoxLayout(frame)
+        row.setContentsMargins(10, 6, 8, 6)
+        text = QLabel(f"🎨  {title} 값은 <b>ISP 튜닝</b> 탭에서 카메라 영상을 보면서 바로 바꿔 볼 수 있습니다 — 맞으면 "
+                      "[모든 카메라에 적용] 으로 떠 있는 카메라 전부에 재기동 없이 들어갑니다. 여기서 바꾸면 다음 기동부터 "
+                      "(실행 중이면 재기동해야) 들어갑니다.")
+        text.setWordWrap(True)
+        text.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        row.addWidget(text, 1)
+        button = QPushButton("ISP 튜닝 열기")
+        button.clicked.connect(self.open_tuning)
+        row.addWidget(button, 0, Qt.AlignVCenter)
+        return frame
+
+    def set_launch_snapshot(self, snapshot):
+        self.launch_snapshot = snapshot
+        self._push_failed = set()        # 방금 [모든 카메라에 적용] 에서 카메라가 거부한 칸 이름 — 재기동밖에 없다
+        self._refresh_restart_banner()
+
+    def _pending_restart(self):
+        """이번 기동 뒤에 바꾼 칸 이름들 — 실행 중인 노드에는 아직 안 들어갔다."""
+        snap = self.launch_snapshot or {}
+        names = []
+        scope = self.card["subset"] or sensor_config.NO_SUBSET
+        for sc, now, before in (
+                (scope, (self.overrides.get("params") or {}).get(scope) or {},
+                 (snap.get("params") or {}).get(scope) or {}),
+                ("launch", self.overrides.get("launch_args") or {}, snap.get("launch_args") or {})):
+            for key in sorted(set(now) | set(before)):
+                if not _same(now.get(key), before.get(key)):
+                    row = self.rows.get((sc, key))
+                    names.append((row[0].get("label") if row else None) or key)
+        mine = {d["identity"] for d in self._devices}
+        now_cams = sensor_config.camera_overrides(self.overrides)
+        before_cams = (snap.get("cameras") or {})
+        for serial in sorted(mine):
+            if (now_cams.get(serial) or {}) != (before_cams.get(serial) or {}):
+                entry = sensor_config.camera_entry(self.subset, serial, self.overrides) if self.subset else {}
+                names.append(f"{entry.get('name') or serial} 이름 · 동기 방식")
+        return names
+
+    def _refresh_restart_banner(self):
+        if not hasattr(self, "restart_banner"):
+            return
+        names = self._pending_restart() if (self._locked and self._included and self.launch_snapshot is not None) else []
+        if names:
+            tuned = {f.get("label") for f in (self.tuning.fields if self.tuning is not None else [])}
+            tuned -= getattr(self, "_push_failed", set())
+            shown = ", ".join(names[:5]) + (f" 외 {len(names) - 5}개" if len(names) > 5 else "")
+            self.restart_text.setText(
+                f"⟳ 기동한 뒤 바꾼 설정 {len(names)}개는 아직 실행 중인 센서에 안 들어갔습니다 — 재기동해야 들어갑니다: "
+                f"{shown}"
+                + (".  (ISP · 노출 값은 🎨 ISP 튜닝 탭의 [모든 카메라에 적용] 으로 재기동 없이 넣을 수 있습니다)"
+                   if tuned & set(names) else ""))
+        self.restart_banner.setVisible(bool(names))
+
+    def apply_tuned(self, values):
+        """[ISP 튜닝] 의 [모든 카메라에 적용] — 튜닝한 값을 이 종류의 설정(모든 카메라, 다음 기동)에 저장하고, 떠 있는
+        카메라 전부에 바로 넣어 달라고 스테이지에 알린다 (결과는 applied_live → 튜닝 탭 show_applied)."""
+        scope = self.card["subset"] or sensor_config.NO_SUBSET
+        store = self._store(scope)
+        for key, value in values.items():
+            row = self.rows.get((scope, key))
+            if row is None:
+                continue
+            field, editor = row[0], row[1]
+            editor.set_value(value)
+            if _same(value, sensor_config.base_value(self.group, field, self._base)):
+                store.pop(key, None)
+            else:
+                store[key] = value
+        self._refresh_marks()
+        self.sig_push_params.emit(self.card["key"], dict(values))
+
+    def applied_live(self, cameras, failed):
+        if self.tuning is not None:
+            labels = {f["key"]: f.get("label") or f["key"] for f in self.tuning.fields}
+            labels.update({f["live_alias"]: f.get("label") or f["key"] for f in self.tuning.fields if f.get("live_alias")})
+            self.tuning.show_applied(cameras, failed, labels)
+            self._push_failed = {labels.get(key, key) for _node, key, _why in failed}
+        self._refresh_restart_banner()
+
+    def _update_sync_targets(self):
+        """동기 검증 탭에 지금 떠 있는 이 카드의 카메라와 그 동기 방식을 알려 준다."""
+        if not getattr(self, "sync_panel", None):
+            return
+        running = self._locked and self._included
+        mine = {d["identity"] for d in self._devices}      # launched 는 센서군 전체(열화상 포함)
+        modes = {}
+        if running:
+            for serial, namespace in self.launched.items():
+                if serial in mine:
+                    entry = sensor_config.camera_entry(self.subset, serial, self.overrides)
+                    modes[namespace] = sensor_config.sync_mode_label(entry)
+        fields = {f["key"]: f for f in sensor_config.fields_for(self.group, self.card["subset"])}
+        stamp = {name: sensor_config.effective_value(self.group, fields[key], self.overrides, self._base)
+                 for name, key in (("mode", "timestamp.mode"), ("grid_hz", "timestamp.trigger_grid_hz"))
+                 if key in fields}
+        self.sync_panel.set_targets(modes, running, stamp)
+
+    def _bulk_targets(self):
+        """동기 방식 일괄 적용 대상 — 표에서 2대 이상 골랐으면 그 카메라들, 아니면 표의 전부."""
+        shown = [d["identity"] for d in self._devices]
+        picked = [sn for sn in shown if sn in self._picked]
+        return (picked, True) if len(picked) > 1 else (shown, False)
+
+    def _update_bulk_target(self):
+        if not self.sync_roles:
+            return
+        serials, picked = self._bulk_targets()
+        self.sync_target.setText(f"대상: 고른 {len(serials)}대" if picked else
+                                 f"대상: 전체 {len(serials)}대  (Ctrl·Shift 로 여러 대를 고르면 고른 카메라만)")
+        self.sync_target.setStyleSheet(f"color:{ui_theme.WARN};" if picked else "")
+
+    def _bulk_sync_mode(self, mode, serials=None):
+        """여러 대의 동기 방식을 한 번에. PTP 액션이면 보내는 쪽은 하나 — 표에 이미 보내기인 카메라가 있으면
+        (대상 밖이어도) 그대로 두고 대상은 전부 받기, 없으면 대상의 첫 카메라가 보내기."""
+        if serials is None:
+            serials, _picked = self._bulk_targets()
+        if not serials:
+            return
+        if mode == "ptp":
+            shown = [d["identity"] for d in self._devices]
+            sender = next((sn for sn in serials + shown if sensor_config.sync_mode(
+                sensor_config.camera_entry(self.subset, sn, self.overrides)) == "ptp_sender"), serials[0])
+            mode = {sn: "ptp_sender" if sn == sender else "ptp_receiver" for sn in serials}
+            name = sensor_config.camera_entry(self.subset, sender, self.overrides)["namespace"]
+            text = f"{len(serials)}대 → PTP 액션 (보내기: {name})"
         else:
-            store["ptp_action_role"] = role
-        self._drop_empty(serial)
-        self._show_table_msg(f"{serial}: PTP 역할 {role}" + ("" if role != default else " (원본값)"))
+            label = next(lbl for k, lbl, *_ in sensor_config.SYNC_MODES if k == mode)
+            text = f"{len(serials)}대 → {label}"
+            mode = dict.fromkeys(serials, mode)
+        self._apply_sync_modes(mode, text)
+
+    def _apply_sync_modes(self, modes, text):
+        """{시리얼: 동기 방식 키} 를 GUI 설정에 적고 표를 다시 그린다."""
+        for sn, key in modes.items():
+            sensor_config.set_sync_mode(self.subset, self.overrides, sn, key)
+        self._show_table_msg(text + "  (다음 기동부터 적용)" + self._mixed_sync_note(modes))
+        self._render_devices()
+        self.sig_cameras_edited.emit(self.group["key"])
+
+    def _mixed_sync_note(self, changed):
+        """방금 바꾼 카메라(changed) 밖에 다른 동기 방식이 남았으면 '  ·  ⚠ …' — HW 트리거 · PTP 액션 · 자유 실행이
+        섞이면 한 순간에 같이 찍히지 않는다. 고른 카메라만 바꿨을 때 나머지를 빠뜨린 걸 알아채게."""
+        family = {"hw_trigger": "HW 트리거", "ptp_sender": "PTP 액션", "ptp_receiver": "PTP 액션", "free": "자유 실행"}
+        mode_of = {d["identity"]: sensor_config.sync_mode(
+            sensor_config.camera_entry(self.subset, d["identity"], self.overrides)) for d in self._devices}
+        mine = {family.get(mode_of.get(sn), "기타") for sn in changed}
+        rest = {}
+        for sn, key in mode_of.items():
+            name = family.get(key, "기타")
+            if sn not in changed and name not in mine:
+                rest[name] = rest.get(name, 0) + 1
+        return ("  ·  ⚠ 나머지 " + ", ".join(f"{n} {c}대" for n, c in sorted(rest.items()))) if rest else ""
+
+    def _on_sync_mode(self, serial, key):
+        if not key:                # "기타 (…)" 표시용 항목 — 값 아님
+            return
+        # 여러 대를 고른 채로 그중 한 대의 콤보를 바꾸면 고른 카메라 전부
+        picked, is_picked = self._bulk_targets()
+        if is_picked and serial in picked:
+            if key == "ptp_sender":         # 보내기는 한 대 — 바꾼 그 카메라, 나머지는 받기
+                name = sensor_config.camera_entry(self.subset, serial, self.overrides)["namespace"]
+                self._apply_sync_modes({sn: "ptp_sender" if sn == serial else "ptp_receiver" for sn in picked},
+                                       f"{len(picked)}대 → PTP 액션 (보내기: {name})")
+            else:
+                self._bulk_sync_mode(key, picked)
+            return
+        sensor_config.set_sync_mode(self.subset, self.overrides, serial, key)
+        label = next(lbl for k, lbl, *_ in sensor_config.SYNC_MODES if k == key)
+        default_key = sensor_config.sync_mode(
+            sensor_config.default_camera_entry(self.subset, serial))
+        self._show_table_msg(f"{serial}: 동기 방식 {label}"
+                             + (" (원본값)" if key == default_key else ""))
         self._render_devices()
         self.sig_cameras_edited.emit(self.group["key"])
 
@@ -1819,6 +2924,10 @@ class DetailPage(QWidget):
             self._show_table_msg("")
             self._render_devices()
             self._on_select()
+        self._update_sync_targets()
+        if self.tuning is not None:
+            self.tuning.refresh_target()
+        self._refresh_restart_banner()
 
     def restore_splitter(self, state):
         if state:
@@ -1968,6 +3077,11 @@ class SensorStageWidget(QWidget):
             page.sig_assign_ip.connect(self.assign_ips)
             page.sig_promote.connect(self.promote_defaults)
             page.sig_promote_inventory.connect(self.promote_inventory)
+            page.sig_tune.connect(self._start_tuning)
+            page.sig_retune.connect(self._restart_tuning)
+            page.sig_live_param.connect(self._live_param)
+            page.sig_push_params.connect(self._push_params)
+            page.sig_restart.connect(self.restart_group)
             page.sig_cameras_edited.connect(lambda _k: self.sig_state.emit())
             page.sig_splitter.connect(self._on_detail_splitter)
             page.restore_splitter(detail_state)
@@ -1994,6 +3108,10 @@ class SensorStageWidget(QWidget):
         self._ros = worker
         for page in self.pages.values():
             page.live.attach(worker)
+            if page.tuning is not None:
+                page.tuning.live.attach(worker)
+        if worker is not None and hasattr(worker, "sig_node_param"):
+            worker.sig_node_param.connect(self._on_node_param)
 
     def stale_publishers(self):
         """기동 중인 센서군이 기동 직전에 이미 있던 발행자들 — 완료 판정에서 세지 않는다."""
@@ -2107,7 +3225,9 @@ class SensorStageWidget(QWidget):
             mine = sensor_config.camera_overrides(overrides).setdefault(dev["identity"], {})
             mine.update({"force_ip_address": ip, "force_ip_subnet_mask": mask})
             tasks.append({"serial": dev["identity"], "mac": dev["mac"], "nic": dev["nic"],
-                          "ip": ip, "mask": mask, "label": card["label"]})
+                          "ip": ip, "mask": mask, "label": card["label"],
+                          # 새 IP 로 다시 대답하기까지 기다릴 시간 (sensors.yaml subset 의 force_ip_settle_s)
+                          "settle_s": float(sub.get("force_ip_settle_s", 6.0))})
         return tasks
 
     def assign_ips(self, card_key):
@@ -2281,11 +3401,15 @@ class SensorStageWidget(QWidget):
         return [(s["topic_regex"], max(1, sum(1 for d in devices if d["subset"] == s["key"])))
                 for s in subs if s["key"] in subsets and s.get("topic_regex")]
 
-    def _start_group(self, group_key, subsets):
+    def _start_group(self, group_key, subsets, only=None):
+        """only: 이 시리얼들만 띄운다 (ISP 튜닝 — 카메라 한 대). 저장된 설정(띄울 종류)은 건드리지 않는다."""
         group = self.groups[group_key]
         overrides = self._overrides(group_key)
         subs = sensor_config.subsets_of(group)
         devices = (self._result.get(group_key) or {}).get("devices", [])
+        if only is not None:
+            devices = [d for d in devices if d["identity"] in only]
+            overrides = dict(overrides)
 
         if subs:
             # 인벤토리로 띄우는 종류는 "지금 보이는 카메라"만 띄운다. 한 대도 안 보이면 뺀다 —
@@ -2319,6 +3443,9 @@ class SensorStageWidget(QWidget):
                         launched[dev["identity"]] = sensor_config.camera_entry(
                             sub, dev["identity"], overrides)["namespace"]
         self._launched[group_key] = launched
+        # 튜닝 기동은 녹화하려고 띄운 게 아니다 — 다 떠도 녹화 탭으로 넘기거나 토픽 선택 창을 열지 않는다
+        self._tuning_launch = getattr(self, "_tuning_launch", {})
+        self._tuning_launch[group_key] = only is not None
         self._announced_ready = False
         # 지금 그래프에 있는 발행자는 이번 기동 것이 아니다 (앞 실행의 죽은 노드가 임대 시간 동안 남는다)
         self._stale_pubs[group_key] = set()
@@ -2328,12 +3455,31 @@ class SensorStageWidget(QWidget):
             except Exception:                                  # noqa: BLE001
                 pass
         labels = ", ".join(c["label"] for c in self._cards_of(group_key) if c["subset"] in subsets)
+        if only is not None:
+            labels += f" — ISP 튜닝: {', '.join(launched.get(sn, sn) for sn in only)} 한 대만"
         self.sig_log.emit("GUI", f"기동: {labels}")
+        # 이번 기동의 설정 — 나중에 바꾼 칸을 '재기동해야 들어감' 으로 알리고, [⟳ 지금 재기동] 이 같은 구성으로 다시 올린다
+        self._launch_snapshot = getattr(self, "_launch_snapshot", {})
+        self._launch_snapshot[group_key] = copy.deepcopy(overrides)
+        self._launch_args = getattr(self, "_launch_args", {})
+        self._launch_args[group_key] = (list(subsets), list(only) if only is not None else None)
+        for card in self._cards_of(group_key):
+            self.pages[card["key"]].set_launch_snapshot(self._launch_snapshot[group_key])
         self.supervisor.start(group_key, overrides, self._expectations(group_key, subsets), devices)
 
     def _run_nic_fix(self, card_key, iface, then):
         """라이다 NIC 를 link-local 로 잡고 → 다시 감지 → then()."""
         if getattr(self, "_nic_worker", None) is not None and self._nic_worker.isRunning():
+            return
+        cameras = self._camera_nic_devices(iface)
+        if cameras:
+            # 카메라 NIC 에 169.254 주소를 얹으면 카메라 IP 자동 맞춤이 그걸 기준 서브넷으로 잡아 카메라를 옮긴다.
+            message = (f"{iface} 에는 카메라 {len(cameras)}대가 붙어 있어 라이다용 link-local 주소를 얹지 않습니다 "
+                       "(얹으면 카메라 IP 가 169.254 로 옮겨져 기동이 실패합니다). 라이다가 꽂힌 NIC 를 확인하세요.")
+            self.sig_log.emit("ERROR", message)
+            self.pages[card_key]._show_table_msg(message, error=True)
+            if then:
+                then()
             return
         page = self.pages[card_key]
         page.btn_ip.setEnabled(False)
@@ -2351,12 +3497,28 @@ class SensorStageWidget(QWidget):
         self.refresh_discovery(force=True)
 
     def _lidar_fix(self, cards):
-        """기동할 라이다 카드 중 PC 쪽 NIC 를 잡아야 붙는 게 있으면 (카드 키, NIC)."""
+        """기동할 라이다 카드 중 PC 쪽 NIC 를 잡아야 붙는 게 있으면 (카드 키, NIC).
+
+        라이다를 그 NIC 에서 실제로 본 경우만 자동으로 잡는다. 라이다가 안 보여 'IPv4 없는 유선 NIC' 을 후보로
+        짐작한 경우는 건너뛴다 — 2026-09-22 재부팅 직후 카메라 스위치 링크가 늦게 올라와 카메라 NIC(enp3s0f1)가
+        그 후보가 됐고, 기동 전 자동 설정이 거기에 169.254 주소를 영구로 얹었다. 이어서 카메라 IP 자동 맞춤이 그
+        주소를 기준으로 16대를 169.254.0.x 로 옮겨 전부 기동 실패. 짐작 후보는 [NIC 설정] 을 직접 누를 때만.
+        """
         for card in cards:
             page = self.pages[card["key"]]
-            if card["group"].get("discovery", {}).get("kind") == "ouster_probe" and page.fix_nic:
-                return card["key"], page.fix_nic
+            if card["group"].get("discovery", {}).get("kind") != "ouster_probe" or not page.fix_nic:
+                continue
+            if not getattr(page, "fix_nic_seen", False):
+                self.sig_log.emit("WARN", f"라이다가 안 보여 NIC 자동 설정은 건너뜁니다 ({page.fix_nic} 은 짐작한 후보 — "
+                                          "라이다가 거기 꽂혔다면 라이다 카드의 [NIC 설정] 을 직접 누르세요)")
+                continue
+            return card["key"], page.fix_nic
         return None
+
+    def _camera_nic_devices(self, iface):
+        """지금 감지 결과에서 그 NIC 에 붙어 있는 카메라 (GVCP 카메라 카드 전부)."""
+        return [d for page in self.pages.values() if page.cameras_editable
+                for d in page._devices if d.get("nic") == iface]
 
     def _fix_ip_then(self, cards, then):
         """IP 자동 맞춤이 켜져 있으면 기동 전에 라이다 NIC · 카메라 IP 를 맞춘 뒤 then()."""
@@ -2399,6 +3561,147 @@ class SensorStageWidget(QWidget):
                 if card["group"]["key"] in started and card["subset"] in self._included[card["group"]["key"]]:
                     self.select_card(card["key"])
                     break
+
+    def _start_tuning(self, card_key, serial):
+        """[ISP 튜닝] 의 [이 카메라만 기동] — 그 카드의 종류에서 이 카메라 한 대만 띄운다."""
+        card = next(c for c in self.cards if c["key"] == card_key)
+        group_key = card["group"]["key"]
+        if self._active(group_key):
+            self.sig_log.emit("WARN", f"{card['group']['label']} 이(가) 실행 중입니다 — 중지한 뒤 튜닝 기동하세요")
+            return
+        self._fix_ip_then([card], lambda: self._start_group(group_key, [card["subset"]], only=[serial]))
+
+    def _restart_tuning(self, card_key, serial):
+        """[ISP 튜닝] 의 [⟳ 재기동] — 내렸다가 같은 카메라 한 대만 다시 올린다 (재기동해야 들어가는 값 적용)."""
+        card = next(c for c in self.cards if c["key"] == card_key)
+        group_key = card["group"]["key"]
+        if not self._active(group_key):
+            return self._start_tuning(card_key, serial)
+        self._restart_after_stop = getattr(self, "_restart_after_stop", {})
+        self._restart_after_stop[group_key] = (card_key, serial)
+        self.sig_log.emit("GUI", "ISP 튜닝: 카메라 재기동 — 내렸다가 다시 올립니다")
+        self.stop_group(group_key)
+
+    def _live_param(self, card_key, serial, key, value):
+        """튜닝 탭에서 바꾼 값을 실행 중인 그 카메라 노드에 넣는다 (카메라 노드는 받는 즉시 카메라에 쓴다)."""
+        card = next(c for c in self.cards if c["key"] == card_key)
+        page = self.pages[card_key]
+        ns = self._launched.get(card["group"]["key"], {}).get(serial)
+        if ns is None or self._ros is None or not hasattr(self._ros, "set_node_param"):
+            page.tuning.on_result(key, False, "이 카메라가 실행 중이 아니거나 ROS 연결이 없습니다")
+            return
+        node = f"/{ns}/flir_camera"
+        self._live_targets = getattr(self, "_live_targets", {})
+        self._live_targets[node] = card_key
+        self._ros.set_node_param(node, key, value)
+
+    def restart_group(self, group_key):
+        """[⟳ 지금 재기동] — 기동 뒤 바꾼 설정을 넣으려고 같은 구성(종류 · 튜닝 한 대)으로 내렸다 다시 올린다."""
+        args = getattr(self, "_launch_args", {}).get(group_key)
+        if not args or not self._active(group_key):
+            return
+        label = self.groups[group_key]["label"]
+        if not self._confirm("재기동", f"{label} 을(를) 내렸다가 같은 구성으로 다시 올립니다.",
+                             "기동한 뒤 바꾼 설정이 전부 들어갑니다. 다시 뜰 때까지(수십 초) 이 센서군의 데이터가 끊기므로, "
+                             "녹화 중이면 녹화에 빈 구간이 생깁니다."):
+            return
+        subsets, only = args
+        cards = [c for c in self._cards_of(group_key) if not c["subset"] or c["subset"] in subsets]
+        self._restart_after_stop = getattr(self, "_restart_after_stop", {})
+        self._restart_after_stop[group_key] = lambda: self._fix_ip_then(
+            cards, lambda: self._start_group(group_key, subsets, only))
+        self.sig_log.emit("GUI", f"{label}: 바꾼 설정을 넣으려고 재기동 — 내렸다가 같은 구성으로 다시 올립니다")
+        self.stop_group(group_key)
+
+    def _push_params(self, card_key, values):
+        """[모든 카메라에 적용] — 떠 있는 이 카드의 카메라 전부에 값을 넣는다 (카메라 노드는 받는 즉시 카메라에 쓴다).
+        카메라별로 따로 두는 ISP 값은 없어서(카메라별 항목은 이름 · 동기 역할 · IP 뿐) 다음 기동 값과 어긋나지 않는다."""
+        card = next(c for c in self.cards if c["key"] == card_key)
+        group_key = card["group"]["key"]
+        page = self.pages[card_key]
+        mine = {d["identity"] for d in page._devices}
+        running = {}
+        if self._active(group_key) and card["subset"] in self._included.get(group_key, set()):
+            running = {sn: ns for sn, ns in self._launched.get(group_key, {}).items() if sn in mine}
+        if not running or not values:
+            page.applied_live(0, [])
+            return
+        if self._ros is None or not hasattr(self._ros, "set_node_param"):
+            page.applied_live(len(running), [("ROS", k, "ROS 연결이 없어 실행 중인 카메라에 못 넣음") for k in values])
+            return
+        fields = {f["key"]: f for f in (page.tuning.fields if page.tuning is not None else [])}
+        job = {"card": card_key, "group": group_key, "values": dict(values), "fields": fields, "cams": len(running),
+               "pending": set(), "failed": [], "alias_of": {}, "done": False}
+        self._node_jobs = getattr(self, "_node_jobs", {})
+        for sn, ns in running.items():
+            node = f"/{ns}/flir_camera"
+            for key, value in values.items():
+                job["pending"].add((node, key))
+                self._node_jobs[(node, key)] = job
+                self._ros.set_node_param(node, key, value)
+        self.sig_log.emit("GUI", f"{card['label']}: {len(values)}칸을 떠 있는 카메라 {len(running)}대에 바로 넣습니다")
+        QTimer.singleShot(15000, lambda j=job: self._finish_push(j))
+
+    def _push_result(self, job, node, key, ok, reason):
+        job["pending"].discard((node, key))
+        original = job["alias_of"].get((node, key), key)
+        field = job["fields"].get(original)
+        # 기동 때 잠겨 등록이 안 된 노드면 늘 등록되는 별칭(live_alias)으로 한 번 더 — 튜닝 탭 on_result 와 같은 규칙
+        if not ok and field and field.get("live_alias") and key == original and "declared" in reason:
+            alias = field["live_alias"]
+            job["pending"].add((node, alias))
+            job["alias_of"][(node, alias)] = original
+            self._node_jobs[(node, alias)] = job
+            self._ros.set_node_param(node, alias, job["values"][original])
+            return
+        if not ok:
+            job["failed"].append((node, original, reason or "거부됨"))
+        if not job["pending"]:
+            self._finish_push(job)
+
+    def _finish_push(self, job):
+        if job["done"]:
+            return
+        job["done"] = True
+        for pending in list(job["pending"]):
+            self._node_jobs.pop(pending, None)
+            job["failed"].append((pending[0], job["alias_of"].get(pending, pending[1]), "응답 없음 (15초)"))
+        page = self.pages[job["card"]]
+        failed_keys = {key for _node, key, _why in job["failed"]}
+        # 모든 카메라에 들어간 칸은 이미 적용된 것 — 기동 때 설정(스냅숏)에 옮겨 '재기동해야 들어감' 에서 뺀다
+        snap = getattr(self, "_launch_snapshot", {}).get(job["group"])
+        if snap is not None:
+            scope = page.card["subset"] or sensor_config.NO_SUBSET
+            store = (page.overrides.get("params") or {}).get(scope) or {}
+            params = snap.setdefault("params", {}).setdefault(scope, {})
+            for key in job["values"]:
+                if key in failed_keys:
+                    continue
+                if key in store:
+                    params[key] = copy.deepcopy(store[key])
+                else:
+                    params.pop(key, None)
+        page.applied_live(job["cams"], job["failed"])
+        label = page.card["label"]
+        if job["failed"]:
+            cams = len({node for node, _k, _w in job["failed"]})
+            self.sig_log.emit("WARN", f"{label}: 카메라 {cams}대에 {', '.join(sorted(failed_keys))} 이(가) 바로 안 들어갔습니다 "
+                                      f"({job['failed'][0][2]}) — 설정에는 저장됨, 재기동하면 들어갑니다")
+        else:
+            self.sig_log.emit("OK", f"{label}: 떠 있는 카메라 {job['cams']}대 전부에 바로 들어갔습니다 (설정에도 저장)")
+
+    def _on_node_param(self, node, key, ok, reason):
+        job = getattr(self, "_node_jobs", {}).pop((node, key), None)
+        if job is not None:
+            if not job["done"]:
+                self._push_result(job, node, key, ok, reason)
+            return
+        card_key = getattr(self, "_live_targets", {}).get(node)
+        page = self.pages.get(card_key)
+        if page is not None and page.tuning is not None:
+            page.tuning.on_result(key, ok, reason)
+        if not ok:
+            self.sig_log.emit("WARN", f"{node} {key}: {reason}")
 
     def _start_from_page(self, card_key):
         """상세 화면의 [기동] — 이 카드는 포함시키고, 같은 프로세스의 체크된 카드도 같이 띄운다."""
@@ -2475,6 +3778,9 @@ class SensorStageWidget(QWidget):
                 marks[serial] = (FAILED, "노드가 죽음 — 런치 로그 확인")
             elif ns in proc.ns_seen and ns not in proc.ns_present:
                 marks[serial] = (FAILED, "토픽이 사라짐")
+            elif ns in proc.ns_issues and (ns in proc.ns_ready or ns in proc.ns_present):
+                issue = proc.ns_issues[ns]
+                marks[serial] = (DEGRADED, issue["text"] + (f": {issue['detail']}" if issue["detail"] else ""))
             elif ns in proc.ns_ready or (not proc.ready_log and ns in proc.ns_present):
                 marks[serial] = (RUNNING, f"/{ns}/")
             elif ns in proc.ns_logged:
@@ -2502,9 +3808,17 @@ class SensorStageWidget(QWidget):
                           f"{labels or group_key}: {RUN_TEXT.get(state, state)}")
         self._update_start_button()
 
+        pending = getattr(self, "_restart_after_stop", {}).get(group_key)
+        if pending and not self._active(group_key):
+            del self._restart_after_stop[group_key]
+            QTimer.singleShot(800, pending if callable(pending) else (lambda p=pending: self._start_tuning(*p)))
         active = [k for k in self.groups if self._active(k)]
         all_up = bool(active) and all(self.supervisor.state(k) == RUNNING for k in active)
-        self.btn_go.setVisible(all_up)
+        tuning = any(getattr(self, "_tuning_launch", {}).get(k) for k in active)
+        self.btn_go.setVisible(all_up and not tuning)
+        if tuning and all_up and not self._announced_ready:
+            self._announced_ready = True
+            self.sig_log.emit("OK", "ISP 튜닝용 카메라가 떴습니다 — ISP 튜닝 탭에서 값을 바꾸면 바로 들어갑니다")
         if all_up and not self._announced_ready:
             self._announced_ready = True
             self.sig_ready.emit()

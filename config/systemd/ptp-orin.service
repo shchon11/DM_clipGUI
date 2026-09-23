@@ -1,0 +1,18 @@
+# Orin(GNSS PPS 로 잠긴 PTP grandmaster) → PC eno1 : PTP slave, 하드웨어 타임스탬프 (I219, 오차 µs).
+# 카메라 쪽(enp3s0f1)은 여기서 다루지 않는다 — DM_clipGUI 가 기동할 때 소프트웨어 타임스탬프 ptp4l 로
+# PC 시계를 카메라에 뿌린다. 82599(enp3s0f1)의 하드웨어 타임스탬프는 카메라 14대의 Delay_Req 가 겹치면
+# 타임스탬프를 놓쳐 카메라 시계가 N×0.5 s 씩 튀었다 (2026-09-22).
+# 설치: sudo cp ptp-orin.service phc2sys-orin.service /etc/systemd/system/ && sudo systemctl daemon-reload
+#       sudo systemctl enable --now ptp-orin.service phc2sys-orin.service
+[Unit]
+Description=PTP slave on eno1 (Orin GNSS grandmaster -> PC)
+After=sys-subsystem-net-devices-eno1.device network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/sbin/ptp4l -i eno1 -H -s -m
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

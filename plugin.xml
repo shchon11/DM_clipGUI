@@ -1,0 +1,19 @@
+<!-- rqt 플러그인 등록 (package.xml 의 <rqt_gui plugin=…/>). rqt 는 이 파일이 있는 share/clip_recorder 를
+     기준으로 library path 를 sys.path 에 넣고 모듈을 import 한다 → 모듈이 설치된 lib/clip_recorder 를 가리킨다. -->
+<library path="../../lib/clip_recorder">
+  <class name="HeaderStampBag" type="rqt_bag_hdr.HeaderStampBag" base_class_type="rqt_gui_py::Plugin">
+    <description>
+      rqt_bag with messages placed on the timeline by header.stamp instead of the bag record time.
+    </description>
+    <qtgui>
+      <group>
+        <label>Logging</label>
+        <icon type="theme">folder</icon>
+        <statustip>Plugins related to logging.</statustip>
+      </group>
+      <label>Bag (header.stamp)</label>
+      <icon type="theme">applications-other</icon>
+      <statustip>rqt_bag 타임라인을 bag 기록 시각이 아니라 header.stamp 기준으로 (clip_recorder)</statustip>
+    </qtgui>
+  </class>
+</library>

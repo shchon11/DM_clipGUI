@@ -1,0 +1,14 @@
+# eno1 의 PTP 하드웨어 시계(Orin 시각) → PC 시스템 시계 (UTC 로 맞춘다, TAI-UTC 는 ptp4l 에서 읽음).
+# NTP(systemd-timesyncd)와 같이 돌리면 둘이 시스템 시계를 두고 싸운다 — sudo timedatectl set-ntp false.
+[Unit]
+Description=Discipline system clock from eno1 PHC (PTP from Orin)
+Requires=ptp-orin.service
+After=ptp-orin.service
+
+[Service]
+ExecStart=/usr/sbin/phc2sys -a -r -m
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

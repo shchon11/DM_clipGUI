@@ -49,15 +49,24 @@ install(PROGRAMS scripts/clip_launch.sh
   DESTINATION lib/${PROJECT_NAME}
   RENAME clip_launch)
 
+install(PROGRAMS scripts/rqt_bag_hdr.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME rqt_bag_hdr)
+
 # clip_gui가 import하는 모듈 — 실행 파일이 아니라 .py 확장자를 유지해야 함
 install(FILES scripts/bag_diagnostics.py scripts/net_tools.py scripts/gnss_tools.py
   scripts/map_widget.py
   scripts/sensor_discovery.py scripts/sensor_config.py scripts/sensor_launcher.py
   scripts/sensor_stage.py scripts/ui_theme.py scripts/preview_panel.py scripts/param_doc.py
-  scripts/defaults_writer.py
+  scripts/defaults_writer.py scripts/sync_check.py scripts/genicam_doc.py
+  scripts/rqt_bag_hdr.py
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY config launch
+  DESTINATION share/${PROJECT_NAME})
+
+# rqt 플러그인 (Plugins → Logging → Bag (header.stamp)) — 모듈은 위 lib/ 의 rqt_bag_hdr.py
+install(FILES plugin.xml
   DESTINATION share/${PROJECT_NAME})
 
 ament_package()
