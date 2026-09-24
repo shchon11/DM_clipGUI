@@ -54,6 +54,8 @@ from sensor_msgs.msg import NavSatFix
 from std_msgs.msg import Header, String
 
 import bag_diagnostics
+import dataset_catalog
+import hangul_roman
 import gnss_tools
 import net_tools
 import preview_panel
@@ -134,6 +136,11 @@ def save_config(cfg, path=LAST_SESSION):
         encoding="utf-8")
 
 
+REGION_TIP = ("한글 또는 영문으로 입력 — 폴더 · CSV · json 에는 영문으로 바뀌어 저장됩니다.\n"
+              "  강남역 4번출구 → gangnam_station_4th_entrance,  까치산 → kkachisan\n"
+              "클립·녹화는 route_NNN_<영문 지역> 폴더 안에 저장됩니다.")
+
+
 # ---------------- ROS 브리지 ----------------
 
 class RosWorker(QThread):
@@ -142,6 +149,7 @@ class RosWorker(QThread):
     sig_rosout = pyqtSignal(str, str)    # (level, message) — clip_recorder만
     sig_event = pyqtSignal(str)          # clip_event 원문
     sig_params = pyqtSignal(bool, str)   # 파라미터 적용 결과
+    sig_outdir = pyqtSignal(bool, str, str)   # (성공, output_dir, 사유) — set_output_dir 결과
     sig_gnss = pyqtSignal(dict)          # 실시간 GNSS 상태 조각
     sig_serials = pyqtSignal(dict)       # {camera_serial: 노드 네임스페이스}
     sig_node_param = pyqtSignal(str, str, bool, str)   # (노드, 키, 성공, 사유) — set_node_param 결과
@@ -313,9 +321,13 @@ class RosWorker(QThread):
             finish()
 
     # --- GUI 스레드에서 호출하는 동작 ---
-    def trigger(self, label=""):
+    def now_stamp(self):
+        return self.node.get_clock().now().to_msg()
+
+    def trigger(self, label="", stamp=None):
+        """stamp: 사건 시각 (버튼을 누른 순간). 저장 폴더를 먼저 맞추느라 발행이 조금 늦어도 창은 그대로."""
         h = Header()
-        h.stamp = self.node.get_clock().now().to_msg()
+        h.stamp = stamp or self.now_stamp()
         h.frame_id = label
         self._trigger_pub.publish(h)
 
@@ -378,6 +390,24 @@ class RosWorker(QThread):
             out.append({"name": name, "type": types[0],
                         "transient_pub": transient})
         return out
+
+    def set_output_dir(self, path):
+        """저장 폴더를 바꾸고 레코더가 받아들였는지 sig_outdir 로 알린다 — 클립·녹화 명령은 그 뒤에 보낸다."""
+        if not self._param_cli.service_is_ready():
+            self.sig_outdir.emit(False, path, "레코더 파라미터 서비스에 연결 안 됨")
+            return
+        req = SetParameters.Request()
+        req.parameters = [Parameter(name="output_dir", value=ParameterValue(
+            type=ParameterType.PARAMETER_STRING, string_value=path))]
+
+        def done(fut):
+            try:
+                bad = [r.reason for r in fut.result().results if not r.successful]
+                self.sig_outdir.emit(not bad, path, "; ".join(bad))
+            except Exception as e:
+                self.sig_outdir.emit(False, path, str(e))
+
+        self._param_cli.call_async(req).add_done_callback(done)
 
     def set_recorder_string(self, name, value):
         """레코더 문자열 파라미터 하나를 실행 중에 바꾼다 (output_dir 등). 결과는 sig_params."""
@@ -871,6 +901,10 @@ class GnssMapWindow(QDialog):
         if base.is_dir():
             out += sorted(p for p in base.iterdir()
                           if p.is_dir() and p.name.startswith("clip_"))
+            for route in sorted(p for p in base.iterdir()
+                                if p.is_dir() and p.name.startswith("route_")):
+                out += sorted(p for p in route.iterdir()
+                              if p.is_dir() and p.name.startswith("clip_"))
         for extra in self.cfg["ui"].get("map_clips", []):
             p = Path(extra)
             if p.is_dir() and p not in out:
@@ -1601,6 +1635,7 @@ class DiagDialog(QDialog):
 # ---------------- 메인 창 ----------------
 
 class MainWindow(QMainWindow):
+    _catalog_msg = pyqtSignal(str, str)   # (level, message) — CSV 기록 스레드 → 로그
     def __init__(self, worker, cfg):
         super().__init__()
         self.worker = worker
@@ -1627,6 +1662,10 @@ class MainWindow(QMainWindow):
         # 수동 녹화 상태 — 레코더의 /diagnostics(rec_*)가 기준이다 (GUI 를 다시 켜도 이어 보인다)
         self.recording = None     # {"uri", "t0", "sec", "mb", "closing"}
         self._rec_pending = False
+        self._outdir_pending = None      # (route 경로, 보낼 동작, 이름) — 레코더가 output_dir 을 받으면 보낸다
+        self._status_server = None       # 취득 현황표 (localhost) — 처음 열 때 띄운다
+        self._labels = {"clip": "", "rec": ""}   # 보낼 때의 라벨 — 저장이 끝나면 dataset_info.json 에
+        self._catalog_msg.connect(self.log)
         self.rec_timer = QTimer(self, interval=1000, timeout=self._tick_recording)
         self._cams = {}           # GVCP 디스커버리 {ip: info}
         self._own_ips = net_tools.own_ipv4s()
@@ -1647,6 +1686,7 @@ class MainWindow(QMainWindow):
         worker.sig_rosout.connect(lambda lv, m: self.log(lv, m))
         worker.sig_event.connect(self._on_clip_event)
         worker.sig_params.connect(self._on_params_result)
+        worker.sig_outdir.connect(self._on_outdir_result)
         worker.sig_gnss.connect(self._on_gnss)
         worker.sig_serials.connect(self._on_serials)
         self.recorder.readyReadStandardOutput.connect(self._on_proc_out)
@@ -1831,7 +1871,43 @@ class MainWindow(QMainWindow):
 
         # 녹화: 클립(트리거 앞뒤 창) + 수동 녹화(시작~중지 전부)
         grp_trig = QGroupBox("녹화")
-        h = QHBoxLayout(grp_trig)
+        trig_v = QVBoxLayout(grp_trig)
+        # 지역 → 저장 폴더: <저장 위치>/route_NNN_<지역>/clip_… · rec_…  (2026-09-24 요청)
+        # 지역이 비어 있으면 클립·녹화를 받지 않는다. 같은 지역이면 같은 route 폴더를 계속 쓰고,
+        # 지역을 바꾸거나 [새 route] 를 누르면 다음 번호로 새 폴더를 만든다.
+        region_row = QHBoxLayout()
+        lbl_region = QLabel("지역:")
+        lbl_region.setStyleSheet("font-weight:bold;")
+        region_row.addWidget(lbl_region)
+        self.region_edit = QLineEdit(self.cfg["ui"].get("region", ""))
+        self.region_edit.setPlaceholderText("지역을 입력하세요 (ex. 강남역 4번출구, 성수) — 폴더에는 영어로 저장")
+        self.region_edit.setToolTip(REGION_TIP)
+        self.region_edit.textEdited.connect(self._on_region_edited)
+        self.region_edit.setMinimumWidth(300)
+        region_row.addWidget(self.region_edit, 1)
+        self.lbl_route = QLabel()
+        region_row.addWidget(self.lbl_route, 1)
+        self.btn_new_route = QPushButton("새 route")
+        self.btn_new_route.setToolTip("같은 지역이라도 다음 클립·녹화부터 새 번호 폴더(route_NNN_지역)에 저장합니다")
+        self.btn_new_route.clicked.connect(self._new_route)
+        region_row.addWidget(self.btn_new_route)
+        # 운전자 · 동승자 — 녹화가 끝나면 bag 폴더의 dataset_info.json 과 datasets.csv 에 들어간다
+        self.crew_edits = {}
+        for key, name in (("driver", "운전자"), ("passenger", "동승자")):
+            region_row.addWidget(QLabel(f"{name}:"))
+            e = QLineEdit(self.cfg["ui"].get(key, ""), placeholderText=name)
+            e.setMaximumWidth(110)
+            e.textEdited.connect(lambda t, k=key: self._on_crew_edited(k, t))
+            region_row.addWidget(e)
+            self.crew_edits[key] = e
+        btn_status = QPushButton("취득 현황표 ↗")
+        btn_status.setToolTip("지역별 데이터셋 취득 현황을 브라우저(localhost)로 봅니다 — "
+                              "clips/datasets.csv 기준, 인터넷 없이 동작")
+        btn_status.clicked.connect(self.open_dataset_status)
+        region_row.addWidget(btn_status)
+        trig_v.addLayout(region_row)
+        h = QHBoxLayout()
+        trig_v.addLayout(h)
         # 저장 위치 — 누르면 폴더 선택. 설정에 바로 저장돼 GUI 를 다시 켜도 유지되고,
         # 떠 있는 레코더에도 바로 알려 다음 클립·녹화부터 새 위치에 쓴다.
         self.btn_outdir = QPushButton()
@@ -1840,9 +1916,10 @@ class MainWindow(QMainWindow):
         self.btn_outdir.clicked.connect(self.pick_output_dir)
         h.addWidget(self.btn_outdir)
         self._show_output_dir()
+        self._show_route()
         h.addWidget(QLabel("라벨:"))
         self.label_edit = QLineEdit(
-            placeholderText="클립·녹화 폴더명에 붙일 라벨 (선택)")
+            placeholderText="라벨 (선택) — 현황표·json 에 기록, 폴더 이름에는 안 붙음")
         h.addWidget(self.label_edit, 1)
         self.btn_trigger = QPushButton()
         self.btn_trigger.setMinimumHeight(RECORD_BUTTON_H)
@@ -1865,7 +1942,7 @@ class MainWindow(QMainWindow):
             "QPushButton:disabled {background:#d1d5db; color:#f9fafb;}")
         self.btn_record.setToolTip(
             "수동 녹화: 누른 때부터 다시 누를 때까지 선택한 토픽을 전부 bag 하나로 씁니다 "
-            "(rec_<시각>[_라벨], 중간에 나누지 않음).\n클립과 같은 구독을 쓰므로 센서 쪽 부하는 "
+            "(rec_<시각>, 중간에 나누지 않음).\n클립과 같은 구독을 쓰므로 센서 쪽 부하는 "
             "늘지 않고, 녹화 중에도 클립 녹화가 됩니다.\n"
             "디스크 여유가 1 GB 밑으로 내려가면 자동으로 멈춥니다.")
         self.btn_record.clicked.connect(self.toggle_recording)
@@ -1943,6 +2020,7 @@ class MainWindow(QMainWindow):
         m_tool.addAction("진단 안 된 녹화 모두 진단…", self._diag_missing)
         m_tool.addAction("폴더를 골라 진단…", self._diag_pick)
         m_tool.addAction("클립 폴더 열기", self._open_clip_dir)
+        m_tool.addAction("데이터셋 취득 현황표 (브라우저)", self.open_dataset_status)
         m_tool.addSeparator()
         m_tool.addAction("GNSS · 지도 (상태 / 현재 위치 / 클립 궤적)…", self.open_gnss)
 
@@ -2087,6 +2165,13 @@ class MainWindow(QMainWindow):
         self._set_ring_ready(self._ring_ready and alive)
         self.btn_record.setEnabled(alive and not self._rec_pending and
                                    not (self.recording or {}).get("closing"))
+        # 클립은 post 가 끝난 뒤에야 폴더를 정하므로, 쓰는 동안 지역을 바꾸면 다른 route 로 간다 — 잠근다
+        lock = bool(self.busy or self.recording or self._rec_pending)
+        self.region_edit.setReadOnly(lock)
+        self.btn_new_route.setEnabled(not lock)
+        for e in self.crew_edits.values():
+            e.setReadOnly(lock)
+        self.region_edit.setToolTip("클립·녹화 중에는 바꿀 수 없습니다" if lock else REGION_TIP)
         self._update_disk()
         self._update_diag_hold()
 
@@ -2527,7 +2612,7 @@ class MainWindow(QMainWindow):
         self._tick_recording()
         rec = self.cfg["recorder"]
         self.btn_trigger.setToolTip(f"사건 순간 앞 {rec['pre_sec']:g}초 + 뒤 {rec['post_sec']:g}초를 "
-                                    "clip_<시각>[_라벨] 로 씁니다 (길이는 설정 창의 pre/post).\n"
+                                    "clip_<시각> 로 씁니다 (길이는 설정 창의 pre/post).\n"
                                     "링 버퍼의 보관 구간이 다 차야 눌립니다.")
         self._set_ring_ready(self._ring_ready)
 
@@ -2544,8 +2629,14 @@ class MainWindow(QMainWindow):
                              "받습니다 (지금 받으면 앞부분이 잘림)")
             return
         label = self.label_edit.text().strip()
-        self.worker.trigger(label)
-        self.log("GUI", f"트리거 전송 (label='{label}')")
+        stamp = self.worker.now_stamp()      # 사건 시각 = 누른 순간 (폴더 맞추는 동안 늦어지지 않게)
+
+        def send(route):
+            # 폴더 이름은 시각만 (clip_YYYYmmdd_HHMMSS) — 라벨은 dataset_info.json 에만
+            self._labels["clip"] = label
+            self.worker.trigger("", stamp)
+            self.log("GUI", f"트리거 전송 → {route.name}/ (label='{label}')")
+        self._in_route(send, "클립")
 
     def _on_clip_event(self, data):
         parts = data.split("|")
@@ -2569,6 +2660,7 @@ class MainWindow(QMainWindow):
             self.last_clip = uri
             self._set_state("대기 중")
             self.log("OK", f"클립 녹화 완료: {uri} ({nmsg}개, {dur}s)")
+            self._catalog(uri)
             if self.cfg["ui"]["auto_diagnose"]:
                 self.run_diagnostics(uri)
         elif kind == "busy":
@@ -2604,13 +2696,163 @@ class MainWindow(QMainWindow):
             self.log("ERROR", f"저장 위치를 만들 수 없음: {e}")
             return
         self.cfg["recorder"]["output_dir"] = chosen
+        self.cfg["ui"]["route_dir"] = ""       # route 번호는 저장 위치마다 새로 센다
         save_config(self.cfg)
         self._show_output_dir()
+        self._show_route()
         self._update_disk()
         if self.worker.recorder_alive():
             self.worker.set_recorder_string("output_dir", chosen)
         note = " (진행 중인 수동 녹화는 원래 위치에 계속 씁니다)" if self.recording else ""
         self.log("GUI", f"저장 위치: {chosen}{note}")
+
+    # --- 지역 · route 폴더 ---
+    ROUTE_RE = re.compile(r"route_(\d+)_(.+)$")
+
+    def _region(self):
+        """폴더에 쓸 영문 지역 — 한글이면 로마자로 (강남역 4번출구 → gangnam_station_4th_entrance)."""
+        return hangul_roman.region_to_english(self.region_edit.text())[:48]
+
+    def _current_route(self):
+        """지금 쓰고 있는 route 폴더 — 저장 위치 바로 아래이고 지역이 같을 때만 이어 쓴다."""
+        cur = self.cfg["ui"].get("route_dir")
+        if not cur:
+            return None
+        cur = Path(cur)
+        base = Path(self.cfg["recorder"]["output_dir"]).expanduser()
+        m = self.ROUTE_RE.match(cur.name)
+        if cur.parent != base or not m or m.group(2) != self._region():
+            return None
+        return cur
+
+    def _next_route(self):
+        base = Path(self.cfg["recorder"]["output_dir"]).expanduser()
+        nums = [int(m.group(1)) for p in (base.iterdir() if base.is_dir() else [])
+                if p.is_dir() and (m := self.ROUTE_RE.match(p.name))]
+        return base / f"route_{max(nums, default=0) + 1:03d}_{self._region()}"
+
+    def _show_route(self):
+        region = self._region()
+        if not region:
+            self.lbl_route.setText("⚠ 지역을 넣어야 클립·녹화가 됩니다" if not self.region_edit.text().strip()
+                                   else "⚠ 폴더 이름으로 바꿀 수 있는 글자가 없습니다 (한글·영문·숫자)")
+            self.lbl_route.setStyleSheet("color:#dc2626; font-weight:bold;")
+            self.region_edit.setStyleSheet("border:2px solid #dc2626;")
+            return
+        self.region_edit.setStyleSheet("")
+        cur = self._current_route()
+        if cur:
+            self.lbl_route.setText(f"→ {cur.name}/ 에 저장 중")
+        else:
+            self.lbl_route.setText(f"→ 다음 저장부터 {self._next_route().name}/ (새 폴더)")
+        self.lbl_route.setStyleSheet("color:#374151;")
+
+    def _on_region_edited(self, text):
+        # 칸에는 입력한 그대로(한글) 두고, 영문 변환은 _region() 이 한다
+        self.cfg["ui"]["region"] = text.strip()
+        save_config(self.cfg)
+        self._show_route()
+
+    def _new_route(self):
+        self.cfg["ui"]["route_dir"] = ""
+        save_config(self.cfg)
+        self._show_route()
+        if self._region():
+            self.log("GUI", f"새 route — 다음 클립·녹화부터 {self._next_route().name}/ 에 저장합니다")
+
+    def _in_route(self, send, what):
+        """route 폴더를 정해 레코더의 output_dir 로 넣고, 레코더가 받아들인 뒤에 send(route) 를 부른다.
+
+        설정 반영이 비동기라 확인 없이 바로 보내면 첫 녹화가 이전 폴더에 써질 수 있다.
+        """
+        region = self._region()
+        if not region:
+            self.log("ERROR", f"지역이 비어 있어 {what}을(를) 시작하지 않았습니다 — "
+                              "지역을 입력하세요 (ex. 강남역 4번출구, gangnam)")
+            self._show_route()
+            self.region_edit.setFocus()
+            QMessageBox.warning(self, "지역 입력", "지역을 입력하세요 (ex. 강남역 4번출구, gangnam)\n\n"
+                                "클립·녹화는 clips/route_NNN_<영문 지역>/ 폴더 안에 저장됩니다.")
+            return
+        if self._outdir_pending:
+            self.log("WARN", f"저장 폴더를 레코더에 반영하는 중 — 잠시 뒤 다시 누르세요 ({what} 무시)")
+            return
+        route = self._current_route() or self._next_route()
+        try:
+            route.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            self.log("ERROR", f"route 폴더를 만들 수 없음: {route} — {e} ({what} 취소)")
+            return
+        self._outdir_pending = (str(route), send, what)
+        self.worker.set_output_dir(str(route))
+        QTimer.singleShot(3000, lambda p=self._outdir_pending: self._outdir_timeout(p))
+
+    def _on_outdir_result(self, ok, path, reason):
+        pend = self._outdir_pending
+        if not pend or pend[0] != path:
+            return
+        self._outdir_pending = None
+        _, send, what = pend
+        if not ok:
+            self.log("ERROR", f"레코더가 저장 폴더를 받지 않음 ({reason}) — {what}을(를) 보내지 않았습니다")
+            return
+        route = Path(path)
+        if self.cfg["ui"].get("route_dir") != path:
+            self.cfg["ui"]["route_dir"] = path
+            save_config(self.cfg)
+            self.log("OK", f"새 route 폴더: {path}")
+        self._show_route()
+        send(route)
+
+    def _outdir_timeout(self, pend):
+        if self._outdir_pending is pend:
+            self._outdir_pending = None
+            self.log("ERROR", f"레코더가 3초 안에 저장 폴더 변경에 답하지 않음 — {pend[2]}을(를) 보내지 않았습니다 "
+                              "(레코더 상태를 확인하세요)")
+
+    def _on_crew_edited(self, key, text):
+        self.cfg["ui"][key] = text.strip()
+        save_config(self.cfg)
+
+    # --- 데이터셋 목록 (CSV) · 취득 현황표 ---
+    def _catalog(self, uri):
+        """저장이 끝난 bag 폴더에 운전자·동승자·라벨을 남기고 datasets.csv 를 다시 만든다."""
+        bag = Path(uri)
+        if not dataset_catalog.ROUTE_RE.match(bag.parent.name):
+            self.log("WARN", f"{bag.name} 은 route 폴더 밖에 저장돼 취득 현황표에 들어가지 않습니다")
+            return
+        crew = {k: e.text().strip() for k, e in self.crew_edits.items()}
+        missing = [n for k, n in (("driver", "운전자"), ("passenger", "동승자")) if not crew[k]]
+        if missing:
+            self.log("WARN", f"{'·'.join(missing)} 빈 칸으로 기록됨 — 현황표에서 나중에 채울 수 있습니다")
+        base = self.cfg["recorder"]["output_dir"]
+        label = self._labels["clip" if bag.name.startswith("clip_") else "rec"]
+        region_ko = self.region_edit.text().strip()       # 입력한 이름 (한글이면 현황표에 같이 보인다)
+
+        def work():
+            try:
+                dataset_catalog.write_info(bag, label=label, region_name=region_ko, **crew)
+                path, n = dataset_catalog.rebuild(base)
+                self._catalog_msg.emit("GUI", f"데이터셋 목록 갱신: {path} ({n}개)")
+            except Exception as e:
+                self._catalog_msg.emit("ERROR", f"데이터셋 목록(CSV) 기록 실패: {bag} — {e}")
+        threading.Thread(target=work, daemon=True).start()
+
+    def open_dataset_status(self):
+        port = dataset_catalog.DEFAULT_PORT
+        if self._status_server is None:
+            try:
+                self._status_server = dataset_catalog.make_server(
+                    self.cfg["recorder"]["output_dir"], port)
+                threading.Thread(target=self._status_server.serve_forever, daemon=True).start()
+                self.log("GUI", f"취득 현황표 서버 시작: http://localhost:{port}")
+            except OSError:
+                # 이미 떠 있는 서버 (dataset_catalog.py serve) 가 있으면 그걸 연다
+                self.log("GUI", f"포트 {port} 가 이미 열려 있음 — 떠 있는 현황표 서버를 엽니다")
+        elif str(self._status_server.RequestHandlerClass.base) != self.cfg["recorder"]["output_dir"]:
+            self._status_server.RequestHandlerClass.base = Path(self.cfg["recorder"]["output_dir"])
+        subprocess.Popen(["xdg-open", f"http://localhost:{port}"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     # --- 수동 녹화 ---
     def _style_record_button(self):
@@ -2636,12 +2878,17 @@ class MainWindow(QMainWindow):
         if not self.cfg["topics"]:
             self.log("WARN", "녹화할 토픽을 고르지 않아 레코더가 보는 토픽 전부를 녹화합니다")
         label = self.label_edit.text().strip()
-        self._rec_pending = True
-        self.btn_record.setEnabled(False)
-        self.btn_record.setText("시작 중…")
-        self.worker.record(True, label)
-        self.log("GUI", f"수동 녹화 시작 요청 (label='{label}')")
-        QTimer.singleShot(5000, self._record_request_timeout)
+
+        def send(route):
+            self._rec_pending = True
+            self.btn_record.setEnabled(False)
+            self.btn_record.setText("시작 중…")
+            self._labels["rec"] = label
+            self.worker.record(True, "")        # 폴더 이름은 rec_YYYYmmdd_HHMMSS 만
+            self.log("GUI", f"수동 녹화 시작 요청 → {route.name}/ (label='{label}')")
+            QTimer.singleShot(5000, self._record_request_timeout)
+            self._update_alive()
+        self._in_route(send, "녹화")
 
     def _record_request_timeout(self):
         if self._rec_pending:
@@ -2695,6 +2942,7 @@ class MainWindow(QMainWindow):
             self.rec_timer.stop()
             self.last_clip = uri
             saved = f"수동 녹화 저장 완료: {uri} ({nmsg}개, {dur}s, {float(mb or 0) / 1024:.1f} GB)"
+            self._catalog(uri)
             if self.cfg["ui"]["auto_diagnose"]:
                 self.log("OK", saved + " — 진단을 시작합니다")
                 self.run_diagnostics(uri)
