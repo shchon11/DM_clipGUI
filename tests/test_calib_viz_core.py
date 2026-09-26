@@ -13,9 +13,10 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from calib_viz import SCHEMA
-from calib_viz.geometry import interpolate_pose, project_camera, project_fisheye, vehicle_from_camera
+from calib_viz.geometry import frustum_corners, interpolate_pose, project_camera, project_fisheye, vehicle_from_camera
 from calib_viz.replay import CAMERA_NAMES, MAX_ASSET_SETS, ReplayProducer, _sample_scan
-from calib_viz.stream import MAX_RECORD_BYTES, StreamReader, append_snapshot, atomic_json, atomic_npz
+from calib_viz.stream import (MAX_RECORD_BYTES, StreamReader, append_snapshot, atomic_json, atomic_npz,
+                              snapshot_calibrations, validate_snapshot)
 
 
 def snapshot(seq=0):
@@ -151,8 +152,74 @@ class StreamTests(unittest.TestCase):
         reader = StreamReader(self.root, max_events=3, max_bytes=MAX_RECORD_BYTES)
         self.assertEqual([e["seq"] for e in reader.poll()], [2997, 2998, 2999])
 
+    def test_appended_attempt_and_rotated_resume_keep_latest_generation(self):
+        first = dict(manifest(), run_id='first')
+        atomic_json(self.root / 'manifest.json', first)
+        self.reader.refresh_manifest()
+        append_snapshot(self.root, dict(snapshot(99), run_id='first'))
+        self.assertEqual(self.reader.poll()[0]['seq'], 99)
+        atomic_json(self.root / 'manifest.json', dict(first, run_id='second'))
+        self.reader.refresh_manifest()
+        append_snapshot(self.root, dict(snapshot(100), run_id='first'))
+        append_snapshot(self.root, dict(snapshot(0), run_id='second'))
+        self.assertEqual([(e['run_id'], e['seq']) for e in self.reader.poll()], [('second', 0)])
+        append_snapshot(self.root, dict(snapshot(1), run_id='second'))
+        self.assertEqual(self.reader.poll()[0]['seq'], 1)
+        path = self.root / 'replacement'
+        path.write_text(json.dumps(dict(snapshot(1), run_id='second')) + '\n')
+        path.replace(self.root / 'events.jsonl')
+        self.assertEqual(self.reader.poll()[0]['seq'], 1)
+        append_snapshot(self.root, dict(snapshot(2), run_id='second'))
+        self.assertEqual(self.reader.poll()[0]['seq'], 2)
+
+    def test_copy_truncate_that_has_regrown_is_detected(self):
+        append_snapshot(self.root, snapshot(99))
+        self.reader.poll()
+        payload = json.dumps(dict(snapshot(0), note='new attempt' * 100)) + '\n'
+        (self.root / 'events.jsonl').write_text(payload)
+        self.assertEqual(self.reader.poll()[0]['seq'], 0)
+
+    def test_current_intrinsics_override_static_manifest_and_validate(self):
+        baseline = manifest()
+        current = snapshot()
+        current['cameras']['test'].update(K=[[20., 0, 16], [0, 25., 16], [0, 0, 1]],
+                                          D=[.01, 0, 0, 0], cost=5., time_offset_s=-.02)
+        validate_snapshot(current)
+        merged = snapshot_calibrations(baseline, current)
+        self.assertEqual(merged['test']['K'][0][0], 20.)
+        self.assertEqual(baseline['cameras']['test']['K'][0][0], 1.)
+        self.assertEqual(merged['test']['D'][0], .01)
+        for key, invalid in [('K', [[-1., 0, 0], [0, 1., 0], [0, 0, 1]]),
+                             ('D', [0, 0]), ('time_offset_s', float('inf')),
+                             ('cost', -1), ('row_readout_s', float('nan')),
+                             ('iteration', -1), ('total_iterations', '12')]:
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                bad = snapshot()
+                bad['cameras']['test'][key] = invalid
+                validate_snapshot(bad)
+
+    def test_final_validation_clears_iteration_with_null(self):
+        event = dict(snapshot(22), run_id='real-run', stage='validation', progress=1.,
+                     solver_pass='final', iteration=None, total_iterations=None, complete=True,
+                     gate={'status': 'pass', 'pass': True, 'source': 'solver.validation'})
+        event['cameras']['test'].update(gate_pass=True, state='converged', cost=None,
+                                       metric_source='solver.validation', solver_pass='final',
+                                       iteration=None, total_iterations=None)
+        append_snapshot(self.root, event)
+        self.assertEqual(self.reader.poll(), [event])
+        self.assertEqual(list(self.reader.errors), [])
+
 
 class GeometryTests(unittest.TestCase):
+    def test_frustum_responds_to_current_intrinsics(self):
+        camera = {'width': 640, 'height': 480,
+                  'K': [[500, 0, 320], [0, 500, 240], [0, 0, 1]]}
+        wide = frustum_corners(camera, .3)
+        camera['K'] = [[1000, 0, 320], [0, 1000, 240], [0, 0, 1]]
+        narrow = frustum_corners(camera, .3)
+        self.assertLess(abs(narrow[0, 0]), abs(wide[0, 0]))
+        np.testing.assert_allclose(np.linalg.norm(narrow, axis=1), .3)
+
     def test_lidar_backward_axis_and_optical_pose_inverse(self):
         T = np.eye(4)
         T[:3, 3] = [1, 2, 3]

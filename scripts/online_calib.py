@@ -528,8 +528,20 @@ class Progress:
 
     def __init__(self, sensors=("rgb", "thermal")):
         self.sensors = tuple(sensors)
+        self.bad_lines = 0
+        self._offset = 0
+        self._partial = b""
+        self._reset_attempt()
+
+    def _reset_attempt(self, preserve_completed=False):
+        """Reset displayed state, preserving the append-only file cursor."""
+        completed = {k: dict(v) for k, v in getattr(self, 'stages', {}).items()
+                     if preserve_completed and v['state'] in ('ok', 'skip')}
         self.stages = {k: {"state": "wait", "done": 0, "total": 0, "sub": "", "wall_s": None}
                        for k, _, _ in STAGES}
+        # Older resumed tools silently reuse names/windows caches instead of
+        # emitting stage_skip. Keep their valid completed work, never failures.
+        self.stages.update(completed)
         self.warnings = []
         self.refusal = None
         self.error = None
@@ -538,9 +550,6 @@ class Progress:
         self.check = None
         self.task_failed = []
         self.last = None
-        self.bad_lines = 0
-        self._offset = 0
-        self._partial = b""
         self.viz_progress = {}
 
     def feed_line(self, line):
@@ -559,8 +568,12 @@ class Progress:
         return ev
 
     def feed(self, ev):
-        self.last = ev
         kind = ev.get("ev")
+        if kind == "run_start":
+            # A workdir's events.jsonl can contain a failed attempt followed by
+            # a successful resumed run. Prior errors are history, not live state.
+            self._reset_attempt(preserve_completed=True)
+        self.last = ev
         st = ev.get("stage")
         for key in ("window", "total_windows", "eta_s"):
             if key in ev:

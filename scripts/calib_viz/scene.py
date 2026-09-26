@@ -6,6 +6,8 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 import pyqtgraph as pg
 import pyqtgraph.opengl as gl
 
+from .geometry import frustum_corners
+
 
 CYAN = (0.24, 0.88, 0.84, 1.0)
 AMBER = (1.0, 0.70, 0.32, 1.0)
@@ -113,8 +115,7 @@ class RigScene(gl.GLViewWidget):
             failed = camera.get('gate_pass') is False or camera.get('state') == 'failed'
             color = VIOLET if chosen and not failed else state_color(camera)
             length = .36 if chosen else .23
-            corners = np.array([[-.63, -.43, 1], [.63, -.43, 1],
-                                [.63, .43, 1], [-.63, .43, 1]]) * length
+            corners = frustum_corners(camera, length)
             world = corners @ rotation.T + origin
             for i in range(4):
                 vertices.extend([origin, world[i], world[i], world[(i + 1) % 4]])

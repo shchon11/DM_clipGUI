@@ -28,13 +28,13 @@ def wait_for(loader, predicate):
     raise AssertionError(f'No expected snapshot: {error}')
 
 
-def publish(root, manifest, seq=1, camera_offset=4., mode='live'):
+def publish(root, manifest, seq=1, camera_offset=4., mode='live', run_id='stream'):
     root.mkdir(parents=True, exist_ok=True)
-    manifest = dict(manifest, mode=mode, run_id='stream')
+    manifest = dict(manifest, mode=mode, run_id=run_id)
     atomic_json(root / 'manifest.json', manifest)
     pose = np.eye(4)
     pose[0, 3] = camera_offset
-    event = {'schema': 'calib-viz/1', 'seq': seq, 'stage': 'rgb_ba', 'progress': .9,
+    event = {'schema': 'calib-viz/1', 'run_id': run_id, 'seq': seq, 'stage': 'rgb_ba', 'progress': .9,
              'cameras': {name: {'T_cam_lidar': pose.tolist()} for name in manifest['cameras']},
              'assets': {'matching': {}}, 'map_frame': 'W1'}
     for index, name in enumerate(manifest['cameras']):
@@ -139,6 +139,77 @@ def test_widget_reset_clears_previous_job_data(setup):
         app.processEvents()
     finally:
         widget.close()
+
+
+def test_same_embedded_job_new_stream_attempt_resets_pose_history(setup):
+    from PyQt5.QtWidgets import QApplication
+    from calib_viz.job import JobSnapshot
+    app = QApplication.instance() or QApplication([])
+    job, _, tmp = setup
+    root = tmp / 'work/viz'
+    manifest, _, _ = JobSnapshot(job).snapshot()
+    publish(root, manifest, seq=90, camera_offset=4., run_id='attempt-1')
+    loader = StreamLoader(root, job=job)
+    widget = CalibrationVizWidget(embedded=True)
+    try:
+        first = wait_for(loader, lambda r: r[1].get('run_id') == 'attempt-1')
+        widget.apply_snapshot(*first)
+        first_manifest_run_id, delivery_seq = first[0]['run_id'], first[1]['seq']
+        widget.rig.history['camera_front5'] = ['old ghost']
+        widget.current['camera_front5'] = np.array(first[1]['cameras']['camera_front5']['T_cam_lidar'])
+        widget.sensors.histories['camera_front5'].append(99.)
+        publish(root, manifest, seq=0, camera_offset=2., run_id='attempt-2')
+        resumed = wait_for(loader, lambda r: r[1].get('run_id') == 'attempt-2')
+        assert resumed[0]['run_id'] == first_manifest_run_id  # stable job selection identity
+        assert resumed[1]['seq'] > delivery_seq  # delivery seq alone cannot detect restart
+        widget.apply_snapshot(*resumed)
+        assert not widget.rig.history
+        assert not widget.current
+        assert widget.initial['camera_front5'][0, 3] == 2.
+        assert len(widget.sensors.histories['camera_front5']) == 1
+        assert 99. not in widget.sensors.histories['camera_front5']
+        app.processEvents()
+    finally:
+        widget.close()
+        loader.close()
+
+
+def test_new_attempt_without_viz_ignores_previous_stream_until_matching_run(setup):
+    from calib_viz.job import JobSnapshot
+    job, _, tmp = setup
+    root = tmp / 'work/viz'
+    manifest, initial, _ = JobSnapshot(job).snapshot()
+    publish(root, manifest, seq=90, camera_offset=4., run_id='old-attempt')
+    loader = StreamLoader(root, job=job)
+    try:
+        wait_for(loader, lambda r: r[1].get('run_id') == 'old-attempt')
+        progress = oc.Progress()
+        progress.feed({'ev': 'run_start', 'run_id': 'new-no-viz-attempt'})
+        loader.update_job(job, progress)
+        fallback = wait_for(loader, lambda r: '이전 실행 시도' in r[1].get('status_text', ''))
+        assert fallback[1]['cameras'] == initial['cameras']
+        assert fallback[1].get('run_id') != 'old-attempt'
+        assert fallback[2]['map'] is None and fallback[2]['matching'] == {}
+        # Updating real process progress must not bring historical poses back.
+        progress.feed({'ev': 'stage_start', 'stage': 'rgb_solve'})
+        loader.update_job(job, progress)
+        still_initial = wait_for(loader, lambda r: r[1].get('stage') == 'rgb_solve')
+        assert still_initial[1]['cameras'] == initial['cameras']
+        # Opening the tab after the no-viz restart must gate the FIRST delivery,
+        # rather than briefly displaying old poses before update_job arrives.
+        reopened = StreamLoader(root, job=job, progress=progress)
+        try:
+            first_delivery = wait_for(reopened, lambda r: True)
+            assert first_delivery[1]['cameras'] == initial['cameras']
+            assert first_delivery[2]['matching'] == {}
+        finally:
+            reopened.close()
+        # A matching stream may start late after a resumed/enabled invocation.
+        publish(root, manifest, seq=0, camera_offset=2., run_id='new-no-viz-attempt')
+        live = wait_for(loader, lambda r: r[1].get('run_id') == 'new-no-viz-attempt')
+        assert live[1]['cameras']['camera_front5']['T_cam_lidar'][0][3] == 2.
+    finally:
+        loader.close()
 
 
 def test_progress_keeps_window_eta_across_subtasks_and_bounds_reads(tmp_path):

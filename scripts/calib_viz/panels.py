@@ -103,6 +103,10 @@ class SensorGrid(QtWidgets.QWidget):
         status = {True: "카메라 게이트 통과", False: "카메라 게이트 실패", None: "검증 대기"}.get(
             metric.get("gate_pass"), "검증 대기")
         notes = [status] + list(metric.get("gate_reasons") or []) + list(metric.get("informational_checks") or [])
+        if metric.get('cost') is not None:
+            notes.append(f"비용 {metric['cost']:.6g} ({metric.get('cost_source', 'solver')})")
+        if metric.get('time_offset_s') is not None:
+            notes.append(f"시간 offset {metric['time_offset_s'] * 1000:+.3f} ms")
         self.setToolTip("\n".join(notes))
 
     def paintEvent(self, event):
@@ -110,11 +114,13 @@ class SensorGrid(QtWidgets.QWidget):
         p.setRenderHint(p.Antialiasing)
         half = self.width() / 2
         row_height = (self.height() - 24) / 8
+        show_cost = (any(m.get('cost') is not None for m in self.cameras.values())
+                     and not any(m.get('sigma_pos_mm') is not None for m in self.cameras.values()))
         for col in range(2):
             x = col * half
             p.setFont(font(8))
             p.setPen(QtGui.QColor(MUTED))
-            for offset, label in [(12, '센서'), (.34 * half, '회전 °'), (.51 * half, '위치 mm'),
+            for offset, label in [(12, '센서'), (.34 * half, '회전 °'), (.51 * half, '비용' if show_cost else '위치 mm'),
                                    (.70 * half, '오차 px'), (.87 * half, '추이')]:
                 p.drawText(int(x + offset), 15, label)
         for i, (name, m) in enumerate(self.cameras.items()):
@@ -137,9 +143,11 @@ class SensorGrid(QtWidgets.QWidget):
                 p.drawText(int(x + .29 * half), int(y + row_height / 2 + 4), 'ⓘ')
             p.setPen(QtGui.QColor(INK if active else '#b4c5d9'))
             p.setFont(font(9, mono=True))
-            for offset, key, places in [(.34, 'sigma_rot_deg', 2), (.51, 'sigma_pos_mm', 1),
+            for offset, key, places in [(.34, 'sigma_rot_deg', 2), (.51, 'cost' if show_cost else 'sigma_pos_mm', 1),
                                          (.70, 'reprojection_px', 2)]:
-                p.drawText(int(x + offset * half), int(y + row_height / 2 + 4), number(m.get(key), places))
+                value = m.get(key)
+                display = f'{value:.2g}' if key == 'cost' and value is not None else number(value, places)
+                p.drawText(int(x + offset * half), int(y + row_height / 2 + 4), display)
             values = [v for v in self.histories.get(name, []) if v is not None]
             if len(values) > 1:
                 low, high = min(values), max(values)
@@ -209,15 +217,28 @@ class ImagePanel(QtWidgets.QWidget):
         self.show_tracks = True
         self.show_points = True
         self.calibration = None
+        self.initial_calibration = None
         self.asset_size = (1, 1)
         self.initial_pose = None
         self.mask = None
         self.note = '동기화된 이미지 대기 중'
         self.depth_colors = [QtGui.QColor.fromHsvF(.70 * (1 - i/15), .82, 1) for i in range(16)]
 
-    def set_frame(self, rgb, data, calibration, metadata):
+    def set_frame(self, rgb, data, calibration, metadata, initial_calibration=None):
         if rgb is None:
             self.image = None
+            self.points = np.empty((0, 3))
+            self.tracks = np.empty((0, 2))
+            self.tracks_prev = np.empty((0, 2))
+            self.uv = np.empty((0, 2))
+            self.depth = np.empty(0)
+            self.initial_uv = np.empty((0, 2))
+            self.calibration = None
+            self.initial_calibration = None
+            self.initial_pose = None
+            self.mask = None
+            self.asset_size = (1, 1)
+            self.note = '동기화된 이미지 대기 중'
             self.update()
             return
         rgb = np.ascontiguousarray(rgb, dtype=np.uint8)
@@ -227,11 +248,14 @@ class ImagePanel(QtWidgets.QWidget):
         self.tracks = np.asarray(data.get('tracks_uv', np.empty((0, 2))))[:100]
         self.tracks_prev = np.asarray(data.get('tracks_prev_uv', np.empty((0, 2))))[:100]
         self.calibration = calibration
+        self.initial_calibration = initial_calibration or calibration
         self.mask = data.get('mask')
         if self.mask is not None and self.mask.shape != (h, w):
             self.mask = None
         self.asset_size = (w, h)
         self.note = f"{metadata.get('source_window', '실시간')} · 관측 특징 {len(self.tracks)}개"
+        if metadata.get('bag_id'):
+            self.note = f"{metadata['bag_id']} · " + self.note
         if metadata.get('stale'):
             self.note += ' · 이전 영상 (자산 대기)'
         a, b = metadata.get('source_stamp_ns'), metadata.get('lidar_stamp_ns')
@@ -254,8 +278,10 @@ class ImagePanel(QtWidgets.QWidget):
             valid[indices] &= self.mask[pix[:, 1], pix[:, 0]] > 127
         self.uv, self.depth = uv[valid], depth[valid]
         if self.show_initial and initial_pose is not None:
-            initial, _, ok = project_camera(self.points, initial_pose, c['K'], c['D'], c.get('model', 'equidistant'))
-            self.initial_uv = initial[valid] * scale
+            c0 = self.initial_calibration
+            initial, _, ok = project_camera(self.points, initial_pose, c0['K'], c0['D'], c0.get('model', 'equidistant'))
+            initial_scale = np.array(self.asset_size) / [c0['width'], c0['height']]
+            self.initial_uv = initial[valid] * initial_scale
             self.initial_uv[~ok[valid]] = np.nan
         self.update()
 

@@ -14,6 +14,41 @@ from . import SCHEMA
 
 MAX_RECORD_BYTES = 256 * 1024
 MAX_ASSET_BYTES = 32 * 1024 * 1024
+CALIBRATION_FIELDS = ("K", "D", "model", "width", "height")
+
+
+def camera_calibration(camera, partial=False):
+    """Validate original-resolution calibration and optional live overrides."""
+    if not isinstance(camera, dict):
+        raise ValueError("camera calibration must be an object")
+    if not partial or "K" in camera:
+        K = np.asarray(camera.get("K"), float)
+        if K.shape != (3, 3) or not np.isfinite(K).all() or K[0, 0] <= 0 or K[1, 1] <= 0:
+            raise ValueError("invalid camera matrix")
+    if not partial or "model" in camera:
+        if camera.get("model") not in ("equidistant", "plumb_bob"):
+            raise ValueError("invalid distortion model")
+    if not partial or "D" in camera:
+        D = np.asarray(camera.get("D"), float)
+        count = {"equidistant": 4, "plumb_bob": 5}.get(camera.get("model"))
+        if (D.ndim != 1 or len(D) not in ((count,) if count else (4, 5))
+                or not np.isfinite(D).all()):
+            raise ValueError("invalid distortion coefficients")
+    for key in ("width", "height"):
+        if (not partial or key in camera) and (not isinstance(camera.get(key), int)
+                                               or not 0 < camera[key] <= 8192):
+            raise ValueError("invalid camera dimensions")
+    return camera
+
+
+def snapshot_calibrations(manifest, event):
+    """Merge the CURRENT solver intrinsics, never modifying manifest defaults."""
+    result = {name: dict(camera) for name, camera in manifest.get("cameras", {}).items()}
+    for name, state in event.get("cameras", {}).items():
+        if name in result:
+            result[name].update({key: state[key] for key in CALIBRATION_FIELDS if key in state})
+            camera_calibration(result[name])
+    return result
 
 
 def atomic_json(path, value):
@@ -59,6 +94,8 @@ def validate_snapshot(event):
         raise ValueError("seq must be a nonnegative integer")
     if not isinstance(event.get("cameras"), dict):
         raise ValueError("cameras must be an object")
+    if "run_id" in event and not isinstance(event["run_id"], str):
+        raise ValueError("run_id must be a string")
     for key in ("progress", "eta_s", "source_time_s", "t", "map_progress"):
         if key in event:
             value = event[key]
@@ -71,6 +108,9 @@ def validate_snapshot(event):
     for key in ("window", "total_windows"):
         if key in event and (not isinstance(event[key], int) or event[key] < 0):
             raise ValueError("invalid window count")
+    for key in ("iteration", "total_iterations"):
+        if event.get(key) is not None and (not isinstance(event[key], int) or event[key] < 0):
+            raise ValueError("invalid iteration count")
     if "stage" in event and not isinstance(event["stage"], str):
         raise ValueError("stage must be a string")
     for key in ("assets", "gate", "provenance"):
@@ -98,6 +138,7 @@ def validate_snapshot(event):
     for camera in event["cameras"].values():
         if not isinstance(camera, dict):
             raise ValueError("camera state must be an object")
+        camera_calibration(camera, partial=True)
         if "state" in camera and not isinstance(camera["state"], str):
             raise ValueError("camera state must be a string")
         for key in ("validation_vote", "gate_pass", "validation_vote_gate"):
@@ -115,10 +156,17 @@ def validate_snapshot(event):
         R = T[:3, :3]
         if not np.allclose(R.T @ R, np.eye(3), atol=1e-3) or np.linalg.det(R) < 0.99:
             raise ValueError("camera pose rotation is not SO(3)")
-        for key in ("sigma_rot_deg", "sigma_pos_mm", "reprojection_px"):
+        for key in ("sigma_rot_deg", "sigma_pos_mm", "reprojection_px", "cost"):
             value = camera.get(key)
             if value is not None and (not np.isfinite(float(value)) or value < 0):
                 raise ValueError("invalid camera metric")
+        for key in ("time_offset_s", "row_readout_s", "rs_s"):
+            offset = camera.get(key)
+            if offset is not None and not math.isfinite(float(offset)):
+                raise ValueError("invalid camera timing")
+        for key in ("iteration", "total_iterations"):
+            if camera.get(key) is not None and (not isinstance(camera[key], int) or camera[key] < 0):
+                raise ValueError("invalid camera iteration count")
     return event
 
 
@@ -133,19 +181,7 @@ def validate_manifest(manifest):
             not np.allclose(R.T @ R, np.eye(3), atol=1e-3) or np.linalg.det(R) < .99):
         raise ValueError("invalid R_lidar_V rotation")
     for camera in cameras.values():
-        if not isinstance(camera, dict):
-            raise ValueError("manifest camera must be an object")
-        K = np.asarray(camera.get("K"), float)
-        D = np.asarray(camera.get("D"), float)
-        model = camera.get("model")
-        count = 4 if model == "equidistant" else (5 if model == "plumb_bob" else 0)
-        if K.shape != (3, 3) or not np.isfinite(K).all() or K[0, 0] <= 0 or K[1, 1] <= 0:
-            raise ValueError("invalid camera matrix")
-        if not count or D.shape != (count,) or not np.isfinite(D).all():
-            raise ValueError("invalid distortion model or coefficients")
-        if any(not isinstance(camera.get(key), int) or not 0 < camera[key] <= 8192
-               for key in ("width", "height")):
-            raise ValueError("invalid camera dimensions")
+        camera_calibration(camera)
     return manifest
 
 
@@ -168,6 +204,7 @@ class StreamReader:
         self._partial = b""
         self._skip_line = False
         self._last_seq = -1
+        self._run_id = None
         self._anchor = b""
         self.refresh_manifest()
 
@@ -231,6 +268,16 @@ class StreamReader:
                 if len(line) > MAX_RECORD_BYTES:
                     raise ValueError("oversized snapshot skipped")
                 event = validate_snapshot(json.loads(line))
+                run_id = event.get("run_id", self.manifest.get("run_id"))
+                if (event.get("run_id") and self.manifest.get("run_id")
+                        and run_id != self.manifest["run_id"]):
+                    # Manifest may be replaced before a resumed run appends its
+                    # first record. Do not show the previous attempt as current.
+                    continue
+                if run_id != self._run_id:
+                    events.clear()
+                    self._last_seq = -1
+                    self._run_id = run_id
                 if event["seq"] > self._last_seq:
                     events.append(event)
                     self._last_seq = event["seq"]

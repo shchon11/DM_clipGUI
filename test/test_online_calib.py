@@ -191,6 +191,45 @@ def test_progress_partial_lines(tmp_path):
     assert p.bad_lines == 0
 
 
+def test_progress_latest_attempt_clears_old_errors_without_rewinding_tail(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    old = [
+        {'ev': 'run_start', 'run_id': 'failed'},
+        {'ev': 'warning', 'msg': 'old warning'},
+        {'ev': 'task_failed', 'stage': 'thermal_lens', 'msg': 'old failure'},
+        {'ev': 'error', 'msg': 'windows must be given in chronological order'},
+        {'ev': 'refusal', 'code': 'old'},
+        {'ev': 'stage_end', 'stage': 'thermal_solve', 'ok': False},
+        {'ev': 'run_end', 'ok': False},
+    ]
+    path.write_text(''.join(json.dumps(ev) + '\n' for ev in old))
+    progress = oc.Progress()
+    assert len(progress.feed_file(path)) == len(old)
+    cursor = progress._offset
+    assert progress.error and progress.task_failed and progress.warnings
+    resumed = [
+        {'ev': 'run_start', 'run_id': 'resumed', 'total_windows': 3},
+        {'ev': 'stage_skip', 'stage': 'lo'},
+        {'ev': 'warning', 'msg': 'current warning'},
+    ]
+    payload = ''.join(json.dumps(ev) + '\n' for ev in resumed).encode()
+    with path.open('ab') as handle:
+        handle.write(payload[:-5])
+    assert len(progress.feed_file(path)) == 2
+    assert progress._offset > cursor
+    assert progress.error is None and progress.refusal is None and progress.run_end is None
+    assert progress.task_failed == [] and progress.warnings == []
+    assert progress.stages['thermal_solve']['state'] == 'wait'
+    assert progress.stages['lo']['state'] == 'skip'
+    with path.open('ab') as handle:
+        handle.write(payload[-5:])
+    assert len(progress.feed_file(path)) == 1
+    assert [ev['msg'] for ev in progress.warnings] == ['current warning']
+    assert progress.feed_file(path) == []
+    assert progress.run_start['run_id'] == 'resumed'
+    assert progress.viz_progress == {'total_windows': 3}
+
+
 @pytest.mark.skipif(not REF_EVENTS.is_file(), reason="참조 이벤트 없음")
 def test_progress_real_stream():
     p = oc.Progress()

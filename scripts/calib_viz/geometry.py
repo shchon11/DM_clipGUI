@@ -6,6 +6,18 @@ import numpy as np
 DEFAULT_R_LIDAR_V = np.diag([-1.0, -1.0, 1.0])
 
 
+def frustum_corners(calibration, length):
+    """Short K-dependent pinhole guide, not the distorted lens field boundary."""
+    if not all(key in calibration for key in ("K", "width", "height")):
+        return np.array([[-.63, -.43, 1], [.63, -.43, 1],
+                         [.63, .43, 1], [-.63, .43, 1]]) * length
+    w, h = calibration["width"], calibration["height"]
+    pixels = np.array([[0., 0., 1.], [w, 0., 1.], [w, h, 1.], [0., h, 1.]])
+    rays = np.linalg.solve(np.asarray(calibration["K"], float), pixels.T).T
+    # Equal-length rays keep very wide-angle zero-shot intrinsics readable.
+    return rays / np.linalg.norm(rays, axis=1, keepdims=True) * length
+
+
 def vehicle_from_camera(T_cam_lidar, R_lidar_V=None):
     """Return T_V_cam, with V x forward, y left, z up at the Ouster.
 

@@ -11,7 +11,7 @@ from PyQt5 import QtCore, QtWidgets
 from .geometry import interpolate_pose, vehicle_from_camera
 from .panels import ImagePanel, MetricStrip, SensorGrid, StageBar, short_name
 from .scene import MapScene, RigScene
-from .stream import StreamReader
+from .stream import StreamReader, atomic_json, snapshot_calibrations
 
 
 STYLE = '''
@@ -40,6 +40,15 @@ def label(text, kind=None):
     return widget
 
 
+def window_context(windows):
+    if not isinstance(windows, (list, tuple)) or not windows:
+        return ''
+    shown = ', '.join(str(window) for window in windows[:3])
+    if len(windows) > 3:
+        shown += ', …'
+    return (f'공동 {len(windows)}개 구간: ' if len(windows) > 1 else '구간 ') + shown
+
+
 def card(title, subtitle='', controls=()):
     frame = QtWidgets.QFrame()
     frame.setObjectName('Card')
@@ -49,7 +58,7 @@ def card(title, subtitle='', controls=()):
     header = QtWidgets.QHBoxLayout()
     header.addWidget(label(title, 'CardTitle'))
     if subtitle:
-        header.addWidget(label(subtitle, 'Subtle'))
+        header.addWidget(label(subtitle, 'Subtle') if isinstance(subtitle, str) else subtitle)
     header.addStretch()
     for widget in controls:
         header.addWidget(widget)
@@ -63,7 +72,7 @@ class StreamLoader:
     Real jobs share this worker with their small initial/final YAML adapter. No
     solver imports, replay generation or workdir scan runs on the GUI thread.
     """
-    def __init__(self, root, job=None):
+    def __init__(self, root, job=None, progress=None):
         self.root = Path(root)
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
@@ -71,9 +80,11 @@ class StreamLoader:
         self.error = None
         self.selected = 'camera_front5'
         self.job = deepcopy(job)
-        self.progress = None
+        self.progress = deepcopy(progress)
         self.revision = 0
         self.active = True
+        self._control = None
+        self._control_at = -float('inf')
         self.thread = threading.Thread(target=self._run, name='calib-viz-reader', daemon=True)
         self.thread.start()
 
@@ -90,6 +101,23 @@ class StreamLoader:
         with self.lock:
             latest, self.latest = self.latest, None
             return latest, self.error
+
+    def _publish_selection(self, manifest, camera):
+        """Optional producer hint; read-only streams remain fully viewable."""
+        if manifest.get('mode') != 'live' or camera not in manifest.get('cameras', {}):
+            return
+        selection = (manifest.get('run_id'), camera)
+        now = time.monotonic()
+        if selection == self._control or now - self._control_at < 1.:
+            return
+        self._control_at = now
+        try:
+            atomic_json(self.root / 'control.json', {
+                'schema': 'calib-viz-control/1', 'run_id': selection[0],
+                'camera': camera, 'enabled': True, 'updated_at': time.time()})
+            self._control = selection
+        except (OSError, ValueError):
+            pass
 
     def _run(self):
         reader, cache = None, OrderedDict()
@@ -117,7 +145,26 @@ class StreamLoader:
                     if reader is None:
                         reader = StreamReader(self.root)
                     reader.refresh_manifest()
-                    events = reader.poll()
+                    run_id = reader.manifest.get('run_id')
+                    attempt_id = (getattr(progress, 'run_start', None) or {}).get('run_id') if job else None
+                    obsolete = bool(attempt_id and run_id != attempt_id)
+                    if obsolete:
+                        # A new --no-viz attempt intentionally leaves the old
+                        # stream directory untouched. Its poses are historical.
+                        changed = changed or stream_event is not None
+                        stream_event, last_seq = None, -1
+                        cache.clear()
+                        previous = {'map': None, 'matching': {}}
+                        if reader.manifest:
+                            stream_error = '이전 실행 시도의 스트림은 표시하지 않습니다'
+                    else:
+                        self._publish_selection(reader.manifest, camera)
+                    if generation is not None and generation != run_id:
+                        cache.clear()
+                        previous = {'map': None, 'matching': {}}
+                        stream_event, last_seq, changed = None, -1, True
+                    generation = run_id
+                    events = [] if obsolete else reader.poll()
                     if job and reader.manifest.get('mode') == 'replay':
                         events = []
                         stream_event = None
@@ -132,7 +179,6 @@ class StreamLoader:
                         else:
                             stream_event = candidate
                             changed = True
-                            run_id = reader.manifest.get('run_id')
                             if candidate['seq'] <= last_seq or generation != run_id:
                                 cache.clear()
                                 previous = {'map': None, 'matching': {}}
@@ -207,6 +253,7 @@ class StreamLoader:
                             decoded['matching'][camera] = dict(old, metadata=dict(old['metadata'], stale=True))
                 previous = decoded
                 retry = bool(errors)
+                snapshot_calibrations(manifest, event)
                 with self.lock:
                     self.latest = (manifest, event, decoded)
                     self.error = errors[-1] if errors else (str(reader.errors[-1]) if reader and reader.errors else None)
@@ -238,6 +285,7 @@ class CalibrationVizWidget(QtWidgets.QWidget):
         self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
         self.setStyleSheet(STYLE)
         self.manifest, self.event, self.decoded = {}, {}, {}
+        self.calibrations, self.initial_calibrations = {}, {}
         self.targets, self.origins, self.current, self.initial = {}, {}, {}, {}
         self.selected = 'camera_front5'
         self.embedded = embedded
@@ -294,7 +342,8 @@ class CalibrationVizWidget(QtWidgets.QWidget):
         reset = QtWidgets.QPushButton('시점 복원')
         ghost = QtWidgets.QCheckBox('이전 추정 잔상')
         ghost.setChecked(True)
-        rig_card, rig_layout = card('01  센서 리그', 'RGB 14 · 열화상 2 · Ouster', [ghost, reset])
+        self.rig_sensor_label = label('센서 구성 대기', 'Subtle')
+        rig_card, rig_layout = card('01  센서 리그', self.rig_sensor_label, [ghost, reset])
         self.rig = RigScene()
         if self.embedded:
             self.rig.setMinimumSize(280, 190)
@@ -326,6 +375,9 @@ class CalibrationVizWidget(QtWidgets.QWidget):
         image_layout.addLayout(image_toggles)
         self.metrics = MetricStrip()
         image_layout.addWidget(self.metrics)
+        self.solver_label = label('', 'Subtle')
+        self.solver_label.setWordWrap(True)
+        image_layout.addWidget(self.solver_label)
         image_layout.addWidget(label('깊이점과 관측 특징을 함께 표시 · 점별 정답 대응을 뜻하지 않음', 'Subtle'))
         top.addWidget(image_card, 2)
         root.addLayout(top, 3)
@@ -364,6 +416,8 @@ class CalibrationVizWidget(QtWidgets.QWidget):
             self.loader.close()
             self.loader = None
         self.manifest, self.event, self.decoded = {}, {}, {}
+        self.calibrations.clear()
+        self.initial_calibrations.clear()
         self.last_receive = None
         self.last_map = None
         self.current.clear()
@@ -383,6 +437,8 @@ class CalibrationVizWidget(QtWidgets.QWidget):
         self.map_label.setText('지도 스트림 대기 중')
         self.gate_label.setText('검증 대기')
         self.detail_label.clear()
+        self.solver_label.clear()
+        self.rig_sensor_label.setText('센서 구성 대기')
         self.camera_combo.clear()
         self.stages.progress = 0
         self.stages.stage = ''
@@ -400,7 +456,7 @@ class CalibrationVizWidget(QtWidgets.QWidget):
 
     def set_job(self, job, progress=None):
         self.reset_source()
-        self.loader = StreamLoader(Path(job['workdir']) / 'viz', job=job)
+        self.loader = StreamLoader(Path(job['workdir']) / 'viz', job=job, progress=progress)
         self.loader.select_camera(self.selected)
         self.loader.update_job(job, progress)
         self.loader.active = self.isVisible()
@@ -422,6 +478,8 @@ class CalibrationVizWidget(QtWidgets.QWidget):
             self.select_camera(name)
 
     def select_camera(self, name):
+        if self.manifest.get('cameras') and name not in self.manifest['cameras']:
+            return False
         self.selected = name
         if self.loader:
             self.loader.select_camera(name)
@@ -433,30 +491,69 @@ class CalibrationVizWidget(QtWidgets.QWidget):
         self.camera_combo.blockSignals(False)
         self._set_image()
         self.metrics.ingest(name, self.event.get('cameras', {}).get(name, {}))
+        self._set_solver_metrics()
+        return True
+
+    def _set_solver_metrics(self):
+        state = self.event.get('cameras', {}).get(self.selected, {})
+        calibration = self.calibrations.get(self.selected, {})
+        context = []
+        for key, title in (('solve_name', 'solve'), ('solver_pass', 'pass'), ('purpose', '목적')):
+            if state.get(key) is not None:
+                context.append(f'{title} {state[key]}')
+        windows = window_context(state.get('windows'))
+        if windows:
+            context.append(windows)
+        if state.get('iteration') is not None:
+            total = state.get('total_iterations')
+            context.append(f"반복 {state['iteration']} / {total if total is not None else '—'}")
+        parts = []
+        if state.get('cost') is not None:
+            parts.append(f"비용 {state['cost']:.5g}")
+        if state.get('time_offset_s') is not None:
+            parts.append(f"시간 offset {state['time_offset_s'] * 1000:+.3f} ms")
+        row_time = state.get('row_readout_s', state.get('rs_s'))
+        if row_time is not None:
+            parts.append(f'행 readout {row_time * 1e6:.2f} µs')
+        if 'K' in calibration:
+            parts.append(f"fx/fy {calibration['K'][0][0]:.2f} / {calibration['K'][1][1]:.2f} px")
+        context_line = '선택 센서 · ' + ' · '.join(context) if context else ''
+        self.solver_label.setText('\n'.join(line for line in (context_line, ' · '.join(parts)) if line))
+        self.solver_label.setToolTip(str(state.get('cost_source') or state.get('metric_source') or ''))
 
     def _set_image(self):
         matching = self.decoded.get('matching', {}).get(self.selected)
-        calibration = self.manifest.get('cameras', {}).get(self.selected)
+        calibration = self.calibrations.get(self.selected)
         if matching and calibration:
             self.image_panel.set_frame(matching['image'], matching['points'],
-                                       calibration, matching['metadata'])
+                                       calibration, matching['metadata'],
+                                       self.initial_calibrations.get(self.selected))
         else:
             self.image_panel.set_frame(None, {}, {}, {})
 
     def apply_snapshot(self, manifest, event, decoded):
         """Apply already-decoded arrays on the GUI thread (also useful for tests)."""
         first = not self.event
-        if self.event and (event['seq'] < self.event['seq'] or manifest.get('run_id') != self.manifest.get('run_id')):
+        if self.event and (event['seq'] < self.event['seq']
+                           or manifest.get('run_id') != self.manifest.get('run_id')
+                           or event.get('run_id') != self.event.get('run_id')):
             self.rig.history.clear()
             self.sensors.histories.clear()
             self.initial.clear()
+            self.initial_calibrations.clear()
             self.last_map = None
             self.current.clear()
+            self.rig.last_seq = None
+            for values in self.metrics.histories.values():
+                values.clear()
         if first:
             self.frame_epoch = time.monotonic()
             self.frames = 0
         cameras_changed = self.event.get('cameras') != event.get('cameras')
         self.manifest, self.event, self.decoded = manifest, event, decoded
+        self.calibrations = snapshot_calibrations(manifest, event)
+        for name, calibration in self.calibrations.items():
+            self.initial_calibrations.setdefault(name, deepcopy(calibration))
         self.last_receive = time.monotonic()
         self.pose_epoch = self.last_receive
         cameras = event.get('cameras', {})
@@ -474,13 +571,30 @@ class CalibrationVizWidget(QtWidgets.QWidget):
         self.window_label.setText(f"윈도 {event.get('window', '—')} / {event.get('total_windows', '—')}")
         eta = event.get('eta_s')
         self.eta_label.setText('남은 시간 —' if eta is None else f'남은 시간 {int(eta)//60:02d}:{int(eta)%60:02d}')
-        replay = manifest.get('mode') == 'replay' or event.get('provenance', {}).get('synthetic', False)
+        provenance = event.get('provenance', {})
+        replay = (manifest.get('mode') == 'replay' or provenance.get('synthetic', False)
+                  or provenance.get('synthetic_intermediate', False))
         # Explicitly label a replay even when a producer uses a more detailed provenance schema.
         replay = replay or bool(manifest.get('replay')) or 'replay' in str(event.get('provenance', {})).lower()
         self.mode_label.setText('실제 데이터 · 합성 수렴 리플레이' if replay else
                                 ('실제 보정 작업' if manifest.get('mode') == 'job' else '● 실시간 스트림'))
         warnings = event.get('warnings', [])
         detail = event.get('stage_label', '')
+        context = []
+        windows = window_context(event.get('windows')) if event.get('stage') not in ('lo', 'lidar_odometry') else ''
+        for key, title in (('bag_id', 'bag'), ('window_id', '구간'), ('solver_pass', 'pass'),
+                           ('solve_name', 'solve'), ('purpose', '목적')):
+            if key == 'window_id' and windows:
+                continue
+            if event.get(key) is not None:
+                context.append(f'{title} {event[key]}')
+        if windows:
+            context.append(windows)
+        if event.get('iteration') is not None:
+            total = event.get('total_iterations')
+            context.append(f"반복 {event['iteration']} / {total if total is not None else '—'}")
+        if context:
+            detail = ' · '.join(([detail] if detail else []) + context)
         if warnings:
             detail += f' · 기록된 경고 {len(warnings)}개 · ' + str(warnings[-1])[:100] + ('…' if len(str(warnings[-1])) > 100 else '')
         self.detail_label.setToolTip('\n'.join(str(w) for w in warnings))
@@ -500,6 +614,10 @@ class CalibrationVizWidget(QtWidgets.QWidget):
                      ('#58d6c9' if status == 'pass' else '#8496af'))
         self.gate_label.setStyleSheet(f'color: {gate_color};')
         names = list(manifest.get('cameras', {}))
+        sensor_types = [camera.get('sensor', 'thermal' if name.startswith('thermal_') else 'rgb')
+                        for name, camera in manifest.get('cameras', {}).items()]
+        self.rig_sensor_label.setText((f"RGB {sensor_types.count('rgb')} · 열화상 {sensor_types.count('thermal')}"
+                                       f" · 카메라 {len(names)}대 · Ouster") if names else '센서 구성 대기')
         if names != [self.camera_combo.itemData(i) for i in range(self.camera_combo.count())]:
             self.camera_combo.blockSignals(True)
             self.camera_combo.clear()
@@ -507,7 +625,10 @@ class CalibrationVizWidget(QtWidgets.QWidget):
                 self.camera_combo.addItem(short_name(name), name)
             self.camera_combo.setCurrentIndex(self.camera_combo.findData(self.selected))
             self.camera_combo.blockSignals(False)
+        if names and self.selected not in names:
+            self.select_camera('camera_front5' if 'camera_front5' in names else names[0])
         self._set_image()
+        self._set_solver_metrics()
         map_path = decoded.get('map_asset', event.get('assets', {}).get('map'))
         frame = event.get('map_frame', manifest.get('map_frame', '미지정 지도 좌표'))
         if frame != self.map.frame_id and decoded.get('map') is None:
@@ -537,7 +658,9 @@ class CalibrationVizWidget(QtWidgets.QWidget):
                             for name, target in self.targets.items()}
             poses = {name: vehicle_from_camera(pose, self.manifest.get('R_lidar_V'))
                      for name, pose in self.current.items()}
-            self.rig.update_poses(poses, self.event['cameras'], self.selected, self.event['seq'])
+            states = {name: dict(self.calibrations.get(name, {}), **state)
+                      for name, state in self.event['cameras'].items()}
+            self.rig.update_poses(poses, states, self.selected, self.event['seq'])
             if self.selected in self.current:
                 self.image_panel.project(self.current[self.selected], self.initial.get(self.selected))
         elapsed = now - self.frame_epoch
