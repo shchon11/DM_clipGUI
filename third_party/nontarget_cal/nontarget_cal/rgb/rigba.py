@@ -21,6 +21,8 @@ Conventions: T_a_b maps b -> a; L = os_lidar; C = OpenCV optical (x right, y dow
 """
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import torch
 
@@ -363,9 +365,10 @@ def structure(obs, C, M):
 
 def solve(cams: Cameras, obs: Obs, X: torch.Tensor, free: torch.Tensor, prior_sig: torch.Tensor,
           ties: Ties | None = None, iters: int = 30, huber: float = 1.5, lam0: float = 1e-3,
-          verbose: bool = True, tol: float = 1e-7, want_cov: bool = True):
+          verbose: bool = True, tol: float = 1e-7, want_cov: bool = True, on_iteration=None):
     """LM. free (C,NP) bool; prior_sig (C,NP) (inf = no prior; applies to free params only).
-    Rotation priors are not supported (keep them inf). Returns cams, X, info dict."""
+    Rotation priors are not supported (keep them inf). Returns cams, X, info dict.
+    on_iteration observes the initial and accepted states; its failures disable only the observer."""
     C, M = cams.C, len(X)
     pair, P, p_lm, p_cam, xp, xq = structure(obs, C, M)
     fidx = torch.nonzero(free.flatten()).flatten()
@@ -373,6 +376,17 @@ def solve(cams: Cameras, obs: Obs, X: torch.Tensor, free: torch.Tensor, prior_si
     cost = cost_terms(cams, obs, X, ties, prior_sig, huber)
     e_acc = _LAST_E[0]
     hist = [cost]
+
+    def observe(iteration, accepted):
+        nonlocal on_iteration
+        if on_iteration is not None:
+            try:
+                on_iteration(cams, obs, e_acc, cost, iteration, accepted)
+            except Exception:
+                logging.getLogger(__name__).warning("Visualization observer disabled after an error", exc_info=True)
+                on_iteration = None
+
+    observe(0, False)
     rel = 1.0
     dc = torch.zeros(C, NP, dtype=DT)
     for it in range(iters):
@@ -401,6 +415,7 @@ def solve(cams: Cameras, obs: Obs, X: torch.Tensor, free: torch.Tensor, prior_si
                 rel = (cost - new) / cost
                 cost = new
                 lam = max(lam / 3, 1e-7)
+                observe(it + 1, True)
                 break
             lam *= 4
             if lam > 1e8:

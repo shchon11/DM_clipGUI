@@ -27,6 +27,7 @@ from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation as Rot
 
 from .lotraj import LOTraj, load_sweep, sweep_files, voxel_down, xyz
+from .maps import _emit_map, _sample_clouds, _sample_trajectory
 
 OFFSETS = (1, 2, 3, 5, 8, 13, 20)
 QUERY_WORKERS = int(os.environ.get("NONTARGET_KDTREE_WORKERS", "1"))  # thread start-up dominated small queries at 4
@@ -224,6 +225,12 @@ def refine(seg, init, out, iters: int = 6, src_voxel: float = 0.3, tgt_voxel: fl
                 g[6 * kk + 3:6 * kk + 6] += cf * e / sig ** 2
                 g[6 * kk:6 * kk + 3] += cf * er * 100 / sig ** 2
         H[np.diag_indices_from(H)] += 1e-6
+        # Wt and the knots describe exactly the current iterate whose residual
+        # cost was just computed. Never pair pre-step points with post-step poses.
+        _emit_map(a.seg, lambda: {"points": _sample_clouds(Wt),
+                                 "trajectory": _sample_trajectory(tr.T)},
+                  lo_phase="refine", solver_iteration=it, total_iterations=a.iters,
+                  cost=float(cost), n_residuals=int(nres))
         dx = -np.linalg.solve(H, g)
         dx = dx.reshape(K, 6)
         T = tr.T.copy()

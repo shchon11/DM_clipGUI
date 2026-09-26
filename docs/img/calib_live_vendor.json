@@ -1,0 +1,10 @@
+{
+  "commit": "7fbc5ff32494f40d40d4b58069e31367c09d0d90",
+  "upstream_head": "996d2f8a644063b3f467e94062c58728ce2cd422",
+  "upstream_commit_applied": false,
+  "source_commit_checkout": "/hdd/DM_calib/DM_clipGUI_viz/.omx/nt_viz_test/tool-commit",
+  "source_worktree_matches_commit": true,
+  "vendor_matches_commit_excluding_provenance": true,
+  "compared_files": 98,
+  "bundle_sha256": "9631daf1ee7824a5b6b54afd176a39cbe593072f515471d2745413e3040c9687"
+}

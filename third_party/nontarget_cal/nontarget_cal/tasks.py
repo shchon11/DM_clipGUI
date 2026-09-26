@@ -228,9 +228,17 @@ def t_crosstime_links(ws, cfg, log, solve):
         return {"cached": True}
     c = cfg["rgb"]["crosstime"]
     d = ws.root / "rgb" / solve
-    merges, stats = associate_resumable(ws, read_json(d / "result.json"), d / "state.npz", ws.root / "rgb" / "crosstime" / "cache",
-                                        gate_a=c["gate_a_m"], gate_b=c["gate_b"], max_px_med=c["max_px_med"],
-                                        max_px_p90=c["max_px_p90"], log=log)
+    matcher = c.get("matcher", "sift")
+    kw = dict(gate_a=c["gate_a_m"], gate_b=c["gate_b"], max_px_med=c["max_px_med"], max_px_p90=c["max_px_p90"])
+    cache = ws.root / "rgb" / "crosstime" / "cache"
+    if matcher != "sift":
+        # learned verification: its own candidate gates (wider: the appearance check is exact) and cache
+        lc = dict(c.get("learned", {}))
+        kw = dict(gate_a=lc.pop("gate_a_m", kw["gate_a"]), gate_b=lc.pop("gate_b", kw["gate_b"]),
+                  max_px_med=lc.pop("max_px_med", kw["max_px_med"]), max_px_p90=lc.pop("max_px_p90", kw["max_px_p90"]),
+                  matcher=matcher, learned=lc)
+        cache = cache.with_name(f"cache_{matcher}")
+    merges, stats = associate_resumable(ws, read_json(d / "result.json"), d / "state.npz", cache, log=log, **kw)
     out.parent.mkdir(parents=True, exist_ok=True)
     np.savez(out, **{k: np.array(v) for k, v in merges.items()})
     write_json(out.with_suffix(".json"), stats)

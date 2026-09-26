@@ -18,6 +18,8 @@ Conventions: T_a_b maps b -> a; L = os_lidar (x backward); C = OpenCV optical.
 """
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import torch
 
@@ -459,7 +461,8 @@ def reduced(U, V, Wp, st, lam):
 
 
 def solve(cams, trajs, obs, X, free, prior_sig, ties=None, iters=30, huber=1.0, lam0=1e-3,
-          verbose=True, tol=1e-7, want_cov=False, log=print):
+          verbose=True, tol=1e-7, want_cov=False, log=print, on_iteration=None):
+    """LM with an optional best-effort observer of initial and accepted states only."""
     M = len(X)
     st = Structure(obs, cams, M)
     fidx = torch.nonzero(free).flatten()
@@ -467,6 +470,17 @@ def solve(cams, trajs, obs, X, free, prior_sig, ties=None, iters=30, huber=1.0, 
     cst = cost(cams, trajs, obs, X, ties, prior_sig, huber)
     e_acc = _LAST_E[0]
     hist = [cst]
+
+    def observe(iteration, accepted):
+        nonlocal on_iteration
+        if on_iteration is not None:
+            try:
+                on_iteration(cams, obs, e_acc, cst, iteration, accepted)
+            except Exception:
+                logging.getLogger(__name__).warning("Visualization observer disabled after an error", exc_info=True)
+                on_iteration = None
+
+    observe(0, False)
     rel = 1.0
     for it in range(iters):
         U, bp, V, bl, Wp = accumulate(cams, trajs, obs, X, ties, prior_sig, free, huber, st)
@@ -493,6 +507,7 @@ def solve(cams, trajs, obs, X, free, prior_sig, ties=None, iters=30, huber=1.0, 
                 rel = (cst - new) / cst
                 cst = new
                 lam = max(lam / 3, 1e-7)
+                observe(it + 1, True)
                 break
             lam *= 4
             if lam > 1e8:

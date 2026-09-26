@@ -17,7 +17,7 @@ import yaml
 from . import __version__
 from . import errors as E
 from .bag import Bag
-from .events import Events, dir_size_gb, free_gb
+from .events import Events, dir_size_gb
 from .workspace import Workspace, read_json, write_json
 
 
@@ -38,6 +38,8 @@ class Pipeline:
         snap.write_text(json.dumps(cfg, indent=1, default=str))
         self.snap = snap
         self.stage_times = []
+        self.viz = None
+        self.viz_run_id = None
         import threading
         # one budget of worker processes for the whole run: the RGB and thermal chains (and the RGB
         # tracker during the LiDAR odometry) run in parallel threads and share it
@@ -74,6 +76,9 @@ class Pipeline:
                 key, name, args = pending.pop(0)
                 spec = {"task": name, "workdir": str(self.ws.root), "config": str(self.snap), "args": args,
                         "result": str(tdir / f"{key}.result.json"), "log": str(ldir / f"{key}.log")}
+                if self.viz is not None:
+                    from .viz_pipeline import task_context
+                    spec["viz_context"] = task_context(self, stage, key, args)
                 sf = tdir / f"{key}.json"
                 sf.write_text(json.dumps(spec, default=str))
                 rf = tdir / f"{key}.result.json"
@@ -299,6 +304,8 @@ class Pipeline:
         key = _key(wins, self.cfg["rgb"], self.a.mode, str(self.a.init), self.a.force)
         if self.ws.done("rgb", key):
             self.ev.emit("stage_skip", stage="rgb")
+            from .viz_pipeline import cached_result
+            cached_result(self, "rgb")
             return read_json(self.ws.root / "rgb" / "summary.json")
         summ = {}
         self.stage_rgb_tracks(wins)
@@ -346,7 +353,7 @@ class Pipeline:
                             raise E.Refusal(E.BAG_DISAGREES, msg + ". With two bags it cannot be decided which one; "
                                             "run them separately or pass --force", ko + ". bag이 2개면 어느 쪽인지 판단 불가: 따로 돌리거나 --force", **ag)
                         use_bags = [b for b in bags if b not in ag["disagreeing"]]
-                        self.ev.warn(E.BAG_DISAGREES, msg + f"; excluded (use --force to keep)", ko + "; 제외함(--force로 포함 가능)")
+                        self.ev.warn(E.BAG_DISAGREES, msg + "; excluded (use --force to keep)", ko + "; 제외함(--force로 포함 가능)")
                     else:
                         self.ev.warn(E.BAG_DISAGREES, msg + "; kept because of --force", ko + "; --force로 포함함")
             final_wins = [w for w in wins if bag_of[w] in use_bags]
@@ -461,6 +468,8 @@ class Pipeline:
         key = _key(wins, self.cfg["thermal"], self.a.mode, str(self.a.init))
         if self.ws.done("thermal", key):
             self.ev.emit("stage_skip", stage="thermal")
+            from .viz_pipeline import cached_result
+            cached_result(self, "thermal")
             return read_json(self.ws.root / "thermal" / "summary.json")
         summ = {"windows": wins}
         with self.ev.stage("thermal_tracks", disk_path=self.ws.root / "thermal" / "tracks"):
@@ -548,8 +557,6 @@ class Pipeline:
             return read_json(self.ws.root / "validation" / "validation.json")
         ax = read_json(self.ws.root / "lo" / "vehicle_axes.json")
         R_L_V = np.array(ax["R_L_V"])
-        plan = self.plan()
-        parked = [p["name"] for p in plan["parked"] if (self.ws.seg_dir(p["name"]) / "source.json").exists()]
         with self.ev.stage("validation", disk_path=self.ws.root / "validation") as info:
             if "rgb" in self.sensors:
                 self.run_val_rgb()
@@ -795,10 +802,16 @@ class Pipeline:
         return list(last.values())
 
     # ================================================================== run
+    def close_viz(self):
+        if self.viz is not None:
+            self.viz.close()
+
     def run(self):
         t0 = time.time()
+        from .viz_pipeline import start, validation
+        start(self)
         self.ev.emit("run_start", version=__version__, bags=self.bags, sensors=self.sensors, mode=self.a.mode,
-                     workdir=str(self.ws.root), out=str(self.out))
+                     workdir=str(self.ws.root), out=str(self.out), run_id=self.viz_run_id)
         write_json(self.ws.root / "run.json", {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(self.a).items()})
         self.stage_check(force=self.a.force)
         self.stage_extract()
@@ -821,11 +834,19 @@ class Pipeline:
                 par(after_lo(lambda: (self.stage_thermal(), self.run_val_thermal())))
             try:
                 self.stage_lo()
+                from .viz_pipeline import axes
+                axes(self)
+                if self.viz is not None:
+                    self.viz.cached_map(self.ws, self.kept()["kept"][0])
                 lo_ok.append(True)
             finally:
                 lo_done.set()
-        self.stage_validation()
+        v = self.stage_validation()
+        validation(self, v)
         s = self.stage_outputs()
+        if self.viz is not None:
+            self.viz.publish({"stage": "validation", "progress": 1.0, "status_text": "실제 계산 완료",
+                              "complete": True}, force=True)
         self.ev.emit("run_end", ok=True, wall_s=round(time.time() - t0, 1), out=str(self.out),
                      gate_pass=s["validation"]["gate"]["pass"])
         return s

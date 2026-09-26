@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
+from ..rgb.solve import _viz_observer, _viz_result
 from . import tba
 from .tba import NCP, PN, Cams, Obs, Ties, Trajs, all_residuals, solve, triangulate
 from .timemodel import time_model
@@ -241,7 +242,9 @@ def run_tba(ws, plan, segs, out, start: dict, rig=None, calib_in: bool = False, 
     for i in range(cams.C):
         freeA[i * NCP + 3:i * NCP + NCP] = False
     log("stage A (rotation, dt)" if freeA.any() else "landmarks only")
-    cams, X, _ = solve(cams, trajs, obs, X, freeA, prior, iters=8, huber=a.huber, log=log)
+    cams, X, _ = solve(cams, trajs, obs, X, freeA, prior, iters=8, huber=a.huber, log=log,
+                       on_iteration=_viz_observer(ws, segs, a.out.name, "A", 8, a.huber,
+                                                  thermal=True, held=calib_in))
     ties = None
     info = {"cov": None, "fidx": torch.nonzero(free).flatten()}
     for rnd in range(a.rounds):
@@ -255,7 +258,9 @@ def run_tba(ws, plan, segs, out, start: dict, rig=None, calib_in: bool = False, 
             log(f"  edges: {n_as} associated; {tba.EDGE.stats(cams, trajs)}")
         last = rnd == a.rounds - 1
         cams, X, info = solve(cams, trajs, obs, X, free, prior, ties=ties, iters=a.iters, huber=a.huber,
-                              want_cov=last and free.any(), log=log)
+                              want_cov=last and free.any(), log=log,
+                              on_iteration=_viz_observer(ws, segs, a.out.name, f"B{rnd + 1}", a.iters, a.huber,
+                                                         thermal=True, held=calib_in))
         r, Xc = all_residuals(cams, trajs, obs, X)
         e = r.norm(dim=1)
         if last:
@@ -343,6 +348,8 @@ def run_tba(ws, plan, segs, out, start: dict, rig=None, calib_in: bool = False, 
     if "stereo" in res and isinstance(res["stereo"], dict):
         log(f"  stereo: baseline {res['stereo']['baseline_mm']:.1f} mm, left in right {np.round(res['stereo']['left_centre_in_right_mm'], 1).tolist()}")
     logf.close()
+    _viz_result(ws, segs, a.out.name, cams, obs, e, info["cost"], a.huber,
+                thermal=True, held=calib_in)
     return res
 
 

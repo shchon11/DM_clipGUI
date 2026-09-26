@@ -22,6 +22,18 @@ resources:
   lo_threads: 3              # threads inside one LiDAR-odometry refinement (deterministic for any value)
   tie_threads: 3             # windows associated in parallel with the LiDAR map (deterministic)
 
+viz:
+  enabled: true             # observation-only, best-effort live stream; --no-viz disables it
+  dir: null                 # default: <workdir>/viz; --viz-dir overrides it
+  state_hz: 4.0
+  map_hz: 1.0
+  image_hz: 1.0
+  max_points: 30000
+  image_points: 5000
+  image_width: 960
+  retain_seconds: 120
+  max_log_bytes: 16777216
+
 topics:
   lidar_points: /ouster/points
   lidar_metadata: /ouster/metadata
@@ -147,6 +159,25 @@ rgb:
     gate_b: 0.004
     max_px_med: 2.0
     max_px_p90: 4.0
+    # appearance check of a link: sift (descriptor distance, the 2026-09-26 evaluation) or rectified crop pairs
+    # (rgb/lmatch.py: virtual pinhole views at a common metric scale, a learned matcher as a gross centre-transfer
+    # check, then sub-pixel NCC of the centre): xfeat_lighterglue (evaluated, Apache-2.0) | aliked_lightglue |
+    # disk_lightglue | xfeat_mnn | superpoint_lightglue (weights non-commercial) | ncc (no learned model; equal
+    # to the learned ones in the bake-off, not run through the full evaluation). Learned models need the
+    # optional `lightglue` package (github.com/cvg/LightGlue) / XFeat (NONTARGET_XFEAT_DIR); GPU when
+    # available, CPU fallback. 2026-09-24 bag with xfeat_lighterglue (tests/crosstime_eval_learned_20260926.txt):
+    # front rotation 1-sigma 0.035 -> 0.017 deg, along-axis 7.6 -> 4.6 mm, rear position 31.5 -> 16.2 mm, track
+    # residual 0.84 -> 0.90 px (SIFT: 1.07), side not improved, rear links still few -> stays off by default.
+    matcher: sift
+    learned:                     # candidate gates: the ones above (gate_a_m ... max_px_p90)
+      crop_px: 160               # rectified crop size, metric width >= crop_m (never finer than native)
+      crop_m: 1.5
+      max_kpts: 256
+      min_local: 6               # matches supporting the centre transfer
+      gross_px: 3.0              # learned centre transfer vs the other track's point (native px)
+      ncc_min: 0.8               # NCC of the centre template on the rectified crops
+      tol_px: 1.0                # accepted centre offset (native px)
+      device: null               # null: cuda if available
   perbag:
     sigma_axis_mm_40s: 25.0      # empirical 1-window scatter along the axis (lidar_odo 3.3: 17-33 mm)
     sigma_rot_deg_40s: 0.15      # 0.06-0.18 deg per window

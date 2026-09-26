@@ -67,6 +67,35 @@ nontarget_cal report 결과폴더                      # 보고서 다시 출력
   `sync_broken`, `exposure_absurd`, `ambiguous_camera_names`, `unknown_camera_names`, `missing_topic`,
   `bag_disagrees`, `no_good_windows`, `bad_init`.
 
+### 실제 계산의 3D 라이브 스트림
+
+`run`은 기본으로 `<workdir>/viz`에 `calib-viz/1` 스트림을 발행한다. `--viz-dir DIR`로 위치를 바꾸고,
+`--no-viz` 또는 설정 `viz.enabled: false`로 끈다. GUI 없이도 실행할 수 있다. 수치 계산은 발행 결과를
+읽지 않으며, 발행 오류는 한 번 기록하고 계산을 계속한다. 새 의존성은 없다.
+
+- `manifest.json`은 실제 카메라 모델과 실행 ID, `events.jsonl`은 최신 상태를 복원할 수 있는 완전 스냅샷이다.
+  워커 간 파일 잠금으로 JSONL과 상태를 직렬화하고, 작은 NPZ/JPG는 임시 파일에서 원자적으로 교체한다.
+- KISS-ICP sweep, LO refinement 반복, 지도 생성 중 이미 계산된 점·궤적을 샘플링한다.
+  지도는 `lidar_window:<bag>/<window>` 좌표이며 독립 창을 이어 붙이지 않는다.
+- RGB/열화상 LM의 초기값과 **채택된 반복 해**에서 포즈·K/D·재투영 RMS·비용을 발행한다.
+  카메라 비용은 Huber 영상 잔차만, `objective_cost`는 ties/prior를 포함한 solver 목적함수다.
+  열화상은 창별 시간 오프셋과 행 판독 시간을 포함한다. 검증용 절반/held-out 풀이가 최종 리그를 덮지 않는다.
+- 영상은 실제 노출 시각으로 이동 보정한 LiDAR 점과 KLT 관측을 사용한다. 선택한 카메라를
+  `control.json`의 `camera`로 전달하며, 선택이 없으면 순환한다. solver 콜백은 이미지 인코딩을 기다리지 않는다.
+- 전역 발행 상한은 상태 4 Hz, 지도 1 Hz, 영상 1 Hz다. 작은 메일박스에서 밀린 상태를 합치고,
+  자산은 기본 120초 보존, 이벤트는 16 MiB에서 최신 완전 상태로 회전한다.
+  재시작은 새 `run_id`를 사용하고, 이전 실행 워커의 쓰기는 거부한다.
+
+GUI의 `docs/calib_viz_stream.md`가 상세 좌표·전송 규약이다. 합성 리플레이는 GUI 데모 전용이며
+이 도구는 합성 중간 해나 불확실도를 발행하지 않는다. 다음 검사는 실제 수치 배열의 on/off 동일성도 확인한다.
+
+```bash
+.venv/bin/python -m pytest -q tests
+# 실제 S01 입력: 원본 스크립트와의 비교 / viz on-off 비교 (출력은 별도 scratch)
+.venv/bin/python tests/test_equivalence.py --scratch /path/to/scratch/original
+.venv/bin/python tests/viz_equivalence.py --help
+```
+
 ## 3. 파이프라인 (단계별로 캐시됨)
 
 | 단계 | 하는 일 |
@@ -188,3 +217,24 @@ nontarget_cal report 결과폴더                      # 보고서 다시 출력
 
 후방 카메라는 다른 카메라와 연결되는 점이 매우 적어(수백 개) 목표였던 측면·후방 개선이 일관되지 않고, 느슨한 연결은
 잘못 합쳐진 점 때문에 잔차가 커진다. 그래서 기본은 끔. 비용: 연결 계산 0.5–3시간(디스크 위주) + BA 약 15 %.
+
+**학습 기반 매처로 검증 (`rgb.crosstime.matcher`, 2026-09-26, `tests/crosstime_eval_learned_20260926.txt`)**:
+SIFT 기술자 거리 대신, 두 트랙의 KLT 점을 가상 핀홀 카메라로 재샘플링한 160×160 크롭(어안 왜곡 제거, 세계 수직 정렬,
+같은 실측 스케일) 쌍에 학습 매처(XFeat+LighterGlue 등)로 대략 확인(중심 전달 ≤ 3 px) 후, 중심 템플릿의 서브픽셀 NCC가
+1 px 이내일 때만 연결한다(`nontarget_cal/rgb/lmatch.py`). 매처 비교(S03·W05 후보 1866쌍): SuperPoint/ALIKED/DISK+LightGlue,
+XFeat(+LighterGlue/MNN) 모두 같은 판정(검증률·2 px 이동 오수락 3.8–3.9 %)이었고 정밀도는 정렬된 크롭의 NCC에서 나온다
+(모델 없는 `ncc`도 같음). 라이선스: SuperPoint 가중치는 비상업용, ALIKED BSD-3, DISK·XFeat·LightGlue Apache-2.0.
+전체 평가는 xfeat_lighterglue(Apache-2.0, GPU 167 MB):
+
+| 그룹 | 없음 | SIFT 느슨 | SIFT 엄격 | 학습 느슨 | 학습 엄격 |
+|---|---|---|---|---|---|
+| 전방+top 회전 / 광축 | 0.035° / 7.6 mm | 0.015° / 2.9 mm | 0.018° / 5.8 mm | 0.017° / 4.6 mm | 0.021° / 5.7 mm |
+| 측면 위치 / 광축 | 8.3 / 3.7 mm | 9.8 / 6.0 mm | 9.7 / 5.3 mm | 10.2 / 6.5 mm | 11.7 / 6.8 mm |
+| 후방 위치 / 광축 | 31.5 / 15.6 mm | 17.9 / 10.3 mm | 26.4 / 15.3 mm | 16.2 / 10.9 mm | 28.7 / 14.9 mm |
+| 트랙 재투영 | 0.84 px | 1.07 px | 0.86 px | 0.90 px | 0.87 px |
+| 후방 연결 트랙 (L/R) | – | 451/301 | 32/14 | 52/23 | 4/2 |
+
+잘못 합친 점은 대부분 걸러져 잔차가 1.07 → 0.90 px로 줄고 전방 회전·후방 이득은 유지되지만, 0.84–0.86 px 목표에는 못 미치고
+측면은 개선되지 않으며 후방 연결은 여전히 적다(전방↔후방은 물체의 반대 면을 봄). 검증된 연결도 기하 잔차가 약 1 px 남아
+남은 불일치는 모델(카메라별 시간 오프셋 등) 쪽으로 보인다. 그래서 기본은 계속 끔. 켤 때는 `matcher: xfeat_lighterglue`
+(선택 패키지 `lightglue`, XFeat 저장소 경로 `NONTARGET_XFEAT_DIR`; GPU 있으면 사용, 없으면 CPU). 연결 계산 약 0.8시간(추정) + keys 풀이.

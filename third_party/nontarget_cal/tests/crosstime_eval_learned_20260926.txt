@@ -1,0 +1,101 @@
+Cross-camera / cross-time links with a learned matcher (rgb.crosstime.matcher), 2026-09-26
+============================================================================================
+Bag rec_20260924_204902 (night), same 25 windows and protocol as tests/crosstime_eval_20260926.txt:
+links from the "keys" solve (rgb/final_keys), final solve from zeroshot_pass2, halves A=windows[0::2] /
+B=windows[1::2] from rgb/final, 1-sigma = |A-B|/sqrt(2); held-out = each half's calibration on the other
+half (motion-only). Scripts: tests/crosstime_links.py, tests/crosstime_run_eval.sh, tests/crosstime_compare.py.
+
+Method (rgb/lmatch.py, rgb/crosstime.py verify_pairs): per candidate link one observation of each track (the
+0.5 s grid frames with the most similar viewing rays); both KLT points resampled into 160x160 virtual pinhole
+crops (fisheye removed, world-vertical up, common metric scale >= 1.5 m, never finer than native); learned
+matcher -> RANSAC homography -> local affine centre transfer (gross check <= 3 px, >= 6 local matches);
+then sub-pixel NCC of the 21x21 centre template of A in B (NCC >= 0.8, offset <= 1.0 native px).
+
+1. Matcher bake-off (candidate links of S03+W05, wide gate 0.1 m + 1 % depth, 4/8 px; stratified, all rear
+   pairs; 1866 pairs; epi = share of matches within 2 px of the epipolar plane from the LO trajectory +
+   calibration; verified = final rule; false-accept = same rule with crop B's centre moved 2 / 4 px;
+   ms/pair = extract (2 crops) + match on the RTX 4060 Ti without other load (W05); GPU = peak allocated)
+matcher               | matches | RANSAC inl | epi<=2px | verified all/tight/FS/rear | err tight px | false acc 2/4 px | ms/pair | GPU MB | license
+ncc (no model)        |    -    |     -      |    -     | 0.16 / 0.62 / 0.11 / 0.01  |     -        | 0.041 / 0.011    |  ~0     |   0    | -
+sift_crops (CPU)      |   23    |    15      |  0.78    | 0.11 / 0.48 / 0.08 / 0.01  |   0.91       | 0.027 / 0.009    |  6.5    |   0    | patent expired, OpenCV Apache-2.0
+superpoint_lightglue  |   92    |    47      |  0.67    | 0.15 / 0.60 / 0.11 / 0.01  |   0.82       | 0.038 / 0.010    |  5.2    |  853   | SuperPoint weights Magic Leap NON-COMMERCIAL; LightGlue Apache-2.0
+aliked_lightglue      |  104    |    68      |  0.78    | 0.15 / 0.59 / 0.11 / 0.01  |   0.97       | 0.038 / 0.011    |  6.1    |  928   | ALIKED BSD-3; LightGlue Apache-2.0
+disk_lightglue        |  122    |    68      |  0.72    | 0.15 / 0.60 / 0.12 / 0.01  |   0.95       | 0.038 / 0.010    | 16.0    |  351   | DISK Apache-2.0; LightGlue Apache-2.0
+xfeat_lighterglue     |  110    |    50      |  0.66    | 0.15 / 0.62 / 0.12 / 0.01  |   0.74       | 0.039 / 0.010    |  8.1*   |  167   | XFeat + LighterGlue Apache-2.0
+xfeat_mnn             |  147    |    52      |  0.59    | 0.15 / 0.60 / 0.11 / 0.01  |   0.80       | 0.039 / 0.010    |  1.0    |  163   | XFeat Apache-2.0
+(* LighterGlue run pair by pair; ALIKED/SuperPoint/DISK LightGlue batched 16.)
+- With the same decision rule all learned matchers verify the same links (0.15 of the wide candidates, 0.60
+  of the geometrically tight ones) with the same false-accept rate; the sub-pixel precision comes from the
+  rectification + NCC. NCC alone (no model) is statistically the same on these pairs. The learned gross check
+  did not add measurable selectivity here.
+- Controls: the same KLT track 1 s apart (true by construction): centre offset median 0.8 px front, 1.5 px
+  side, 1.3 px rear (KLT drift + 10 m of view change) = the measurement floor.
+- Rear: front<->rear candidates see the object from 85-115 deg apart (opposite faces): 0-2 % verify with any
+  matcher; rear<->side / rear<->rear candidates are mostly 4-7 px apart in appearance (not the same point).
+- Chosen for the full evaluation: xfeat_lighterglue (Apache-2.0 end to end, 167 MB GPU - the dev GPU was
+  shared with another 5-6 GB job, ALIKED fell back to the CPU; lowest centre error on tight pairs).
+  aliked_lightglue (best epipolar inlier ratio, BSD-3 + Apache-2.0) is the equivalent choice on the vehicle PC.
+
+2. Link counts (tracks in multi-camera groups; wide = candidate gate 0.1 m + 1 %, 4/8 px)
+variant        | groups | linked tracks | front+top | side (L/R)          | rear (L/R)
+SIFT loose     | 45636  | 151552        | 140872    |  9928 (4849/5079)   | 752 (451/301)
+SIFT strict    | 10254  |  27875        |  26829    |  1000 (430/570)     |  46 (32/14)
+learned loose  | 25719  |  77252        |  74074    |  3103 (1372/1731)   |  75 (52/23)
+learned strict | 12112  |  36455        |  35322    |  1127 (468/659)     |   6 (4/2)
+learned wide   | 33533  | 101729        |  96832    |  4642 (2113/2529)   | 255 (126/129)
+Verified share of candidates by time gap: <0.5 s 25 %, 0.5-2 s 13 %, 2-5 s 6 %, >5 s 1 % (cross-time links
+mostly fail appearance). Geometric residual (keys calibration) of verified links: median 1.0 px, of rejected
+ones 2.0-2.8 px; among the geometrically strict (<=1 px) candidates only 59 % verify.
+
+3. Repeatability (medians over cameras; learned = xfeat_lighterglue)
+group                  | none         | SIFT loose   | SIFT strict  | learned loose | learned strict | learned wide
+front+top rot / axis   | 0.035 / 7.6  | 0.015 / 2.9  | 0.018 / 5.8  | 0.017 / 4.6   | 0.021 / 5.7    | 0.019 / 4.6
+front+top pos / f      | 13.8 / 0.72  | 11.5 / 0.38  | 11.8 / 0.60  | 11.5 / 0.45   | 12.0 / 0.56    | 11.0 / 0.45
+side pos / axis        |  8.3 / 3.7   |  9.8 / 6.0   |  9.7 / 5.3   | 10.2 / 6.5    | 11.7 / 6.8     | 10.0 / 6.8
+rear pos / axis        | 31.5 / 15.6  | 17.9 / 10.3  | 26.4 / 15.3  | 16.2 / 10.9   | 28.7 / 14.9    | 23.2 / 16.9
+rear rot / f           | 0.251 / 0.98 | 0.224 / 1.10 | 0.252 / 1.04 | 0.255 / 1.24  | 0.248 / 1.03   | 0.260 / 1.77
+track reproj (final)   | 0.843        | 1.073        | 0.860        | 0.900         | 0.871          | 0.917
+held-out               | unchanged in all variants (<= 0.002 px)
+final vs validated     | -            | max 1.9 sig  | max 0.8 sig  | max 2.1 sig   | max 1.6 sig    | max 2.2 sig
+(final shift vs rgb/final in units of the no-link empirical 1-sigma, floors 5 mm / 0.02 deg; none > 3 sigma)
+BA wall (final solve)  | 1416 s       | 1705 s       | 1582 s       | 1294 s        | 1337 s         | 1362 s
+
+Per camera (rot1s deg | pos1s mm | axis1s mm | f1s px | heldout px | track px), columns none / SIFT loose /
+SIFT strict / learned loose / learned strict / learned wide:
+camera_front1      | 0.088/0.014/0.046/0.021/0.039/0.023 | 15.8/11.5/12.0/11.5/12.9/10.6 | 11.5/4.6/6.1/6.5/7.6/5.9 | 0.84/0.40/0.61/0.50/0.60/0.49 | 0.806/0.806/0.806/0.806/0.806/0.806 | 0.80/1.05/0.82/0.87/0.84/0.89
+camera_front2      | 0.065/0.017/0.020/0.007/0.007/0.009 | 14.1/11.6/12.3/12.1/12.4/11.8 | 6.0/2.6/5.8/4.9/5.7/4.8 | 0.75/0.45/0.65/0.53/0.64/0.52 | 0.847/0.846/0.846/0.846/0.846/0.846 | 0.84/1.12/0.86/0.91/0.88/0.93
+camera_front3      | 0.034/0.017/0.037/0.035/0.034/0.027 | 12.6/11.1/11.6/11.7/12.6/11.4 | 2.8/0.9/3.4/3.0/4.2/2.8 | 0.71/0.22/0.63/0.43/0.62/0.44 | 0.833/0.833/0.833/0.833/0.833/0.833 | 0.83/1.09/0.85/0.90/0.86/0.92
+camera_front4      | 0.023/0.016/0.012/0.018/0.026/0.016 | 10.8/11.5/11.8/11.8/12.1/11.3 | 1.8/0.3/2.4/1.4/2.4/1.6 | 0.18/0.15/0.23/0.26/0.28/0.24 | 0.830/0.829/0.829/0.829/0.829/0.829 | 0.83/1.07/0.85/0.89/0.86/0.91
+camera_front5      | 0.030/0.029/0.008/0.012/0.009/0.010 | 17.4/10.9/11.8/11.3/12.0/10.9 | 8.4/2.8/5.8/4.4/5.6/4.2 | 0.84/0.37/0.60/0.46/0.58/0.45 | 0.828/0.827/0.827/0.827/0.827/0.827 | 0.82/1.09/0.85/0.89/0.86/0.90
+camera_front6      | 0.054/0.017/0.040/0.034/0.037/0.037 | 14.2/11.6/11.9/11.4/11.9/11.2 | 8.2/7.0/8.4/7.3/8.1/7.3 | 0.70/0.36/0.61/0.42/0.52/0.43 | 0.821/0.820/0.820/0.821/0.821/0.821 | 0.82/1.06/0.84/0.88/0.85/0.89
+camera_front7      | 0.037/0.009/0.012/0.013/0.013/0.022 | 12.6/11.3/11.8/11.5/11.9/10.9 | 9.6/2.6/6.0/4.1/5.5/3.9 | 0.72/0.44/0.54/0.44/0.48/0.42 | 0.825/0.825/0.825/0.825/0.825/0.825 | 0.82/1.08/0.84/0.89/0.85/0.90
+camera_front8      | 0.024/0.012/0.007/0.007/0.008/0.007 | 13.4/11.4/11.7/11.4/11.9/10.8 | 7.1/3.0/5.8/4.9/5.8/5.0 | 0.67/0.31/0.58/0.46/0.54/0.45 | 0.839/0.839/0.839/0.839/0.839/0.839 | 0.84/1.11/0.86/0.90/0.87/0.92
+camera_front9      | 0.028/0.012/0.017/0.016/0.019/0.012 | 9.2/11.8/11.8/10.9/11.4/10.7 | 5.0/3.2/5.4/4.1/5.2/4.5 | 0.56/0.45/0.53/0.41/0.53/0.40 | 0.868/0.868/0.868/0.868/0.868/0.868 | 0.87/1.14/0.88/0.94/0.90/0.95
+camera_top         | 0.061/0.008/0.019/0.021/0.022/0.036 | 19.5/11.5/13.8/12.6/14.2/12.2 | 10.3/4.6/6.7/6.1/7.5/6.4 | 0.90/0.41/0.64/0.50/0.61/0.51 | 0.812/0.812/0.812/0.812/0.812/0.812 | 0.81/1.08/0.83/0.88/0.84/0.90
+camera_side_left   | 0.032/0.015/0.027/0.019/0.023/0.014 | 8.7/8.1/6.8/8.5/9.9/8.5 | 1.5/5.1/0.6/4.6/2.9/5.4 | 0.72/0.16/0.22/0.22/0.39/0.14 | 0.827/0.827/0.827/0.827/0.827/0.827 | 0.82/0.95/0.82/0.85/0.83/0.86
+camera_side_right  | 0.051/0.060/0.059/0.058/0.058/0.061 | 7.8/11.4/12.7/12.0/13.4/11.5 | 5.9/6.9/10.0/8.5/10.8/8.2 | 0.10/0.17/0.39/0.33/0.51/0.66 | 0.789/0.789/0.789/0.789/0.789/0.789 | 0.78/0.89/0.78/0.80/0.79/0.81
+camera_rear_left   | 0.096/0.044/0.096/0.094/0.096/0.092 | 39.0/20.1/33.1/17.3/35.4/23.1 | 25.6/7.0/22.5/11.3/23.3/11.6 | 1.08/1.65/1.16/1.69/1.19/1.84 | 1.092/1.090/1.091/1.091/1.091/1.091 | 1.07/1.18/1.07/1.09/1.08/1.10
+camera_rear_right  | 0.407/0.405/0.409/0.416/0.401/0.427 | 24.0/15.7/19.8/15.2/21.9/23.3 | 5.6/13.7/8.1/10.5/6.4/22.3 | 0.88/0.55/0.92/0.78/0.87/1.69 | 1.140/1.140/1.139/1.140/1.139/1.142 | 1.11/1.22/1.11/1.13/1.12/1.15
+xl_strict_ max shift/sigma 1.60 (camera_front3: 7.5 mm 0.054 deg) | >3 sigma: [] | median shift 2.9 mm
+
+4. Runtime (dev box, RTX 4060 Ti shared with another job, HDD work folder)
+Linking with xfeat_lighterglue over the wide candidates (559,707 pairs, 25 windows): ~5 min per window per
+worker (JPEG decode + CLAHE ~45 %, LighterGlue pair by pair ~40 %, XFeat extraction ~4 %), 94 min wall with
+two workers (~2.1 h single). The evaluated "loose" variant only needs the 211,738 geometry-ok pairs of the
+default gates: ~0.8 h estimated single worker. BA: no extra cost (final 1294 s vs 1416 s without links).
+Pipeline total with links on: + keys solve (~25 min) + linking (~0.8 h) (SIFT linking: 0.5-3 h).
+
+5. Verdict
+- Learned (rectified crop + NCC) verification removes most of the wrong merges: at the SIFT "loose" gates it
+  halves the links (151,552 -> 77,252) and brings the track residual from 1.07 to 0.90 px, keeps the front
+  rotation gain (0.017 vs 0.015 deg) and the rear position/axis gain (16.2 / 10.9 vs 17.9 / 10.3 mm), keeps
+  about half of the front along-axis gain (4.6 vs 2.9 mm; none 7.6). Held-out unchanged, no >3-sigma shift.
+- It does NOT reach the targets: track residual 0.90 px (target 0.84-0.86), side is not improved (worse than
+  no links, as with SIFT), and rear links stay few (75; 255 with wide gates, which makes rear worse). Rear
+  candidates are either opposite faces (front<->rear, 85-115 deg) or not the same point.
+- Verified links still carry ~1 px of geometric residual (median, at the keys calibration) and raise the
+  residual of unlinked observations too: the remaining inconsistency is in the model (per-camera time
+  offset / rolling shutter / trajectory), not in the association. Next step if links are wanted: per-camera
+  time offsets in the rig BA.
+- Default stays off (rgb.crosstime.enabled: false, matcher: sift for the validated SIFT study). If links
+  are enabled, use matcher: xfeat_lighterglue (or aliked_lightglue / ncc) with the default gates.

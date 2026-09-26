@@ -33,6 +33,8 @@ def main(task_file: str) -> int:
     from .workspace import Workspace, write_json
     cfg = Config(json.loads(Path(spec["config"]).read_text()))
     ws = Workspace(Path(spec["workdir"]))
+    from .viz import configure
+    viz = configure(ws.root, cfg, context=spec.get("viz_context"), log=log)
     t0 = time.time()
     try:
         from . import tasks
@@ -54,6 +56,8 @@ def main(task_file: str) -> int:
         log(traceback.format_exc())
         write_json(Path(spec["result"]), {"ok": False, "wall_s": time.time() - t0, "error": repr(ex)})
         return 1
+    finally:
+        viz.close()
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from ..workspace import atomic_savez
+from .maps import _VIZ_MAX_POINTS, _emit_map, _sample_trajectory
 
 SWEEP_S = 0.1
 
@@ -40,11 +41,26 @@ def run_kiss(seg: Path, out: Path, voxel: float = 0.5, rmin: float = 2.5, rmax: 
         raise RuntimeError(f"{seg.name}: only {len(files)} LiDAR sweeps")
     hdr = np.array([int(f.stem) for f in files], np.int64)
     poses = []
+    viz_points = np.empty((0, 3), np.float32)
     t0 = time.time()
     for f in files:
         p, t = load(f, rmin, rmax)
-        odo.register_frame(p, t / SWEEP_S)
+        _, source = odo.register_frame(p, t / SWEEP_S)
         poses.append(odo.last_pose.copy())
+
+        def capture():
+            nonlocal viz_points
+            # These are actual deskewed registration points, already produced by
+            # KISS. Thin by index without touching KISS state or a random stream.
+            q = source[::max(1, (len(source) + 511) // 512)]
+            T = poses[-1]
+            q = (q @ T[:3, :3].T + T[:3, 3]).astype(np.float32)
+            viz_points = np.concatenate((viz_points, q))
+            if len(viz_points) > _VIZ_MAX_POINTS:
+                viz_points = viz_points[::2].copy()
+            return {"points": viz_points, "trajectory": _sample_trajectory(poses)}
+
+        _emit_map(seg, capture, lo_phase="kiss", sweep=len(poses), total_sweeps=len(files))
     wall = time.time() - t0
     tau = hdr + int(SWEEP_S * 1e9)
     atomic_savez(out, tau=tau, header=hdr, T_w_L=np.array(poses), wall_s=wall, voxel=voxel)

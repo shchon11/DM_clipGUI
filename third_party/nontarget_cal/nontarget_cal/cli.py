@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import tempfile
 import traceback
@@ -40,6 +39,8 @@ def main(argv=None):
     r = sub.add_parser("run", help="full pipeline")
     _common(r)
     r.add_argument("--out", required=True)
+    r.add_argument("--viz-dir", default=None, help="live visualization stream (default: <workdir>/viz)")
+    r.add_argument("--no-viz", action="store_true", help="disable best-effort live visualization")
     r.add_argument("--mode", choices=["warm", "zeroshot"], default=None,
                    help="warm: start from --init; zeroshot: board-free start (default: warm if --init else zeroshot)")
     c = sub.add_parser("check", help="preflight only (fast)")
@@ -64,6 +65,10 @@ def main(argv=None):
         return 0
 
     cfg = load_config(a.config)
+    if getattr(a, "viz_dir", None):
+        cfg.setdefault("viz", {})["dir"] = str(Path(a.viz_dir).resolve())
+    if getattr(a, "no_viz", False):
+        cfg.setdefault("viz", {})["enabled"] = False
     if a.mode is None:
         a.mode = "warm" if a.init else "zeroshot"
     if a.mode == "warm" and not a.init:
@@ -76,6 +81,7 @@ def main(argv=None):
             a.workdir = tempfile.mkdtemp(prefix="nontarget_cal_check_")
     ev = Events(Path(a.workdir))
     from .pipeline import Pipeline
+    pl = None
     try:
         pl = Pipeline(a, cfg)
         pl.ev = ev
@@ -95,6 +101,9 @@ def main(argv=None):
         ev.log(traceback.format_exc())
         ev.emit("error", msg=repr(ex), msg_ko="처리 중 오류: 로그를 확인하세요", log=str(Path(a.workdir) / "log.txt"))
         return 1
+    finally:
+        if pl is not None:
+            pl.close_viz()
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ README V5: they move cameras by <= 15 mm and do not improve repeatability).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -182,6 +183,113 @@ def pick_device(device: str | None) -> str:
     return "cpu"
 
 
+_VIZ_OBSERVER_WARNED = False
+
+
+def _viz_observer(ws, segs, solve_name, solver_pass, total_iterations, huber, *,
+                  thermal=False, held=False, dt_s=0.0, terminal=False):
+    """Observe cached accepted residuals without re-evaluating or mutating the solver.
+
+    Each camera's cost is its Huber pixel loss, excluding depth penalties, ties and priors.
+    The complete LM objective is emitted separately as objective_cost. No uncertainty is inferred.
+    Held-out/validation calibration poses must never replace the production calibration in the UI.
+    """
+    global _VIZ_OBSERVER_WARNED
+    try:
+        if held or solve_name.startswith(("half", "heldout")):
+            return None
+        from ..viz import get_viz
+        viz = get_viz()
+        if not viz.enabled:
+            return None
+        windows = list(segs)
+        camera_indices = None
+        preview_index = 0
+
+        def observe(cams, obs, residual_norms, objective_cost, iteration, accepted):
+            nonlocal camera_indices, preview_index
+            if not terminal and not viz.due("state"):
+                return
+            if camera_indices is None:
+                ids = obs.cam.detach().cpu().numpy()
+                camera_indices = [np.flatnonzero(ids == i) for i in range(cams.C)]
+            errors = residual_norms.detach().cpu().numpy()
+            transforms, intrinsics = cams.T_L_C(), cams.intr_array()
+            states = {}
+            for i, name in enumerate(cams.names):
+                intr = intrinsics[i]
+                ec = errors[camera_indices[i]]
+                rho = np.where(ec <= huber, 0.5 * ec * ec, huber * (ec - 0.5 * huber))
+                state = {
+                    "T_cam_lidar": np.linalg.inv(transforms[i]).tolist(),
+                    "K": [[float(intr[0]), 0.0, float(intr[2])],
+                          [0.0, float(intr[1]), float(intr[3])], [0.0, 0.0, 1.0]],
+                    "D": ([float(intr[4]), float(intr[5]), 0.0, 0.0, 0.0]
+                          if thermal else intr[4:8].tolist()),
+                    "model": "plumb_bob" if thermal else "equidistant",
+                    "reprojection_px": float(np.sqrt(np.mean(ec * ec))) if len(ec) else None,
+                    "reprojection_median_px": float(np.median(ec)) if len(ec) else None,
+                    "cost": float(rho.sum()), "cost_source": "huber_reprojection_only",
+                    "n_obs": len(ec),
+                    "metric_source": ("solver.result_residuals" if terminal else
+                                      "solver.accepted_residuals" if accepted else "solver.initial_residuals"),
+                    "state": "converged" if terminal else "converging", "sigma_rot_deg": None, "sigma_pos_mm": None,
+                    "dt_s": dt_s, "time_offset_s": dt_s,
+                    "solve_name": solve_name, "solver_pass": solver_pass, "windows": windows,
+                    "iteration": iteration, "total_iterations": total_iterations,
+                    "purpose": "calibration", "accepted": accepted,
+                }
+                if thermal:
+                    dts = cams.dt[i].detach().cpu().numpy()
+                    state.update(time_offset_s=float(dts.mean()), dt_s=float(dts[0]),
+                                 time_offsets_s=dts.tolist(), rs_s=float(cams.rs[i]),
+                                 row_readout_s=float(cams.rs[i]),
+                                 time_offset_by_window_s={window: float(dts[j if len(dts) > 1 else 0])
+                                                         for j, window in enumerate(windows)})
+                states[name] = state
+            # Terminal state must survive the local sampler. The asynchronous writer
+            # still applies its global output cap and coalesces the latest camera states.
+            snapshot = {"stage": "thermal" if thermal else "rgb_ba", "cameras": states,
+                        "solve_name": solve_name, "solver_pass": solver_pass, "windows": windows, "window": len(windows),
+                        "iteration": iteration, "total_iterations": total_iterations,
+                        "accepted": accepted, "objective_cost": float(objective_cost),
+                        "purpose": "calibration",
+                        "status_text": f"실제 계산 · {solve_name} / {solver_pass}"}
+            if terminal:
+                snapshot["pass"] = "result"
+            viz.publish(snapshot, force=terminal)
+            if windows:
+                preview_window = windows[preview_index]
+                scheduled = False
+                for name, state in states.items():
+                    if viz.preview(ws, preview_window, name, state):
+                        scheduled = True
+                # The producer applies camera selection and <=1 Hz scheduling.
+                # Advance only when a preview request actually entered its mailbox.
+                if scheduled:
+                    preview_index = (preview_index + 1) % len(windows)
+
+        return observe
+    except Exception:
+        if not _VIZ_OBSERVER_WARNED:
+            logging.getLogger(__name__).warning("Visualization observer unavailable", exc_info=True)
+            _VIZ_OBSERVER_WARNED = True
+        return None
+
+
+def _viz_result(ws, segs, solve_name, cams, obs, residual_norms, objective_cost, huber, **options):
+    """Publish the already-computed final residuals without sampler loss or solver I/O waits."""
+    global _VIZ_OBSERVER_WARNED
+    try:
+        observer = _viz_observer(ws, segs, solve_name, "result", None, huber, terminal=True, **options)
+        if observer is not None:
+            observer(cams, obs, residual_norms, objective_cost, None, None)
+    except Exception:
+        if not _VIZ_OBSERVER_WARNED:
+            logging.getLogger(__name__).warning("Final visualization observation skipped", exc_info=True)
+            _VIZ_OBSERVER_WARNED = True
+
+
 def run_ba(ws, segs, cams, out: Path, start: Cameras | None = None, calib_in: dict | None = None,
            design: dict | None = None, log=print, threads: int | None = None, device: str | None = None,
            **opts) -> dict:
@@ -257,7 +365,9 @@ def run_ba(ws, segs, cams, out: Path, start: Cameras | None = None, calib_in: di
     freeA = free.clone()
     freeA[:, 3:] = False
     print("stage A (rotations only)" if freeA.any() else "landmarks only (calibration held)", flush=True)
-    cams_, X, _ = solve(cams_, obs, X, freeA, prior, iters=8, huber=a.huber, want_cov=False, verbose=True)
+    cams_, X, _ = solve(cams_, obs, X, freeA, prior, iters=8, huber=a.huber, want_cov=False, verbose=True,
+                       on_iteration=_viz_observer(ws, segs, out.name, "A", 8, a.huber,
+                                                  held=calib_in is not None, dt_s=a.dt_ns * 1e-9))
     ties = None
     info = {"cov_free": None, "fidx": torch.zeros(0, dtype=torch.long)}
     for rnd in range(3):
@@ -268,10 +378,14 @@ def run_ba(ws, segs, cams, out: Path, start: Cameras | None = None, calib_in: di
             print(f"  ties: {len(ties)} landmarks on planes ({100 * len(ties) / M:.1f}%)", flush=True)
         if free.any():
             cams_, X, info = solve(cams_, obs, X, free, prior, ties=ties, iters=a.iters, huber=a.huber,
-                                   want_cov=(rnd == 2))
+                                   want_cov=(rnd == 2),
+                                   on_iteration=_viz_observer(ws, segs, out.name, f"B{rnd + 1}", a.iters, a.huber,
+                                                              held=calib_in is not None, dt_s=a.dt_ns * 1e-9))
         else:
             cams_, X, info = solve(cams_, obs, X, free, prior, ties=ties, iters=a.iters, huber=a.huber,
-                                   want_cov=False)
+                                   want_cov=False,
+                                   on_iteration=_viz_observer(ws, segs, out.name, f"B{rnd + 1}", a.iters, a.huber,
+                                                              held=calib_in is not None, dt_s=a.dt_ns * 1e-9))
         r, Xc = project_all(cams_, obs, X)
         e = r.norm(dim=1)
         thr = max(3.0, 3 * 1.4826 * float(e.median()))
@@ -358,6 +472,8 @@ def run_ba(ws, segs, cams, out: Path, start: Cameras | None = None, calib_in: di
               f"axis+-{1e3*res['cameras'][c]['sd_along_axis_m']:.1f} mm (formal)  "
               f"f {intr[i,0]:.1f}  cx {intr[i,2]:.1f} cy {intr[i,3]:.1f} "
               f"k {intr[i,4]:+.4f} {intr[i,5]:+.4f} {intr[i,6]:+.4f}")
+    _viz_result(ws, segs, out.name, cams_, obs, e, info["cost"], a.huber,
+                held=calib_in is not None, dt_s=a.dt_ns * 1e-9)
     return res
 
 
