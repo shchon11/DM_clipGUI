@@ -1,0 +1,9 @@
+{
+  "side_projected_points": 1578,
+  "thermal_projected_points": 574,
+  "renderer": "llvmpipe (LLVM 15.0.7, 256 bits)",
+  "camera_count": 16,
+  "map_points": 56801,
+  "controls": "camera selector, sensor selection, initial comparison, pause/resume PASS",
+  "gl_valid": true
+}

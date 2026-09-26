@@ -1,0 +1,11 @@
+{
+  "score": 94,
+  "verdict": "pass",
+  "category_match": true,
+  "differences": [],
+  "suggestions": [],
+  "reasoning": "Requested dark Korean operator dashboard is legible; the rig, frame axes, real image projections, representative map, metrics and independent camera/global validation outcomes are visible. No external reference image was provided; evaluated against the requested design and prior rendered iterations.",
+  "next_actions": [],
+  "threshold": 90,
+  "passed": true
+}

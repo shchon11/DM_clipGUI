@@ -1224,3 +1224,27 @@ clip_recorder/
 ├── CMakeLists.txt / package.xml
 └── README.md
 ```
+
+## 온라인 캘리브레이션 3D 수렴 뷰어
+
+독립 뷰어에서 RGB 14대·열화상 2대의 추정 포즈, LiDAR 지도/궤적, 영상 위 깊이 투영과
+센서별 1σ·재투영 오차를 실시간으로 확인합니다. 기존 GUI·캘리브레이션 코드는 변경하지 않습니다.
+
+```bash
+python3 -m pip install --user -r scripts/calib_viz/requirements.txt
+python3 scripts/calib_viz_demo.py --replay /hdd/DM_calib/nt_regress/full/work --speed 60
+# 나중에 solver 발행 훅이 연결된 실제 실행:
+python3 scripts/calib_viz_demo.py --stream /path/to/work/viz
+```
+
+리플레이는 **실제 최종 결과·영상·점군 위에 합성 수렴 과정을 표시**합니다. 지도는 S01 대표 구간이며,
+전체 주행의 전역 지도는 아닙니다. 종합 검증과 카메라별 영상 투표 결과를 따로 표시합니다.
+드래그/휠로 3D 시점을 바꾸고, 카메라 목록·영상 선택 메뉴·초기 추정 비교를 사용할 수 있습니다.
+`--max-fps 30 --max-points 30000`으로 표시 부하를 낮출 수 있습니다.
+짧게 검토하려면 `--speed 600`으로 약47초에 전체 단계를 재생할 수 있습니다.
+
+[스트림 규약·QWidget 연결·검증 방법](docs/calib_viz_stream.md) ·
+[초기 상태](docs/img/calib_viz_01_006.png) ·
+[수렴 중](docs/img/calib_viz_02_055.png) ·
+[최종 상태](docs/img/calib_viz_03_100.png) ·
+[열화상](docs/img/calib_viz_thermal.png) · [검증 기록](docs/calib_viz_validation.md)

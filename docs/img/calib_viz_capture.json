@@ -1,0 +1,23 @@
+[
+  {
+    "progress": 0.06,
+    "fps": 38.28721471123405,
+    "points": 4755,
+    "projected_points": 1400,
+    "gl_valid": true
+  },
+  {
+    "progress": 0.55,
+    "fps": 39.99031697165977,
+    "points": 56801,
+    "projected_points": 1406,
+    "gl_valid": true
+  },
+  {
+    "progress": 1.0,
+    "fps": 39.99429080177916,
+    "points": 56801,
+    "projected_points": 1464,
+    "gl_valid": true
+  }
+]
