@@ -100,8 +100,13 @@ def validate_snapshot(event):
             raise ValueError("camera state must be an object")
         if "state" in camera and not isinstance(camera["state"], str):
             raise ValueError("camera state must be a string")
-        if camera.get("validation_vote") is not None and not isinstance(camera["validation_vote"], bool):
-            raise ValueError("camera validation vote must be boolean or null")
+        for key in ("validation_vote", "gate_pass", "validation_vote_gate"):
+            if camera.get(key) is not None and not isinstance(camera[key], bool):
+                raise ValueError("camera " + key + " must be boolean or null")
+        for key in ("informational_checks", "gate_reasons"):
+            if key in camera and (not isinstance(camera[key], list)
+                                  or any(not isinstance(note, str) for note in camera[key])):
+                raise ValueError("camera " + key + " must be a list of text")
         T = np.asarray(camera.get("T_cam_lidar"), dtype=float)
         if T.shape != (4, 4) or not np.isfinite(T).all():
             raise ValueError("invalid camera pose")

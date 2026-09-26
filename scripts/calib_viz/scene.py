@@ -13,11 +13,11 @@ VIOLET = (0.63, 0.60, 1.0, 1.0)
 
 
 def state_color(camera):
-    if camera.get('state') == 'failed' or camera.get('validation_vote') is False:
+    if camera.get('state') == 'failed' or camera.get('gate_pass') is False:
         return (1.0, 0.40, 0.43, 1.0)
-    uncertainty = float(camera.get('sigma_rot_deg') or 0)
-    blend = np.clip(uncertainty / 2.5, 0, 1)
-    return tuple(np.array(CYAN) * (1 - blend) + np.array(AMBER) * blend)
+    if camera.get('gate_pass') is not True:
+        return (0.52, 0.59, 0.68, 1.0)
+    return CYAN
 
 
 def line(view, points, color, width=1, mode='lines'):
@@ -103,7 +103,9 @@ class RigScene(gl.GLViewWidget):
         for name, pose in poses.items():
             origin, rotation = pose[:3, 3], pose[:3, :3]
             chosen = name == selected
-            color = VIOLET if chosen else state_color(cameras.get(name, {}))
+            camera = cameras.get(name, {})
+            failed = camera.get('gate_pass') is False or camera.get('state') == 'failed'
+            color = VIOLET if chosen and not failed else state_color(camera)
             length = .36 if chosen else .23
             corners = np.array([[-.63, -.43, 1], [.63, -.43, 1],
                                 [.63, .43, 1], [-.63, .43, 1]]) * length

@@ -641,36 +641,34 @@ class Progress:
 def load_result(out, defaults=None):
     """결과 폴더(summary.json) → 판정 · 카메라별 표. 없으면 None.
 
-    카메라별 합격 여부 = 도구의 게이트와 같은 기준 (pipeline._gate): RGB 회전 1σ ≤ rgb_rot_deg,
-    광축 방향 1σ ≤ rgb_axis_mm / thermal_axis_mm, 열화상 투표 게이트. 배치 규칙은 전체 판정에만.
+    도구가 기록한 카메라별 판정을 우선하고, 구형 결과만 pipeline._gate 기준으로 계산.
+    배치 규칙은 전체 판정에만, 야간 RGB 에지/투표는 참고용으로 별도 표시한다.
     """
     out = Path(out)
     f = out / "summary.json"
     if not f.is_file():
         return None
     s = json.loads(f.read_text(encoding="utf-8"))
-    g = (defaults or tool_defaults())["gate"]
+    from calib_viz.results import camera_gate
+
     v = s.get("validation") or {}
+    metrics = s.get("metrics") or {}
+    if not metrics and (out / "metrics.json").is_file():
+        metrics = json.loads((out / "metrics.json").read_text(encoding="utf-8"))
+    # A complete solver gate is authoritative. Only legacy summaries need the
+    # installed thresholds; caller-supplied thresholds remain an explicit review.
+    legacy_defaults = defaults
+    if not isinstance((v.get("gate") or {}).get("failures"), list) and defaults is None:
+        legacy_defaults = tool_defaults()
     cams = []
-    for c, m in (s.get("metrics") or {}).items():
-        sensor = m.get("sensor", "rgb")
-        reasons = []
-        rot, axis = m.get("rot_deg"), m.get("along_axis_mm")
-        if sensor == "rgb" and rot is not None and rot > g["rgb_rot_deg"]:
-            reasons.append(f"회전 1σ {rot:.2f}° > {g['rgb_rot_deg']}")
-        lim = g["rgb_axis_mm"] if sensor == "rgb" else g["thermal_axis_mm"]
-        if axis is not None and axis > lim:
-            reasons.append(f"광축 1σ {axis:.0f} mm > {lim:.0f}")
-        vt = m.get("vote") or {}
-        if sensor == "thermal" and vt.get("gate", True) and vt.get("pass") is False:
-            reasons.append("투표 게이트 실패")
-        if rot is None and axis is None:
-            reasons.append("반복성(절반 풀이) 없음")
-        cams.append({"camera": c, "sensor": sensor, "rot_deg": rot, "pos_mm": m.get("pos_mm"),
-                     "along_axis_mm": axis, "focal_px": m.get("focal_px"),
+    for c, m in metrics.items():
+        decision = camera_gate(s, metrics, c, defaults=legacy_defaults)
+        cams.append({"camera": c, "sensor": m.get("sensor", "rgb"),
+                     "rot_deg": m.get("rot_deg"), "pos_mm": m.get("pos_mm"),
+                     "along_axis_mm": m.get("along_axis_mm"), "focal_px": m.get("focal_px"),
                      "track_reproj_px": m.get("track_reproj_px"),
                      "heldout_px": m.get("heldout_track_reproj_px"), "lidar_edge_px": m.get("lidar_edge_px"),
-                     "vote": vt, "pass": not reasons, "reasons": reasons})
+                     "vote": m.get("vote") or {}, **decision})
     gate = v.get("gate") or {}
     layout = (v.get("layout") or {}).get("rules") or []
     return {"out": str(out), "mode": s.get("mode"), "version": s.get("version"), "bags": s.get("bags"),

@@ -74,6 +74,7 @@ class SensorGrid(QtWidgets.QWidget):
         self.histories = {}
         self.active = 'camera_front5'
         self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setMouseTracking(True)
 
     def ingest(self, cameras):
         self.cameras = cameras
@@ -91,6 +92,19 @@ class SensorGrid(QtWidgets.QWidget):
             self.selected.emit(self.active)
             self.update()
 
+    def mouseMoveEvent(self, event):
+        names = list(self.cameras)
+        row_height = (self.height() - 24) / 8
+        index = int((event.y() - 24) // row_height) + (8 if event.x() >= self.width() / 2 else 0)
+        if event.y() < 24 or not 0 <= index < len(names):
+            self.setToolTip("")
+            return
+        metric = self.cameras[names[index]]
+        status = {True: "카메라 게이트 통과", False: "카메라 게이트 실패", None: "검증 대기"}.get(
+            metric.get("gate_pass"), "검증 대기")
+        notes = [status] + list(metric.get("gate_reasons") or []) + list(metric.get("informational_checks") or [])
+        self.setToolTip("\n".join(notes))
+
     def paintEvent(self, event):
         p = QtGui.QPainter(self)
         p.setRenderHint(p.Antialiasing)
@@ -106,17 +120,22 @@ class SensorGrid(QtWidgets.QWidget):
         for i, (name, m) in enumerate(self.cameras.items()):
             x, y = (i // 8) * half, 24 + (i % 8) * row_height
             active = name == self.active
-            color = '#ff737c' if m.get('state') == 'failed' or m.get('validation_vote') is False else TEAL
-            if (m.get('sigma_rot_deg') or 0) > .5 and color == TEAL:
-                color = '#ffc06d'
+            color = (TEAL if m.get('gate_pass') is True else MUTED)
+            if m.get('state') == 'failed' or m.get('gate_pass') is False:
+                color = '#ff737c'
             p.setPen(QtCore.Qt.NoPen)
             p.setBrush(QtGui.QColor('#202747' if active else ('#111e30' if i % 2 == 0 else '#101a2b')))
             p.drawRoundedRect(QtCore.QRectF(x + 2, y, half - 8, row_height - 2), 4, 4)
-            p.setBrush(QtGui.QColor(PURPLE if active else color))
+            p.setBrush(QtGui.QColor(color))
             p.drawEllipse(QtCore.QPointF(x + 13, y + row_height / 2 - 1), 2.5, 2.5)
             p.setFont(font(9, active))
             p.setPen(QtGui.QColor(INK if active else '#b4c5d9'))
             p.drawText(int(x + 25), int(y + row_height / 2 + 4), short_name(name))
+            if m.get('informational_checks'):
+                p.setFont(font(8))
+                p.setPen(QtGui.QColor(MUTED))
+                p.drawText(int(x + .29 * half), int(y + row_height / 2 + 4), 'ⓘ')
+            p.setPen(QtGui.QColor(INK if active else '#b4c5d9'))
             p.setFont(font(9, mono=True))
             for offset, key, places in [(.34, 'sigma_rot_deg', 2), (.51, 'sigma_pos_mm', 1),
                                          (.70, 'reprojection_px', 2)]:
