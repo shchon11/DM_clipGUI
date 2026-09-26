@@ -1,0 +1,195 @@
+# nontarget_cal default configuration. Override any subset with `--config my.yaml`.
+# Strings starting with "@pkg/" resolve to the installed package directory.
+
+paths:
+  masks_dir: "@pkg/data/masks"                 # ego-body masks <camera>.png (255 = usable)
+  rig_design: "@pkg/data/rig_design.yaml"      # design angles, seed lenses, reference rig (name identification)
+  known_name_maps:                             # tried in order when --name-map is not given
+    - "@pkg/data/name_maps/camera_name_map_20260924.yaml"
+  serial_map: "@pkg/data/name_maps/camera_serial_map.yaml"
+  ring_shift: "@pkg/data/ring_shift.npy"       # Ouster OS-2-128 per-ring destagger (sensor constant)
+  layout_rules: "@pkg/config/layout_rules.yaml"
+
+resources:
+  max_procs: 4               # parallel worker processes (never more than 4 on a shared box)
+  threads_per_proc: 3        # OMP/OPENBLAS/OpenCV threads per worker
+  solver_threads: 4          # torch threads for the bundle adjustments
+  kiss_threads: 3
+  gpu: auto                  # auto | off   (only the optional parts use it; everything runs on CPU)
+  ba_device: cpu             # cpu | auto | cuda: bundle adjustments on the GPU. Measured on the RTX 4060 Ti:
+                             # no gain (float64 on consumer GPUs is 1/64 rate, the solves are latency-bound),
+                             # results differ at 1e-11 mm. cpu = bit-identical to the validated scripts.
+  lo_threads: 3              # threads inside one LiDAR-odometry refinement (deterministic for any value)
+  tie_threads: 3             # windows associated in parallel with the LiDAR map (deterministic)
+
+topics:
+  lidar_points: /ouster/points
+  lidar_metadata: /ouster/metadata
+  gps_fix: /gps/fix
+  gps_vel: /gps/vel
+  gps_odom: /gps/odom
+  imu: /imu/data
+  rgb_image: "/{name}/image_rgb/compressed"     # {name} = the topic namespace of one camera
+  rgb_meta: "/{name}/image_raw/metadata"
+  thermal_image: "/{name}/image_raw"
+  thermal_meta: "/{name}/image_raw/metadata"
+
+cameras:
+  rgb: [camera_front1, camera_front2, camera_front3, camera_front4, camera_front5, camera_front6,
+        camera_front7, camera_front8, camera_front9, camera_top, camera_side_left, camera_side_right,
+        camera_rear_left, camera_rear_right]
+  thermal: [thermal_left, thermal_right]
+  reference: camera_front5                     # rig frame of rig YAMLs / thermal layout
+  rgb_size: [1920, 1200]
+  thermal_size: [640, 480]
+  # canonical names also accepted as topic namespaces (bags recorded with the old names)
+  aliases: {}
+
+preflight:
+  sample_period_s: 0.5         # one light range query every sample_period_s (no full-table scan)
+  moving_speed_mps: 1.0
+  turn_min_deg: 45.0           # a "turn" = a contiguous heading change of at least this much
+  turn_rate_deg_s: 3.0
+  rgb:
+    recommend_moving_s: 180    # >= 3-5 min moving (lidar_odo README 6: 40 s -> +-3 cm axial, 200 s -> +-1-1.5 cm)
+    recommend_rotation_deg: 1000   # handeye README 4: error ~ 1/sqrt(total rotation); 2165 deg -> 7 mm
+    min_moving_s: 80           # hard minimum: two 40 s windows (half-vs-half needs >= 2 windows)
+    min_rotation_deg: 250      # hard minimum: handeye front5 at 250 deg -> 21 mm (1 window-level accuracy)
+  thermal:
+    recommend_moving_s: 600    # thermal_lo: ~600 s of turning windows for +-15 mm along the axis
+    recommend_turning_windows: 10
+    min_turning_windows: 4     # hard minimum: 2 per half for the repeatability check
+    near_structure_frac_min: 0.02   # share of LiDAR returns 2-10 m away (off the road) in a sampled sweep
+  sync:
+    max_camera_spread_ms: 2.0     # PTP-triggered Blackfly: simultaneous stamps agree to << 1 ms
+    lidar_header_minus_receive_ms: [-500, 500]   # |header - bag time| beyond this: LiDAR not on the PTP clock
+  exposure:
+    min_us_night: 500          # 50 us at night = the camera is not exposing (black frames)
+    max_us: 35000              # > frame period: motion blur, dropped frames
+    night_mean_gray: 40        # a sampled image darker than this is "night"
+  thermal_stream:
+    min_fps: 25.0
+    max_duplicate_frac: 0.05
+  estimate:                    # per 40 s of moving data, measured on the 16-core dev box (lidar_odo/thermal_lo READMEs)
+    rgb_disk_gb: 4.3
+    thermal_disk_gb: 0.8
+    fixed_disk_gb: 10.0
+    rgb_cpu_min: 18.0          # extraction + KISS + refine + tracks (14 cams) + share of the BA, 4 procs
+    thermal_cpu_min: 6.0
+    fixed_min: 25.0
+  disk_margin_frac: 0.30       # refuse unless free >= estimate * (1 + margin) + margin_gb
+  disk_margin_gb: 20.0
+
+windows:
+  length_s: 40.0
+  min_length_s: 15.0
+  gap_s: 0.0
+  moving_speed_mps: 1.0
+  max_windows: 30              # per run, all bags together (the longest-rotation ones are kept)
+  thermal_min_rotation_deg: 120.0   # thermal_lo: windows with >= 120 deg of total rotation
+  structure_sample_every_s: 4.0
+  standstill_min_s: 3.0        # a parked moment for the parked projection images
+  margin_s: 0.3
+
+extract:
+  rgb_jpeg: raw                # the recorded JPEG bytes, unchanged
+  thermal_png_compression: 1
+  thermal_lead_ms_name: 0      # thermal files are named by header.stamp (thermal_lo convention)
+
+lo:
+  kiss: {voxel: 0.5, rmin: 2.5, rmax: 100.0}
+  refine: {iters: 5, src_voxel: 0.3, tgt_voxel: 0.1, scale: 0.03, cv_sigma: 0.05, max_src: 3000,
+           offsets: [1, 2, 3, 5, 8, 13, 20]}
+  map: {voxel: 0.05, rmin: 2.5, rmax: 80.0}
+  check:
+    gaps: [1, 10]
+    n: 24
+    max_gap10_mm: 35.0         # refined LO: 12-19 mm at 1 s (INS: 100-177 mm). Worse -> window dropped
+    max_thickness_cm: 2.5      # refined: 1.3-1.8 cm (INS 2.9-3.9)
+    min_path_m: 20.0           # a window that hardly moves carries no lever-arm information
+
+rgb:
+  tracks: {grid: [16, 9], per_cell: 8, fb_max: 0.5, min_len: 5}
+  solve:
+    free: [rot, pos, f, k, pp]
+    ties: true
+    tie_sigma: 0.03
+    pos_prior: 10.0            # i.e. none (board-free)
+    f_prior: 0.05
+    pp_prior: 30.0
+    k_prior: 0.05
+    huber: 1.5
+    iters: 25
+    iters_first_pass: 40
+    min_len: 12
+    min_parallax: 2.0
+    max_dist: 60.0
+    # data selection: small solves use 3000 tracks, every 3rd frame; big (> big_windows) 2000 / 4th
+    max_tracks: 3000
+    step: 3
+    big_windows: 10
+    max_tracks_big: 2000
+    step_big: 4
+    zeroshot_subset_windows: 5   # the 2-pass board-free start runs on this many windows (most rotation)
+    # Speed option (off = the validated recipe). With <= zeroshot_subset_windows windows the final solve is
+    # a third pass on the same data; reusing pass 2 saves one solve (~10 min for 4 windows) and moved the
+    # cameras by 0.1-0.6 mm (front, top, side) and 3-6 mm (rear) on the 2026-09-24 bag (4 windows).
+    reuse_pass2_as_final: false
+  # Cross-camera / cross-TIME landmark links (rgb/crosstime.py) added to the final solve. OFF by default:
+  # on the 2026-09-24 bag (25 windows) they tightened the front cluster (rotation 1-sigma 0.035 -> 0.015 deg,
+  # along-axis 7.6 -> 2.9 mm) but did not help side/rear consistently (rear_right links: ~300) and raised the
+  # track residual 0.84 -> 1.07 px; with strict links (merged point within 1/2 px) the residual stays 0.86 px
+  # but the gain shrinks (front along-axis 7.6 -> 5.8 mm, side/rear no gain). Held-out unchanged in all cases.
+  # Cost: ~0.5-3 h linking + ~15 % BA. See README section 8 and tests/crosstime_eval_20260926.txt.
+  crosstime:
+    enabled: false
+    gate_a_m: 0.03
+    gate_b: 0.004
+    max_px_med: 2.0
+    max_px_p90: 4.0
+  perbag:
+    sigma_axis_mm_40s: 25.0      # empirical 1-window scatter along the axis (lidar_odo 3.3: 17-33 mm)
+    sigma_rot_deg_40s: 0.15      # 0.06-0.18 deg per window
+    floor_axis_mm: 10.0
+    floor_rot_deg: 0.06
+    k_sigma: 3.0
+    max_cams_out: 2              # more cameras than this beyond k sigma -> the bag disagrees
+
+thermal:
+  tracks: {prep: lcn, grid: [12, 9], per_cell: 10, fb_max: 0.4, min_len: 5}
+  time_model: smooth
+  lens: {min_dist: 25.0, free: [rot, f, pp, k, rs, dt], rounds: 2}
+  pos: {free: [rot, pos, dt], ties: true}
+  final: {free: [rot, pos, f, aspect, dt], ties: true, edges: true, stereo: true}
+  solve_defaults: {tie_sigma: 0.03, min_len: 12, step: 3, max_tracks: 4000, max_obs: 40, min_parallax: 1.5,
+                   max_dist: 150.0, huber: 1.0, iters: 25, rounds: 3, pos_prior: 1.0, f_prior: 0.05,
+                   pp_prior: 20.0, k_prior: 0.1, edge_weight: 1.0, edge_sigma: 1.0, edge_maxdepth: 40.0,
+                   edge_mindepth: 1.5}
+  edges: {every: 6, hist_s: 1.6, maxp: 1500}
+  stereo: {every: 6, gate: 6.0}
+
+validation:
+  halves: true
+  heldout: true
+  edge_frames: 12               # frames per camera and window for the LiDAR-edge metric
+  vote: true
+  # repeatability: two disjoint halves; sigma(full data) = |A - B| / 2 (each half has half the data,
+  # sigma_half = |A-B|/sqrt(2), and the full solve is sqrt(2) better)
+  sigma_from_halves: half_difference
+  gate:
+    rgb_rot_deg: 0.5
+    rgb_axis_mm: 60.0
+    thermal_axis_mm: 60.0
+    # voting gate on the LO-accumulated thermal edges (validate/edges_eval.py OrientedVote). Calibrated on the
+    # 2026-09-24 bag: the validated thermal_lo result and this tool both give peaks within 0.6 px, contrast
+    # 1.64-1.71 (du) / 2.06-2.12 (dv), 17-18 of 18 cells at the origin; a 0.25 deg yaw error moves the du
+    # peak to -3.9 px and leaves only 7-8 of 18 cells at the origin. (thermal_online's 1.8 applies to its
+    # single-sweep edges, whose profiles are sharper.)
+    vote_max_offset_px: 1.0
+    vote_min_contrast: 1.4
+    vote_min_cell_frac: 0.67
+
+outputs:
+  zip_name: nontarget_cal.zip
+  camera_info: true
+  images: {parked: true, driving: true, max_range_m: 40.0}

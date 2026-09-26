@@ -1,0 +1,62 @@
+# Physical-layout rules checked on every result (validation stage). Pure data: edit here, not in code.
+#
+# All positions are camera centres in the VEHICLE frame V derived from the LiDAR data of the run:
+# x forward along the direction of travel, y left, z up (road normal), origin at the Ouster.
+# Rule types
+#   line        : cameras lie on a straight line in the x-y plane (x fitted as a function of y);
+#                 max_resid_m = largest deviation, max_spread_m = spread of x (one forward offset)
+#   box         : one camera's x, y, z inside [lo, hi] (metres)
+#   mirror_pair : left/right pair: |x_a - x_b| <= max_dx_m, |y_a + y_b| <= max_sum_y_m, |z_a - z_b| <= max_dz_m
+#   between     : camera's `axis` coordinate lies strictly between those of two other cameras, and
+#                 its x lies behind the mean x of `row` by [behind_min_m, behind_max_m]
+# Tolerances: several times the empirical repeatability of the method (lidar_odo README 3.2-3.3,
+# thermal_lo README) so that a failure means a real problem (wrong name, wrong sign, lost solve).
+rules:
+  - name: front_row_straight
+    type: line
+    cameras: [camera_front1, camera_front2, camera_front3, camera_front4, camera_front5,
+              camera_front6, camera_front7, camera_front8, camera_front9]
+    max_resid_m: 0.03
+    max_spread_m: 0.05
+  - name: front5_ahead_of_lidar
+    type: box
+    camera: camera_front5
+    lo: [0.55, -0.10, -0.60]
+    hi: [1.00, 0.10, -0.15]
+  - name: top_under_lidar
+    type: box
+    camera: camera_top
+    lo: [-0.10, -0.10, -0.40]
+    hi: [0.40, 0.10, -0.05]
+  - name: side_pair_symmetric
+    type: mirror_pair
+    a: camera_side_left
+    b: camera_side_right
+    max_dx_m: 0.06
+    max_sum_y_m: 0.08
+    max_dz_m: 0.06
+  - name: rear_pair_symmetric
+    type: mirror_pair
+    a: camera_rear_left
+    b: camera_rear_right
+    max_dx_m: 0.08
+    max_sum_y_m: 0.10
+    max_dz_m: 0.08
+  - name: thermal_left_in_gap
+    type: between
+    camera: thermal_left
+    axis: y
+    between: [camera_front4, camera_front3]
+    row: [camera_front1, camera_front2, camera_front3, camera_front4, camera_front5,
+          camera_front6, camera_front7, camera_front8, camera_front9]
+    behind_min_m: 0.0
+    behind_max_m: 0.30
+  - name: thermal_right_in_gap
+    type: between
+    camera: thermal_right
+    axis: y
+    between: [camera_front7, camera_front6]
+    row: [camera_front1, camera_front2, camera_front3, camera_front4, camera_front5,
+          camera_front6, camera_front7, camera_front8, camera_front9]
+    behind_min_m: 0.0
+    behind_max_m: 0.30

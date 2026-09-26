@@ -1,0 +1,6 @@
+# DM_clipGUI 가 차량에 가져가는 nontarget_cal 사본 — 직접 고치지 말고 원본에서 고친 뒤 다시 동기화한다
+source: /hdd/DM_calib/nontarget_cal
+commit: 18e19b976e3228223a4c6dc24b55991f748ed67e
+commit_date: 2026-09-26T16:26:01+09:00
+subject: "Cross-time link evaluation (none/loose/strict) documented; stays an option, off by default; README runtime and regression results"
+synced_at: 2026-09-26T16:52:26+09:00

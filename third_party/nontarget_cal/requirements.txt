@@ -1,0 +1,8 @@
+# nontarget_cal runtime dependencies (tested versions in comments; Ubuntu 22.04, Python 3.10)
+numpy>=1.24,<2.3          # 2.2.6
+scipy>=1.10               # 1.15.3
+opencv-python-headless>=4.8   # 4.13.0.92 (SIFT is in the main package since 4.4)
+PyYAML>=6.0               # 6.0.3
+rosbags>=0.9.20           # 0.11.0 (reads rosbag2 sqlite3 without ROS)
+kiss-icp==1.3.0           # LiDAR odometry stage 1 (the validated version; its deskew convention is relied on)
+torch>=2.0                # 2.10.0 (CPU is enough; CUDA build optional)
