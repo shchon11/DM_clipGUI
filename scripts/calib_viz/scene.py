@@ -97,6 +97,12 @@ class RigScene(gl.GLViewWidget):
     def reset_view(self):
         self.setCameraPosition(pos=pg.Vector(0, 0, -.62), distance=6.7, elevation=28, azimuth=-53)
 
+    def clear_poses(self):
+        for item in (self.frustums, self.axes, self.ghosts, self.centers):
+            item.setData(pos=np.empty((0, 3), np.float32))
+        self.label_text = ''
+        self.overlay.update()
+
     def update_poses(self, poses, cameras, selected, seq):
         vertices, colors, centers, center_colors, axes, axis_colors = [], [], [], [], [], []
         ghosts, ghost_colors = [], []

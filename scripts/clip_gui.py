@@ -3037,6 +3037,7 @@ class MainWindow(QMainWindow):
             self.stage.stop_all()
         save_config(self.cfg)
         self.preview.shutdown()
+        self.calib.shutdown()
         if self.diag_thread and self.diag_thread.isRunning():
             self._diag_queue.clear()
             self.diag_thread.requestInterruption()      # 녹화 대기 중이거나 읽는 중이면 바로 빠져나온다

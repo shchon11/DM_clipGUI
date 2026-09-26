@@ -1,5 +1,6 @@
 """Embeddable calibration viewer. The solver never imports Qt or waits for it."""
 from collections import OrderedDict
+from copy import deepcopy
 from pathlib import Path
 import threading
 import time
@@ -57,15 +58,33 @@ def card(title, subtitle='', controls=()):
 
 
 class StreamLoader:
-    """One I/O thread with a single latest-frame mailbox, no queued Qt signals."""
-    def __init__(self, root):
+    """One bounded I/O mailbox; only the selected camera's frames are decoded.
+
+    Real jobs share this worker with their small initial/final YAML adapter. No
+    solver imports, replay generation or workdir scan runs on the GUI thread.
+    """
+    def __init__(self, root, job=None):
         self.root = Path(root)
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
         self.latest = None
         self.error = None
+        self.selected = 'camera_front5'
+        self.job = deepcopy(job)
+        self.progress = None
+        self.revision = 0
+        self.active = True
         self.thread = threading.Thread(target=self._run, name='calib-viz-reader', daemon=True)
         self.thread.start()
+
+    def update_job(self, job, progress):
+        with self.lock:
+            self.job, self.progress = deepcopy(job), deepcopy(progress)
+            self.revision += 1
+
+    def select_camera(self, name):
+        with self.lock:
+            self.selected = name
 
     def take(self):
         with self.lock:
@@ -73,62 +92,132 @@ class StreamLoader:
             return latest, self.error
 
     def _run(self):
-        reader, cache, last_seq = None, OrderedDict(), -1
-        generation, previous = None, {'map': None, 'matching': {}}
+        reader, cache = None, OrderedDict()
+        previous = {'map': None, 'matching': {}}
+        generation, last_seq, selected, revision = None, -1, None, -1
+        stream_event, fallback, adapter = None, None, None
+        delivery = 0
+        retry = False
         while not self.stop_event.is_set():
+            if not self.active:
+                self.stop_event.wait(.25)
+                continue
             try:
-                if reader is None:
-                    reader = StreamReader(self.root)
-                reader.refresh_manifest()
-                events = reader.poll()
-                if events:
-                    event = events[-1]
-                    run_id = reader.manifest.get('run_id')
-                    if event['seq'] <= last_seq or generation != run_id:
-                        cache.clear()
-                        previous = {'map': None, 'matching': {}}
-                    generation = run_id
-                    last_seq = event['seq']
-
-                    def asset(path):
-                        if not path:
-                            return None
-                        if path not in cache:
-                            cache[path] = reader.load_asset(path)
-                            while len(cache) > 10:
-                                cache.popitem(last=False)
+                with self.lock:
+                    job, progress, current_revision, camera = self.job, self.progress, self.revision, self.selected
+                changed = current_revision != revision or camera != selected
+                if job is not None and current_revision != revision:
+                    if adapter is None:
+                        from .job import JobSnapshot
+                        adapter = JobSnapshot(job)
+                    fallback = adapter.snapshot(progress, job=job)
+                revision, selected = current_revision, camera
+                stream_error = None
+                try:
+                    if reader is None:
+                        reader = StreamReader(self.root)
+                    reader.refresh_manifest()
+                    events = reader.poll()
+                    if job and reader.manifest.get('mode') == 'replay':
+                        events = []
+                        stream_event = None
+                        stream_error = '실제 작업에서는 합성 리플레이 스트림을 표시하지 않습니다'
+                    if events:
+                        candidate = events[-1]
+                        provenance = candidate.get('provenance', {})
+                        synthetic = provenance.get('synthetic_intermediate') or provenance.get('synthetic')
+                        if job and (synthetic or provenance.get('mode') == 'replay'):
+                            stream_error = '실제 작업에서는 합성 중간 추정을 표시하지 않습니다'
+                            stream_event = None
                         else:
-                            cache.move_to_end(path)
-                        return cache[path]
+                            stream_event = candidate
+                            changed = True
+                            run_id = reader.manifest.get('run_id')
+                            if candidate['seq'] <= last_seq or generation != run_id:
+                                cache.clear()
+                                previous = {'map': None, 'matching': {}}
+                            generation, last_seq = run_id, candidate['seq']
+                except (OSError, ValueError, KeyError, EOFError) as exc:
+                    stream_error = str(exc)
+                if not changed and not retry:
+                    self.stop_event.wait(.25)
+                    continue
+                if stream_event is None and fallback is None:
+                    if stream_error:
+                        with self.lock:
+                            self.error = stream_error
+                    self.stop_event.wait(.25)
+                    continue
+                manifest = dict(reader.manifest) if stream_event else dict(fallback[0])
+                event = dict(stream_event) if stream_event else dict(fallback[1])
+                if fallback:
+                    # Progress/warnings come from the actual job even when poses
+                    # arrive separately. The final output supersedes an old pose.
+                    status = fallback[1]
+                    for key in ('stage', 'stage_label', 'progress', 'window', 'total_windows',
+                                'eta_s', 'warnings', 'status_text', 'job_state'):
+                        if key in status:
+                            event[key] = status[key]
+                    final = status.get('provenance', {}).get('pose_source') == 'final-result'
+                    if final:
+                        event.update(cameras=status['cameras'], gate=status.get('gate', {}), interpolate=False)
+                        manifest.update(cameras=fallback[0]['cameras'], R_lidar_V=fallback[0]['R_lidar_V'])
+                    manifest['mode'] = 'job'
+                    manifest['run_id'] = fallback[0]['run_id']
+                    event['seq'] = delivery
+                    delivery += 1
+                    if stream_event and not final:
+                        event['status_text'] = '실제 작업 진행 · 발행된 중간 포즈'
+                    if stream_error:
+                        event['status_text'] = event.get('status_text', '') + ' · ' + stream_error
 
-                    assets = event.get('assets', {})
-                    errors = []
-                    decoded = {'map': previous.get('map'), 'map_asset': previous.get('map_asset'),
-                               'matching': {}}
+                def asset(path):
+                    if not path:
+                        return None
+                    if path not in cache:
+                        cache[path] = reader.load_asset(path)
+                        while len(cache) > 5:
+                            cache.popitem(last=False)
+                    else:
+                        cache.move_to_end(path)
+                    return cache[path]
+
+                assets = event.get('assets', {})
+                errors = []
+                frame = event.get('map_frame', manifest.get('map_frame'))
+                if frame != previous.get('frame'):
+                    previous = {'map': None, 'matching': {}}
+                decoded = {'map': previous.get('map'), 'map_asset': previous.get('map_asset'),
+                           'frame': frame, 'matching': {}}
+                try:
+                    decoded['map'] = asset(assets.get('map'))
+                    decoded['map_asset'] = assets.get('map')
+                except (OSError, ValueError, KeyError) as exc:
+                    errors.append(f'지도 자산 대기: {exc}')
+                metadata = assets.get('matching', {}).get(camera)
+                if metadata:
                     try:
-                        decoded['map'] = asset(assets.get('map'))
-                        decoded['map_asset'] = assets.get('map')
+                        decoded['matching'][camera] = {'image': asset(metadata.get('image')),
+                                                       'points': asset(metadata.get('points')) or {},
+                                                       'metadata': metadata}
                     except (OSError, ValueError, KeyError) as exc:
-                        errors.append(f'지도 자산 대기: {exc}')
-                    for name, metadata in assets.get('matching', {}).items():
-                        try:
-                            decoded['matching'][name] = {'image': asset(metadata.get('image')),
-                                                         'points': asset(metadata.get('points')) or {},
-                                                         'metadata': metadata}
-                        except (OSError, ValueError, KeyError) as exc:
-                            errors.append(f'영상 자산 대기: {exc}')
-                            if name in previous['matching']:
-                                old = previous['matching'][name]
-                                decoded['matching'][name] = dict(old, metadata=dict(old['metadata'], stale=True))
-                    previous = decoded
-                    with self.lock:
-                        self.latest = (reader.manifest, event, decoded)
-                        self.error = errors[-1] if errors else (str(reader.errors[-1]) if reader.errors else None)
+                        errors.append(f'영상 자산 대기: {exc}')
+                        if camera in previous['matching']:
+                            old = previous['matching'][camera]
+                            decoded['matching'][camera] = dict(old, metadata=dict(old['metadata'], stale=True))
+                previous = decoded
+                retry = bool(errors)
+                with self.lock:
+                    self.latest = (manifest, event, decoded)
+                    self.error = errors[-1] if errors else (str(reader.errors[-1]) if reader and reader.errors else None)
+                if reader:
                     reader.errors.clear()
-            except (OSError, ValueError, KeyError, EOFError) as exc:
+            except (OSError, ValueError, KeyError, EOFError, TypeError) as exc:
                 with self.lock:
                     self.error = str(exc)
-            self.stop_event.wait(.10)
+                # Retry partially published initial/final output files.
+                revision = -1
+            self.stop_event.wait(.25)
 
     def close(self):
         self.stop_event.set()
@@ -143,7 +232,7 @@ class CalibrationVizWidget(QtWidgets.QWidget):
     """
     snapshot_applied = QtCore.pyqtSignal(int)
 
-    def __init__(self, stream_dir=None, parent=None, max_fps=40, max_points=70000):
+    def __init__(self, stream_dir=None, parent=None, max_fps=40, max_points=70000, embedded=False):
         super().__init__(parent)
         self.setObjectName('CalibViz')
         self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
@@ -151,6 +240,7 @@ class CalibrationVizWidget(QtWidgets.QWidget):
         self.manifest, self.event, self.decoded = {}, {}, {}
         self.targets, self.origins, self.current, self.initial = {}, {}, {}, {}
         self.selected = 'camera_front5'
+        self.embedded = embedded
         self.loader = None
         self.max_fps = max(10, min(60, int(max_fps)))
         self.actual_fps = 0.
@@ -170,13 +260,14 @@ class CalibrationVizWidget(QtWidgets.QWidget):
 
     def _build(self, max_points):
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(22, 15, 22, 13)
-        root.setSpacing(10)
+        root.setContentsMargins(*((12, 8, 12, 8) if self.embedded else (22, 15, 22, 13)))
+        root.setSpacing(6 if self.embedded else 10)
         header = QtWidgets.QHBoxLayout()
         title = QtWidgets.QVBoxLayout()
         title.addWidget(label('온라인 캘리브레이션', 'Title'))
         title.addWidget(label('센서의 위치가 맞춰지는 과정을, 한눈에.', 'Subtle'))
-        header.addLayout(title)
+        if not self.embedded:
+            header.addLayout(title)
         header.addStretch()
         self.mode_label = label('스트림 연결 대기', 'Badge')
         self.mode_label.setFixedHeight(32)
@@ -195,6 +286,9 @@ class CalibrationVizWidget(QtWidgets.QWidget):
         root.addLayout(header)
         self.stages = StageBar()
         root.addWidget(self.stages)
+        self.detail_label = label('', 'Subtle')
+        self.detail_label.setWordWrap(True)
+        root.addWidget(self.detail_label)
         top = QtWidgets.QHBoxLayout()
         top.setSpacing(12)
         reset = QtWidgets.QPushButton('시점 복원')
@@ -202,13 +296,15 @@ class CalibrationVizWidget(QtWidgets.QWidget):
         ghost.setChecked(True)
         rig_card, rig_layout = card('01  센서 리그', 'RGB 14 · 열화상 2 · Ouster', [ghost, reset])
         self.rig = RigScene()
+        if self.embedded:
+            self.rig.setMinimumSize(280, 190)
         self.rig.frameSwapped.connect(self._rendered)
         reset.clicked.connect(self.rig.reset_view)
         ghost.toggled.connect(lambda checked: setattr(self.rig, 'show_ghosts', checked))
         rig_layout.addWidget(self.rig, 1)
-        rig_layout.addWidget(label('<span style="color:#49dfd6">●</span> 안정화　'
-                                  '<span style="color:#ffc06d">●</span> 탐색　'
-                                  '<span style="color:#ff737c">●</span> 카메라 검증 실패　'
+        rig_layout.addWidget(label('<span style="color:#49dfd6">●</span> 게이트 통과　'
+                                  '<span style="color:#8496af">●</span> 미판정　'
+                                  '<span style="color:#ff737c">●</span> 게이트 실패　'
                                   '<span style="color:#b0a8ff">●</span> 선택', 'Subtle'))
         rig_layout.addWidget(label('차량 좌표 · m  |  차량 외형은 개략도  |  드래그 회전 · 휠 확대', 'Subtle'))
         top.addWidget(rig_card, 3)
@@ -217,6 +313,8 @@ class CalibrationVizWidget(QtWidgets.QWidget):
         self.camera_combo.currentIndexChanged.connect(self._combo_changed)
         image_card, image_layout = card('02  영상 ↔ LiDAR', controls=[self.camera_combo])
         self.image_panel = ImagePanel()
+        if self.embedded:
+            self.image_panel.setMinimumSize(300, 140)
         image_layout.addWidget(self.image_panel, 1)
         image_toggles = QtWidgets.QHBoxLayout()
         for title, attr, checked in [('깊이 투영', 'show_points', True), ('관측 특징', 'show_tracks', True),
@@ -241,6 +339,8 @@ class CalibrationVizWidget(QtWidgets.QWidget):
         bottom.addWidget(map_card, 2)
         sensors_card, sensors_layout = card('04  센서별 수렴', '1σ · 재투영 오차', [])
         self.sensors = SensorGrid()
+        if self.embedded:
+            self.sensors.setMinimumSize(500, 200)
         self.sensors.selected.connect(self.select_camera)
         sensors_layout.addWidget(self.sensors, 1)
         self.gate_label = label('검증 대기 — 아직 판정하지 않았습니다', 'Subtle')
@@ -254,19 +354,60 @@ class CalibrationVizWidget(QtWidgets.QWidget):
         self.fps_label = label('— FPS', 'Subtle')
         footer.addWidget(self.fps_label)
         root.addLayout(footer)
+        if self.embedded:
+            for frame in (rig_card, image_card, map_card, sensors_card):
+                frame.layout().setContentsMargins(10, 7, 10, 7)
+                frame.layout().setSpacing(4)
 
-    def set_stream(self, path):
+    def reset_source(self):
         if self.loader:
             self.loader.close()
-        self.event = {}
+            self.loader = None
+        self.manifest, self.event, self.decoded = {}, {}, {}
+        self.last_receive = None
         self.last_map = None
         self.current.clear()
         self.initial.clear()
         self.targets.clear()
+        self.origins.clear()
         self.rig.history.clear()
+        self.rig.last_seq = None
+        self.rig.clear_poses()
         self.sensors.histories.clear()
+        self.sensors.ingest({})
+        for values in self.metrics.histories.values():
+            values.clear()
+        self.metrics.ingest(self.selected, {})
         self.image_panel.set_frame(None, {}, {}, {})
+        self.map.set_map({}, None)
+        self.map_label.setText('지도 스트림 대기 중')
+        self.gate_label.setText('검증 대기')
+        self.detail_label.clear()
+        self.camera_combo.clear()
+        self.stages.progress = 0
+        self.stages.stage = ''
+        self.stages.update()
+        self.window_label.setText('윈도 — / —')
+        self.eta_label.setText('남은 시간 —')
+        self.mode_label.setText('작업을 고르세요')
+        self.pause_button.setChecked(False)
+
+    def set_stream(self, path):
+        self.reset_source()
         self.loader = StreamLoader(path)
+        self.loader.select_camera(self.selected)
+        self.loader.active = self.isVisible()
+
+    def set_job(self, job, progress=None):
+        self.reset_source()
+        self.loader = StreamLoader(Path(job['workdir']) / 'viz', job=job)
+        self.loader.select_camera(self.selected)
+        self.loader.update_job(job, progress)
+        self.loader.active = self.isVisible()
+
+    def update_job(self, job, progress=None):
+        if self.loader:
+            self.loader.update_job(job, progress)
 
     def _pause(self, checked):
         self.paused = checked
@@ -282,6 +423,8 @@ class CalibrationVizWidget(QtWidgets.QWidget):
 
     def select_camera(self, name):
         self.selected = name
+        if self.loader:
+            self.loader.select_camera(name)
         self.sensors.active = name
         self.sensors.update()
         index = self.camera_combo.findData(name)
@@ -303,7 +446,7 @@ class CalibrationVizWidget(QtWidgets.QWidget):
     def apply_snapshot(self, manifest, event, decoded):
         """Apply already-decoded arrays on the GUI thread (also useful for tests)."""
         first = not self.event
-        if self.event and (event['seq'] <= self.event['seq'] or manifest.get('run_id') != self.manifest.get('run_id')):
+        if self.event and (event['seq'] < self.event['seq'] or manifest.get('run_id') != self.manifest.get('run_id')):
             self.rig.history.clear()
             self.sensors.histories.clear()
             self.initial.clear()
@@ -312,6 +455,7 @@ class CalibrationVizWidget(QtWidgets.QWidget):
         if first:
             self.frame_epoch = time.monotonic()
             self.frames = 0
+        cameras_changed = self.event.get('cameras') != event.get('cameras')
         self.manifest, self.event, self.decoded = manifest, event, decoded
         self.last_receive = time.monotonic()
         self.pose_epoch = self.last_receive
@@ -321,7 +465,10 @@ class CalibrationVizWidget(QtWidgets.QWidget):
         self.targets = {name: np.array(c['T_cam_lidar'], float) for name, c in cameras.items()}
         for name, pose in self.targets.items():
             self.initial.setdefault(name, pose.copy())
-        self.stages.stage = {'lo': 'lidar_odometry', 'rgb': 'rgb_ba'}.get(event.get('stage'), event.get('stage'))
+        self.stages.stage = {'lo': 'lidar_odometry', 'axes': 'lidar_odometry',
+                             'rgb': 'rgb_ba', 'rgb_tracks': 'rgb_ba', 'rgb_solve': 'rgb_ba',
+                             'thermal_tracks': 'thermal', 'thermal_solve': 'thermal',
+                             'outputs': 'validation'}.get(event.get('stage'), event.get('stage'))
         self.stages.progress = float(np.clip(event.get('progress', 0), 0, 1))
         self.stages.update()
         self.window_label.setText(f"윈도 {event.get('window', '—')} / {event.get('total_windows', '—')}")
@@ -330,18 +477,29 @@ class CalibrationVizWidget(QtWidgets.QWidget):
         replay = manifest.get('mode') == 'replay' or event.get('provenance', {}).get('synthetic', False)
         # Explicitly label a replay even when a producer uses a more detailed provenance schema.
         replay = replay or bool(manifest.get('replay')) or 'replay' in str(event.get('provenance', {})).lower()
-        self.mode_label.setText('실제 데이터 · 합성 수렴 리플레이' if replay else '● 실시간 스트림')
-        self.sensors.ingest(cameras)
-        self.metrics.ingest(self.selected, cameras.get(self.selected, {}))
+        self.mode_label.setText('실제 데이터 · 합성 수렴 리플레이' if replay else
+                                ('실제 보정 작업' if manifest.get('mode') == 'job' else '● 실시간 스트림'))
+        warnings = event.get('warnings', [])
+        detail = event.get('stage_label', '')
+        if warnings:
+            detail += f' · 기록된 경고 {len(warnings)}개 · ' + str(warnings[-1])[:100] + ('…' if len(str(warnings[-1])) > 100 else '')
+        self.detail_label.setToolTip('\n'.join(str(w) for w in warnings))
+        self.detail_label.setText(detail)
+        self.detail_label.setVisible(bool(detail))
+        if cameras_changed:
+            self.sensors.ingest(cameras)
+            self.metrics.ingest(self.selected, cameras.get(self.selected, {}))
         gate = event.get('gate', {})
         status = gate.get('status', 'pending')
         title = {'pass': '종합 검증 통과', 'fail': '종합 검증 실패', 'pending': '검증 대기'}.get(status, str(status))
         warning = gate.get('warning', '')
+        self.gate_label.setToolTip(warning)
+        warning = warning[:110] + ('…' if len(warning) > 110 else '')
         self.gate_label.setText(f'{title}  ·  {warning}' if warning else title)
         gate_color = '#ff737c' if status == 'fail' else ('#ffc06d' if warning else
                      ('#58d6c9' if status == 'pass' else '#8496af'))
         self.gate_label.setStyleSheet(f'color: {gate_color};')
-        names = list(decoded.get('matching', {}))
+        names = list(manifest.get('cameras', {}))
         if names != [self.camera_combo.itemData(i) for i in range(self.camera_combo.count())]:
             self.camera_combo.blockSignals(True)
             self.camera_combo.clear()
@@ -351,8 +509,11 @@ class CalibrationVizWidget(QtWidgets.QWidget):
             self.camera_combo.blockSignals(False)
         self._set_image()
         map_path = decoded.get('map_asset', event.get('assets', {}).get('map'))
-        if map_path != self.last_map and decoded.get('map') is not None:
-            frame = event.get('map_frame', manifest.get('map_frame', '미지정 지도 좌표'))
+        frame = event.get('map_frame', manifest.get('map_frame', '미지정 지도 좌표'))
+        if frame != self.map.frame_id and decoded.get('map') is None:
+            self.map.set_map({}, frame)
+            self.map_label.setText('지도 스트림 대기 중')
+        if (map_path != self.last_map or frame != self.map.frame_id) and decoded.get('map') is not None:
             self.map.set_map(decoded['map'], frame)
             self.last_map = map_path
             map_note = event.get('provenance', {}).get('map_label_ko', frame)
@@ -360,6 +521,8 @@ class CalibrationVizWidget(QtWidgets.QWidget):
         self.snapshot_applied.emit(int(event['seq']))
 
     def _tick(self):
+        if not self.isVisible():
+            return
         now = time.monotonic()
         if self.loader and not self.paused:
             latest, error = self.loader.take()
@@ -368,7 +531,7 @@ class CalibrationVizWidget(QtWidgets.QWidget):
             if error:
                 self.status_label.setText(f'스트림 확인: {error[:140]}')
         if not self.paused and self.targets:
-            alpha = min(1., (now - self.pose_epoch) / .48)
+            alpha = min(1., (now - self.pose_epoch) / .48) if self.event.get('interpolate', True) else 1.
             alpha = alpha * alpha * (3 - 2 * alpha)
             self.current = {name: interpolate_pose(self.origins[name], target, alpha)
                             for name, target in self.targets.items()}
@@ -387,11 +550,22 @@ class CalibrationVizWidget(QtWidgets.QWidget):
                 self.map.max_points = max(12000, int(self.map.max_points * .75))
                 self.timer.setInterval(round(1000 / self.max_fps))
             self.frames, self.frame_epoch = 0, now
-        if self.last_receive and now - self.last_receive > 5 and self.stages.progress < 1:
+        if (self.last_receive and now - self.last_receive > 5 and self.stages.progress < 1
+                and self.manifest.get('mode') != 'job'):
             self.status_label.setText('새 스냅샷 대기 중 · 마지막 추정치를 유지합니다')
         elif self.event and (not self.loader or not self.loader.error):
-            self.status_label.setText('합성 중간 포즈·1σ · 실측 최종값 / 관측 특징은 독립 표시' if
-                                      '리플레이' in self.mode_label.text() else '스트림 연결됨 · 최신 스냅샷 표시')
+            self.status_label.setText(self.event.get('status_text') or ('합성 중간 포즈·1σ · 실측 최종값 / 관측 특징은 독립 표시' if
+                                      '리플레이' in self.mode_label.text() else '스트림 연결됨 · 최신 스냅샷 표시'))
+
+    def hideEvent(self, event):
+        if self.loader:
+            self.loader.active = False
+        super().hideEvent(event)
+
+    def showEvent(self, event):
+        if self.loader:
+            self.loader.active = True
+        super().showEvent(event)
 
     def shutdown(self):
         self.timer.stop()

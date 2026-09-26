@@ -77,7 +77,8 @@ def env(tmp_path, monkeypatch):
     tab = calib_tab.CalibTab(cfg, probe=lambda: dict(state))
     yield {"tab": tab, "state": state, "app": app, "tmp": tmp_path, "oc": online_calib, "ct": calib_tab,
            "monkeypatch": monkeypatch}
-    tab.timer.stop()
+    tab.shutdown()
+    tab.close()
 
 
 def _pump(app, tab, until, timeout=15):
@@ -105,6 +106,11 @@ def test_run_result_apply_rollback(env):
     assert tab.tbl_res.rowCount() == 16 and tab.btn_apply.isEnabled()
     assert "working on outputs" in tab.log_view.toPlainText()
     assert tab.bar.value() == 1000
+    assert tab.viz is not None
+    assert tab.detail_tabs.widget(0) is tab.viz
+    assert tab.detail_tabs.widget(2) is tab.log_view
+    assert tab.setup_panel.isHidden()
+    assert tab.viz.max_fps <= 20
 
     # 적용 (임시 차량 파일) → 되돌리기
     if not (FLIR_CAL / "flir_camera_info.yaml").is_file():

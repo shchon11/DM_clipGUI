@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
     QProgressBar, QPushButton, QRadioButton, QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser,
-    QVBoxLayout, QWidget,
+    QVBoxLayout, QWidget, QTabWidget,
 )
 
 import calib_apply as ca
@@ -112,6 +112,8 @@ class CalibTab(QWidget):
         self.check_proc = None
         self._check_buf = b""
         self._bag_cache = {}
+        self._viz_key = None
+        self.viz = None
         self._build()
         for j in self.store.jobs:
             oc.settle_state(j)
@@ -134,12 +136,18 @@ class CalibTab(QWidget):
         self.lbl_acq.setWordWrap(True)
         outer.addWidget(self.lbl_acq)
 
+        self.btn_setup = QPushButton("새 작업 설정 접기")
+        self.btn_setup.setCheckable(True)
+        self.btn_setup.setChecked(True)
+        self.btn_setup.toggled.connect(self._toggle_setup)
+        outer.addWidget(self.btn_setup, 0, Qt.AlignLeft)
         split = QSplitter(Qt.Horizontal)
         split.setChildrenCollapsible(False)
         outer.addWidget(split, 1)
 
         # ---------------- 왼쪽: 새 작업
         left = QWidget()
+        self.setup_panel = left
         lv = QVBoxLayout(left)
         lv.setContentsMargins(0, 0, 6, 0)
 
@@ -268,7 +276,7 @@ class CalibTab(QWidget):
         self.tbl_jobs.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tbl_jobs.verticalHeader().setVisible(False)
         self.tbl_jobs.itemSelectionChanged.connect(self._show_job)
-        self.tbl_jobs.setMaximumHeight(170)
+        self.tbl_jobs.setMaximumHeight(85)
         rv.addWidget(self.tbl_jobs)
 
         self.lbl_job = QLabel("작업을 고르세요")
@@ -301,13 +309,23 @@ class CalibTab(QWidget):
         jb.addStretch(1)
         rv.addLayout(jb)
 
-        vs = QSplitter(Qt.Vertical)
-        vs.setChildrenCollapsible(False)
+        self.detail_tabs = QTabWidget()
+        try:
+            from calib_viz.viewer import CalibrationVizWidget
+            self.viz = CalibrationVizWidget(parent=self, max_fps=20, max_points=30000, embedded=True)
+            self.detail_tabs.addTab(self.viz, "3D 보정 상태")
+            self.bar.hide()
+            self.lbl_stage.hide()
+        except ImportError as exc:
+            missing = QLabel(f"3D 뷰어 의존성을 확인하세요: {exc}\n"
+                             "scripts/calib_viz/requirements.txt 참고")
+            missing.setWordWrap(True)
+            self.detail_tabs.addTab(missing, "3D 뷰어 설치 필요")
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(3000)
         self.log_view.setStyleSheet("background:#0f172a; color:#e2e8f0; font-family:monospace; font-size:11px;")
-        vs.addWidget(self.log_view)
+
 
         res = QWidget()
         resv = QVBoxLayout(res)
@@ -335,16 +353,44 @@ class CalibTab(QWidget):
             rb.addWidget(w)
         rb.addStretch(1)
         rb.addWidget(self.btn_hist)
-        resv.addLayout(rb)
-        vs.addWidget(res)
-        vs.setSizes([220, 320])
-        rv.addWidget(vs, 1)
+        self.detail_tabs.addTab(res, "카메라별 결과")
+        self.detail_tabs.addTab(self.log_view, "작업 로그")
+        rv.addWidget(self.detail_tabs, 1)
+        rv.addLayout(rb)
         split.addWidget(right)
         split.setSizes([520, 640])
         self._mode_changed()
         self._update_tool_label()
 
     # ------------------------------------------------------------ 공용
+    def _toggle_setup(self, visible):
+        self.setup_panel.setVisible(visible)
+        self.btn_setup.setText("새 작업 설정 접기" if visible else "새 작업 설정 열기")
+
+    def _sync_viz(self, job, progress=None):
+        if self.viz is None:
+            return
+        key = (job['id'], len(job['attempts']), job['workdir'], job.get('init')) if job else None
+        if key != self._viz_key:
+            self._viz_key = key
+            if job:
+                self.viz.set_job(job, progress)
+                self.btn_setup.setChecked(False)
+                self.detail_tabs.setCurrentIndex(0)
+            else:
+                self.viz.reset_source()
+        elif job:
+            self.viz.update_job(job, progress)
+
+    def shutdown(self):
+        self.timer.stop()
+        if self.viz:
+            self.viz.shutdown()
+
+    def closeEvent(self, event):
+        self.shutdown()
+        super().closeEvent(event)
+
     def _save_settings(self):
         self.c.update({"bag_root": self.ed_bag_root.text().strip(), "workdir_root": self.ed_work.text().strip(),
                        "out_root": self.ed_out.text().strip(), "init_dir": self.ed_init.text().strip(),
@@ -793,6 +839,7 @@ class CalibTab(QWidget):
         self.tbl_res.setRowCount(0)
         self.lbl_result.setText("")
         if not job:
+            self._sync_viz(None)
             self.lbl_job.setText("작업을 고르세요")
             self.bar.setValue(0)
             self.lbl_stage.setText("")
@@ -814,7 +861,9 @@ class CalibTab(QWidget):
         if job.get("state_msg"):
             c = ERR_C if st in (oc.FAILED, oc.REFUSED) else WARN_C if st != oc.DONE else OK_C
             txt += f"<br><b style='color:{c}'>{oc.STATE_LABEL.get(st, st)} — {job['state_msg']}</b>"
-        self.lbl_job.setText(txt)
+        self.lbl_job.setToolTip(txt)
+        self.lbl_job.setText(f"<b>{job['id']}</b> · {job['mode']} · {oc.STATE_LABEL.get(st, st)}"
+                             + (f" · {job['state_msg']}" if job.get('state_msg') else ''))
         self._feed(job)
         self._show_progress()
         self._load_log(job)
@@ -824,7 +873,8 @@ class CalibTab(QWidget):
         job = self._sel()
         if not job:
             return
-        p = (self.progress.get(job["id"]) or (None, None))[1]
+        p = self._feed(job)
+        self._sync_viz(job, p)
         if not p:
             self.bar.setValue(1000 if job["state"] == oc.DONE else 0)
             self.lbl_stage.setText("")
@@ -900,11 +950,11 @@ class CalibTab(QWidget):
             self.tbl_res.insertRow(r)
             vt = c["vote"] or {}
             vote = "–" if vt.get("pass") is None else (("pass" if vt["pass"] else "FAIL") if vt.get("gate", True) else "참고")
-            cells = [c["camera"], "합격" if c["pass"] else "불합격", _f(c["rot_deg"], 3), _f(c["pos_mm"], 1),
+            cells = [c["camera"], "합격" if c["pass"] is True else ("불합격" if c["pass"] is False else "미판정"), _f(c["rot_deg"], 3), _f(c["pos_mm"], 1),
                      _f(c["along_axis_mm"], 1), _f(c["focal_px"], 2), _f(c["track_reproj_px"], 2),
                      _f(c["heldout_px"], 2), vote]
             for k, v in enumerate(cells):
-                it = _item(v, (OK_C if c["pass"] else ERR_C) if k == 1 else None,
+                it = _item(v, (OK_C if c["pass"] is True else ERR_C if c["pass"] is False else MUTED_C) if k == 1 else None,
                            tip="; ".join(c["reasons"]) if k == 1 and c["reasons"] else None)
                 self.tbl_res.setItem(r, k, it)
 

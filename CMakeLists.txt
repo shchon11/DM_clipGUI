@@ -63,6 +63,11 @@ install(FILES scripts/bag_diagnostics.py scripts/net_tools.py scripts/gnss_tools
   scripts/calib_tab.py scripts/online_calib.py scripts/calib_apply.py
   DESTINATION lib/${PROJECT_NAME})
 
+# Embedded online calibration visualization package.
+install(DIRECTORY scripts/calib_viz
+  DESTINATION lib/${PROJECT_NAME}
+  FILES_MATCHING PATTERN "*.py")
+
 install(DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME})
 
