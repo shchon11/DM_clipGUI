@@ -541,6 +541,7 @@ class Progress:
         self.bad_lines = 0
         self._offset = 0
         self._partial = b""
+        self.viz_progress = {}
 
     def feed_line(self, line):
         line = line.strip()
@@ -561,6 +562,11 @@ class Progress:
         self.last = ev
         kind = ev.get("ev")
         st = ev.get("stage")
+        for key in ("window", "total_windows", "eta_s"):
+            if key in ev:
+                self.viz_progress[key] = ev[key]
+        if kind == "stage_progress" and st in ("extract", "lo", "thermal_edges"):
+            self.viz_progress.update(window=ev.get("done", 0), total_windows=ev.get("total", 0))
         if kind == "run_start":
             self.run_start = ev
         elif kind == "stage_start" and st in self.stages:
@@ -580,8 +586,10 @@ class Progress:
             self.stages[st].update(state="ok" if ev.get("ok", True) else "fail", wall_s=ev.get("wall_s"))
         elif kind == "warning":
             self.warnings.append(ev)
+            del self.warnings[:-200]
         elif kind == "task_failed":
             self.task_failed.append(ev)
+            del self.task_failed[:-200]
         elif kind == "refusal":
             self.refusal = ev
         elif kind == "error":
@@ -597,7 +605,7 @@ class Progress:
         try:
             with open(path, "rb") as f:
                 f.seek(self._offset)
-                data = f.read()
+                data = f.read(256 * 1024)
         except OSError:
             return out
         self._offset += len(data)
