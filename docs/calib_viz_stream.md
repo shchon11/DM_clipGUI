@@ -1,37 +1,53 @@
 # 온라인 캘리브레이션 시각화 스트림 v1
 
-뷰어는 `scripts/calib_viz/viewer.py`의 `CalibrationVizWidget`과 독립 실행 창이다.
-캘리브레이션 코드·ROS 노드·CUDA 컨텍스트를 import하지 않는다. 현재 `nontarget_cal`의
-기존 진행 이벤트에는 포즈/점군이 없으므로 **실시간 사용에는 아래 발행 훅이 추가로 필요하다**.
-이번 변경은 solver와 `clip_gui.py`를 수정하지 않는다.
+뷰어는 `scripts/calib_viz/viewer.py`의 `CalibrationVizWidget`이며,
+`CalibTab`의 기본 **3D 보정 상태** 화면에 연결되어 있다. 작업 선택 시 새 작업 설정은
+접히고, **카메라별 결과 / 작업 로그** 보조 탭에서 상세 수치와 로그를 확인한다.
 
-## 실행과 탭 연결
+## 실제 작업과 데모의 구분
+
+- 실제 작업: 기존 `online_calib.Progress`의 JSON 이벤트에서 단계, 구간 k/N, ETA(발행 시),
+  경고를 읽는다. 카메라×구간 작업 수나 scan 수를 구간 수로 표시하지 않는다.
+- `work/viz`가 없으면 `job.py`가 도구의 설계 초기값 또는 `--init`의 실제 warm-start 값을
+  표시한다. 중간 포즈와 1σ/재투영 오차는 만들지 않는다. 완료 시 결과 YAML과
+  `summary.json`/`metrics.json`을 읽어 **최종값으로 바로 전환**한다.
+- zero-shot RGB는 도구의 `nominal_cams(square=True)`와 동일하게 LiDAR 원점에서 시작한다.
+  따라서 초기 RGB 프러스텀은 겹친다. 설계 도면의 장착 위치로 대체하지 않는다.
+  초기 차량 축은 명목 장착 축, 최종 차량 축은 `rig.yaml`의 실측 축이다.
+- 실행 기록의 도구 venv 설정을 우선 읽는다. 사용자 실행 파일의 설정을 확인할 수 없으면
+  초기값을 미표시하고 이유를 알린다. 확인된 최종 출력은 여전히 표시한다.
+- `work/viz/manifest.json`과 정상 스냅샷이 뒤늦게 생기면 해당 스트림을 읽는다.
+  진행 상태는 작업 이벤트를 따르며, 완료된 결과는 오래된 중간 스트림보다 우선한다.
+  실제 작업에 합성 리플레이 manifest/스냅샷을 연결하면 거부한다.
+- 실제 작업의 영상/지도는 발행된 스트림 자산만 사용한다. 현재 도구가 발행하지 않는
+  영상/지도는 대기 화면으로 남는다. 뷰어 때문에 원본 bag/점군을 추가 처리하지 않는다.
+- 데모만 실측 최종값을 향하는 **합성 중간 포즈·지표**를 생성한다. 화면에 항상
+  `실제 데이터 · 합성 수렴 리플레이`를 표시한다.
+
+## 실행
+
+기존 선택 의존성은 `scripts/calib_viz/requirements.txt`를 따른다. 새 의존성은 없다.
+ROS 설치 시 CMake가 `calib_viz/`를 GUI 모듈과 함께 설치한다.
 
 ```bash
-python3 -m pip install --user -r scripts/calib_viz/requirements.txt
-python3 scripts/calib_viz_demo.py --replay /hdd/DM_calib/nt_regress/full/work --speed 60
+# 센서/레코더를 실행하지 않고 실제 완료 결과를 온라인 보정 탭에서 보기
+python3 scripts/calib_tab_demo.py --workdir /hdd/DM_calib/nt_regress/full/work
+
+# 데모 전용 합성 수렴 (기본: 모든 사용 가능한 구간 순회)
+python3 scripts/calib_viz_demo.py --replay /hdd/DM_calib/nt_regress/full/work --speed 60 --max-fps 20 --max-points 30000
+
+# solver가 발행한 스트림만 보기
 python3 scripts/calib_viz_demo.py --stream /path/to/run/work/viz
 ```
 
-`--out`으로 별도 결과 디렉터리, `--max-fps 30 --max-points 30000`으로 표시 부하를 지정한다.
-리플레이는 기본 `/tmp/calib-viz-*`에만 쓰며 종료 시 정리한다. 원본은 읽기 전용이다.
-`--viz-dir /tmp/my-calib-viz`를 지정하면 스트림을 보존한다. 기존 출력의 재사용보다 새 디렉터리를 권장한다.
-설치 항목은 PyQtGraph/PyOpenGL과 NumPy 2에 맞는 선택 의존성 bottleneck이다.
-PyQt5, NumPy, cv2, PyYAML은 ROS 데스크톱의 기존 설치를 사용한다.
+`--out`으로 별도 결과 폴더를 지정한다. 리플레이는 기본 `/tmp/calib-viz-*`에만 쓰고
+종료 시 정리한다. 원본은 읽기 전용이다. `--viz-dir`은 출력 보존용이다.
+`--screenshots docs/img --fractions 0.06,0.55,1`로 캡처하고, 특정 센서/구간 캡처에는
+`--camera thermal_right --window S01`을 더한다. `--window`는 스크린샷 모드에만 적용된다.
 
-GUI 쪽 최소 통합 예시 (이번 작업에서는 적용하지 않음):
-
-```python
-from calib_viz.viewer import CalibrationVizWidget
-viz = CalibrationVizWidget(parent=tabs, max_fps=40, max_points=70000)
-tabs.addTab(viz, "3D 수렴")
-viz.set_stream(workdir / "viz")
-# 탭 제거/앱 종료 시 (QWidget.close()를 호출하지 않는 호스트도 반드시):
-viz.shutdown()
-```
-
-ROS 설치 공간에서 통합하려면 `calib_viz/` 패키지를 `clip_gui`와 같은 Python 검색 경로에
-함께 설치한다. 이 독립 변경은 다른 브랜치와 충돌하지 않도록 CMake 설치 목록도 수정하지 않는다.
+직접 임베드할 때는 `set_job(job, progress)` / `update_job(job, progress)` 또는
+`set_stream(workdir / "viz")`를 사용한다. 탭/호스트 종료 시 `shutdown()`을 호출한다.
+현재 `clip_gui` 종료 경로에서도 뷰어 worker/timer를 정리한다.
 
 ## 파일과 원자적 발행
 
@@ -96,7 +112,8 @@ JSON의 NaN/Infinity와 NPZ의 pickle/object 배열은 금지한다. 모든 자�
     "camera_front5": {
       "T_cam_lidar": [[0,1,0,0],[0,0,-1,-0.35],[-1,0,0,-0.77],[0,0,0,1]],
       "sigma_rot_deg": 0.12, "sigma_pos_mm": 21.4, "reprojection_px": 1.7,
-      "state": "converging", "validation_vote": null, "metric_source": "solver"
+      "state": "converging", "gate_pass": null, "validation_vote": null,
+      "informational_checks": [], "metric_source": "solver"
     }
   },
   "gate": {"status": "pending", "pass": null, "source": "solver.validation", "warning": ""},
@@ -130,8 +147,11 @@ JSON의 NaN/Infinity와 NPZ의 pickle/object 배열은 금지한다. 모든 자�
 | `sigma_rot_deg`, `sigma_pos_mm` | 1σ 회전 deg / 위치 mm. 없으면 null; 계산 방식은 `metric_source`로 명시 |
 | `reprojection_px` | **원본 영상 해상도 기준** 재투영 오차 px. 없으면 null |
 | `state` | `pending`, `converging`, `converged`, `failed` |
-| `validation_vote` | 카메라별 별도 검증 bool/null. false는 실패 색상으로 표시 |
-| `gate` | solver의 종합 판정 그대로. 뷰어는 불확실도 임계값으로 통과를 발명하지 않음 |
+| `gate_pass` | 도구의 실제 카메라 게이트 bool/null. true=청록, false=빨강, null=회색 미판정 |
+| `validation_vote` | 별도 에지/투표 진단 bool/null. 이 값만으로 실패 색상을 정하지 않음 |
+| `informational_checks` | 게이트에 포함되지 않는 참고 검사 설명 목록. 센서 행의 옅은 ⓘ와 툴팁 |
+| `gate_reasons` | 실제 카메라 게이트 실패 이유 목록 |
+| `gate` | solver의 종합 판정 그대로. 전체 배치 규칙 실패를 모든 카메라 실패로 전파하지 않음 |
 
 프러스텀은 시각화를 위한 짧은 광학 축/사각 피라미드이며, 광각 렌즈의 정확한 가시체적 경계는 아니다.
 회전/이동을 강체 보간하고 최근 14번의 표시 포즈 잔상을 유지한다. 센서별 재투영 이력은 80개,
@@ -184,9 +204,9 @@ K와 D는 원본 해상도다. 뷰어는 RGB의 Kannala–Brandt equidistant 4�
    노출 시점으로 보정된 점, 실제 관측 tracks/mask를 내보냄.
 4. 실제 검증 완료: 종합 게이트 및 카메라별 판정을 그대로 기록. 검증 시작 시 최종 판정을 미리 보내지 않음.
 
-추천 상한: 스냅샷 2–4Hz, 지도 1Hz/70k 점, 영상 1–2Hz/긴 변960px/카메라당7k 점,
+발행 측 추천 상한: 스냅샷 2–4Hz, 지도 1Hz/70k 점, 영상 1–2Hz/긴 변960px/카메라당7k 점,
 동시 영상 1–3대. JSON은256KiB, 압축/해제 NPZ는32MiB, 이미지3840×2160을 넘지 않는다.
-뷰어는 지도 최대70k(설정 가능), 영상 투영5k/특징100개로 다시 제한한다.
+임베드 뷰어는 최대20FPS/지도30k점, 영상 투영5k/특징100개로 제한한다. 숨겨진 뷰어는 렌더와 I/O를 쉬며, 선택한 카메라 영상만 읽는다. I/O worker 하나, 최신 mailbox 하나, 자산 캐시5개를 사용한다.
 producer는 크기1 mailbox나 `put_nowait`를 사용하고, 밀리면 오래된 시각화 작업을 버린다.
 solver iteration에서 이미지 인코딩/압축/파일 flush를 기다리면 안 된다. 별도 저우선순위 I/O worker 하나면 충분하다.
 I/O 실패 시 시각화만 건너뛰고 solver를 계속 진행한다. 뷰어는 producer에 ACK를 보내지 않는다.
@@ -200,28 +220,37 @@ live producer는 최신120초 정도의 자산을 보존한 뒤 지우고, 로�
 ## 리플레이의 진실 범위
 
 리플레이는 실제 최종16센서 포즈/지표, `events.jsonl`의 단계 시작·검증 완료·실행 시간,
-실제 S01 LiDAR/odometry·RGB·16bit 열화상·특징 tracks·마스크를 사용한다.
+모든 사용 가능한 구간의 LiDAR/odometry·RGB·16bit 열화상·특징 tracks·마스크를 사용한다.
 7시간52분33초의 원본 시간은60배속에서 약7분52초다. 재시작/긴 대기도 원본 타이밍에 포함된다.
 중간 포즈와 불확실도는 설계 초기 오차(약7–10°/수cm)를 최종값으로 감쇠시킨 **합성 과정**이다.
 실제 solver의 중간 해나 covariance를 복원한 것이 아니다.
 
-지도는 **S01 한 구간(약209.5m)에서12개 LiDAR sweep을 뽑은 대표 지도**다. 전체25창 전역 지도가 아니다.
-시간 흐름에 따라 샘플이 누적되며, 전체 거대 `lo/map_*.npz`를 읽지 않는다. raw NPY scan을 mmap하여
-일부 점만 추출한다. 자산은12세트/84파일로 고정하고, 이벤트도 실행당4096개로 제한한다.
-영상 미리보기는 전방5·측면좌·열화상좌3대다. 16대의 리그/지표는 모두 표시한다.
+지도는 **25개 구간 각각에서 최대12개 LiDAR sweep을 뽑아 순차 표시**한다.
+창별 odometry 원점이 달라 전역으로 합치지 않는다. 현재 구간 ID와 `map_frame`을 명시하고,
+다른 창의 지도/영상을 이어 표시하지 않는다. 원시 NPY는 mmap으로 샘플링하며,
+거대한 `lo/map_*.npz`는 읽지 않는다. 활성 구간의 궤적은 최대4096포즈,
+특징 NPZ는 해제 크기32MiB 이하만 읽고 샘플 관측만 보존한다.
+
+`prepare()`는 메타데이터만 읽고, 현재 재생 구간·시점의 프레임을 요청할 때 자산을 생성한다.
+디스크에는 최근3세트만 남기고 이벤트는 실행당4096개로 제한한다. 뷰어는 RGB14대+열화상2대
+모두 선택 가능하며 선택한 영상만 디코딩한다. 해당 구간에 영상이 없으면 대기 화면이다.
+매우 빠른 배속에서도 모든 구간을 최소 한 번 발행하고 발행 간격은 최소250ms다.
+따라서 I/O나 발행 상한 때문에 실제 재생시간은 요청한 배속보다 길어질 수 있다.
 야간 RGB는 gamma0.55, 열화상은2–98 percentile+inferno 표시 변환을 적용한다.
 열화상은 측정 time offset과 중앙 행 시점을 사용하되 clock smoothing/행별 rolling shutter 보정은 생략했다.
 RGB/열화상 특징과 LiDAR 점은 각각 실제 데이터지만 **검증된 점별 영상↔LiDAR 대응 집합은 아니다**.
-원본 종합 게이트와 별도 RGB 영상 투표 결과가 다르므로 둘 다 표시한다.
+카메라 색상은 명시된 카메라 게이트가 있으면 그대로, 기존 결과는 도구의 카메라별 실패 목록과
+검증된 지표를 사용한다. 게이트 기록이 없는 이전 형식만 도구와 같은 임계값으로 복원한다.
+RGB 야간 vote는 참고용 ⓘ다. 종합 게이트 통과를 빨간 카메라로 뒤집지 않는다.
 
 ## 검증·스크린샷
 
 ```bash
-python3 -m pytest -q tests/test_calib_viz_core.py tests/test_calib_viz_viewer.py
+QT_QPA_PLATFORM=offscreen OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test tests
 xvfb-run -a -s '-screen 0 1800x1200x24' \
-  env LIBGL_ALWAYS_SOFTWARE=1 QT_XCB_GL_INTEGRATION=xcb_glx \
+  env LIBGL_ALWAYS_SOFTWARE=1 LP_NUM_THREADS=2 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 QT_QPA_PLATFORM=xcb \
   python3 scripts/calib_viz_demo.py --replay /hdd/DM_calib/nt_regress/full/work \
-  --screenshots docs/img
+  --screenshots docs/img --max-fps 20 --max-points 30000
 ```
 
 Qt `offscreen` 플랫폼에서 OpenGL이 안 되면 위 Xvfb/GLX 경로를 사용한다. 현재 머신에서는 Xvfb 렌더링이

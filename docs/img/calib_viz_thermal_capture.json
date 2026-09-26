@@ -1,0 +1,13 @@
+[
+  {
+    "progress": 1.0,
+    "fps": 19.998799252706,
+    "points": 28401,
+    "projected_points": 590,
+    "gl_valid": true,
+    "map_window": "S01",
+    "available_cameras": 16,
+    "selected_camera": "thermal_right",
+    "camera_passes": 16
+  }
+]
