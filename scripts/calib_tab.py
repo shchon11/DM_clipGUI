@@ -709,7 +709,7 @@ class CalibTab(QWidget):
         else:
             self.lbl_acq.setText(f"<span style='color:{OK_C}'>● 녹화 중 아님</span>")
         self.btn_start.setEnabled(not block and not running)
-        if block and running:
+        if block and running and not running["attempts"][-1].get("stop_reason"):
             self.cancel_job(running, reason=f"{block} — 데이터 수집을 위해 자동 중단", ask=False)
         changed = False
         for j in self.store.jobs:
