@@ -1,0 +1,6 @@
+# Existing ROS desktop: PyQt5, numpy, opencv-python (cv2), PyYAML
+# Only these two additions are required; retain the system Qt installation.
+pyqtgraph==0.13.7
+PyOpenGL==3.1.7
+# Prevent an ABI mismatch with Ubuntu's optional bottleneck when numpy 2 is installed.
+bottleneck>=1.4,<2
