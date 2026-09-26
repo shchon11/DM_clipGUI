@@ -1,0 +1,19 @@
+{
+ "refine": {
+  "refine_max_abs_diff": 6.945555242054979e-13,
+  "pass": true
+ },
+ "ba": {
+  "ba_max_abs_dT": 0.0,
+  "ba_max_abs_dintr": 0.0,
+  "n_obs_old": 800876,
+  "n_obs_new": 800876,
+  "vs_stored_perseg_max_abs_dT": 0.0,
+  "pass": true
+ },
+ "tracks": {
+  "tracks_identical": true,
+  "tracks_identical_to_stored": true,
+  "pass": true
+ }
+}

@@ -1,0 +1,19 @@
+{
+  "score": 97,
+  "verdict": "pass",
+  "category_match": true,
+  "differences": [
+    "Real warm validation displays exactly 14 passing cameras and the two solver gate failures.",
+    "RGB-only zero-shot shows 14 active cameras, actual changing frustums, current projection, and explicit independent map coordinates."
+  ],
+  "suggestions": [],
+  "reasoning": "Actual LO, accepted RGB states, thermal timing/projection, and final gates were inspected. Corrected captures replaced waiting or inactive-camera frames.",
+  "generated_screenshots": [
+    "docs/img/calib_live_mid_lo.png",
+    "docs/img/calib_live_mid_rgb.png",
+    "docs/img/calib_live_mid_thermal.png",
+    "docs/img/calib_live_final.png",
+    "docs/img/calib_live_zero_rgb_converging.png"
+  ],
+  "next_actions": []
+}

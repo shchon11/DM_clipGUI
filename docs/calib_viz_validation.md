@@ -1,5 +1,8 @@
 # 온라인 보정 탭·3D 뷰어 검증 기록
 
+이 문서는 라이브 solver 훅 연결 전의 UI·합성 데모 검증 기록이다.
+실제 계산 스트림 연결 이후의 실행·동일성·성능 증거는 [라이브 검증 기록](calib_live_validation.md)을 따른다.
+
 검증일: 2026-09-26. 입력 `/hdd/DM_calib/nt_regress/full/{work,out}`는 읽기 전용으로 사용했다.
 전체 clip GUI, 센서, 레코더, 실제 보정 solver는 실행하지 않았다.
 

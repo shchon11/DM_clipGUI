@@ -1344,24 +1344,27 @@ clip_recorder/
 
 ## 온라인 캘리브레이션 3D 수렴 뷰어
 
-독립 뷰어에서 RGB 14대·열화상 2대의 추정 포즈, LiDAR 지도/궤적, 영상 위 깊이 투영과
-센서별 1σ·재투영 오차를 실시간으로 확인합니다. 기존 GUI·캘리브레이션 코드는 변경하지 않습니다.
+온라인 보정 탭과 독립 뷰어에서 실제 `nontarget_cal run`의 LO 지도/궤적, RGB·열화상 solver의
+채택된 반복 포즈·렌즈·재투영·비용, 영상 위 LiDAR 투영과 KLT 관측, 최종 게이트를 확인합니다.
+중간 1σ는 만들지 않고 검증에서 계산한 값만 표시합니다. 실패 후 재시작하면 최신 시도의 오류만 표시합니다.
 
 ```bash
 python3 -m pip install --user -r scripts/calib_viz/requirements.txt
-python3 scripts/calib_viz_demo.py --replay /hdd/DM_calib/nt_regress/full/work --speed 60
-# 나중에 solver 발행 훅이 연결된 실제 실행:
+# 도구는 기본 <workdir>/viz에 발행 (--viz-dir DIR / --no-viz 지원)
 python3 scripts/calib_viz_demo.py --stream /path/to/work/viz
+# 데모 전용 합성 수렴:
+python3 scripts/calib_viz_demo.py --replay /hdd/DM_calib/nt_regress/full/work --speed 60
 ```
 
-리플레이는 **실제 최종 결과·영상·점군 위에 합성 수렴 과정을 표시**합니다. 지도는 S01 대표 구간이며,
-전체 주행의 전역 지도는 아닙니다. 종합 검증과 카메라별 영상 투표 결과를 따로 표시합니다.
+리플레이만 **실제 최종 결과·영상·점군 위에 합성 수렴 과정을 표시**합니다.
+실제 지도와 리플레이 지도 모두 구간별 독립 좌표계를 명시하며 전체 주행의 전역 지도로 합치지 않습니다.
+종합 게이트, 카메라별 게이트, 참고용 RGB 영상 투표를 구분합니다.
 드래그/휠로 3D 시점을 바꾸고, 카메라 목록·영상 선택 메뉴·초기 추정 비교를 사용할 수 있습니다.
 `--max-fps 30 --max-points 30000`으로 표시 부하를 낮출 수 있습니다.
-짧게 검토하려면 `--speed 600`으로 약47초에 전체 단계를 재생할 수 있습니다.
+구형 도구에 스트림이 없으면 실제 초기값/최종값만 표시하며 영상·지도는 대기 상태로 남습니다.
 
 [스트림 규약·QWidget 연결·검증 방법](docs/calib_viz_stream.md) ·
-[초기 상태](docs/img/calib_viz_01_006.png) ·
-[수렴 중](docs/img/calib_viz_02_055.png) ·
-[최종 상태](docs/img/calib_viz_03_100.png) ·
-[열화상](docs/img/calib_viz_thermal.png) · [검증 기록](docs/calib_viz_validation.md)
+[실제 LO](docs/img/calib_live_mid_lo.png) ·
+[실제 zero-shot 수렴](docs/img/calib_live_zero_rgb_converging.png) ·
+[실제 열화상](docs/img/calib_live_mid_thermal.png) ·
+[실제 최종 게이트](docs/img/calib_live_final.png) · [실행·동일성 검증](docs/calib_live_validation.md)

@@ -1,0 +1,4710 @@
+[
+  {
+    "file": "calib_live_zero_mid_rgb.png",
+    "elapsed_s": 19.8565485260915,
+    "captured_at": 1790433547.5902607,
+    "run_id": "15b7dc3edbc3448685e5c04e6c6df3c9",
+    "seq": 4,
+    "stage": "rgb_ba",
+    "pass": "A",
+    "iteration": 4,
+    "map_frame": "lidar_window:b0/S01",
+    "window_id": "S01",
+    "point_count": 28973,
+    "projected_points": 1501,
+    "selected_camera": "camera_front5",
+    "fps": 12.047394088875377,
+    "camera_pose_change_max_abs": {
+      "camera_front1": 0.02454996876867821,
+      "camera_front2": 0.009171015104602715,
+      "camera_front3": 0.08225781753136557,
+      "camera_front4": 0.015184309527947542,
+      "camera_front5": 0.024183306947602658,
+      "camera_front6": 0.016505570600129717,
+      "camera_front7": 0.032595243624188704,
+      "camera_front8": 0.02353765050237965,
+      "camera_front9": 0.022242975316542093,
+      "camera_top": 0.014542051940204444,
+      "camera_side_left": 0.023828084644363257,
+      "camera_side_right": 0.08782436739265775,
+      "camera_rear_left": 0.0,
+      "camera_rear_right": 0.0
+    },
+    "event": {
+      "schema": "calib-viz/1",
+      "run_id": "15b7dc3edbc3448685e5c04e6c6df3c9",
+      "seq": 4,
+      "t": 1790433546.5002866,
+      "stage": "rgb_ba",
+      "progress": 0.0,
+      "cameras": {
+        "camera_front1": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1007.1109004701528,
+              0.0,
+              951.7798725577734
+            ],
+            [
+              0.0,
+              1007.1109004701528,
+              655.1309025677109
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.043383385143027316,
+            0.0038480352226113296,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              -0.006823359273778432,
+              0.9999474577632097,
+              -0.00765006412493679,
+              0.0
+            ],
+            [
+              -0.31747017455699067,
+              -0.009420663024815219,
+              -0.948221461144456,
+              -0.0
+            ],
+            [
+              -0.9482437081441538,
+              -0.0040413885073798264,
+              0.3175177745323205,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 6.804088959099614,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 2.745935106004374,
+          "cost": 13122.168965856554,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 2360,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front2": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1020.600392741499,
+              0.0,
+              941.0310656906254
+            ],
+            [
+              0.0,
+              1020.600392741499,
+              620.2579960613407
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.06249023502189402,
+            0.01798462327643796,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.003440708296935938,
+              0.9999520700381087,
+              -0.009166196207620636,
+              0.0
+            ],
+            [
+              0.0013873986236882625,
+              -0.009171015104602715,
+              -0.9999569828782686,
+              -0.0
+            ],
+            [
+              -0.9999931183020583,
+              0.003427843119565356,
+              -0.0014188869134868247,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 7.767659362381632,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 4.059164812264684,
+          "cost": 17967.646897746978,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 2400,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front3": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1039.9672915283193,
+              0.0,
+              968.0959176112083
+            ],
+            [
+              0.0,
+              1039.9672915283193,
+              563.8650967524608
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.07726209359291679,
+            0.023071344321493766,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.005319114155614586,
+              0.998619462178812,
+              -0.05225779159416694,
+              0.0
+            ],
+            [
+              0.2598452895390195,
+              -0.05184368996076695,
+              -0.9642575679327777,
+              -0.0
+            ],
+            [
+              -0.965635610636322,
+              -0.00844994490820627,
+              -0.259762325794303,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 7.585654127822596,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 6.343922595885424,
+          "cost": 345.5401439788879,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 40,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front4": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1022.1582094808555,
+              0.0,
+              932.4929888702395
+            ],
+            [
+              0.0,
+              1022.1582094808555,
+              607.3979416892798
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.04304140363354189,
+            0.0011088685235822115,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.340638978127257,
+              0.9401392445331265,
+              -0.010163044283116191,
+              0.0
+            ],
+            [
+              0.010815131268631708,
+              -0.014726970516143396,
+              -0.9998330607031651,
+              -0.0
+            ],
+            [
+              -0.940131969202229,
+              0.3404721974377631,
+              -0.015184309527947347,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 8.233553375951711,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 4.455961797179333,
+          "cost": 46856.42501796852,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 5760,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front5": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1032.6808647797848,
+              0.0,
+              952.4433721464418
+            ],
+            [
+              0.0,
+              1032.6808647797848,
+              606.9431959681999
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.060883740338829116,
+            0.019065958454398266,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.012340726707010615,
+              0.9997849464500397,
+              -0.01666635281740864,
+              0.0
+            ],
+            [
+              0.02397918069562749,
+              -0.01695873062238879,
+              -0.9995686071245153,
+              -0.0
+            ],
+            [
+              -0.9996362865350124,
+              0.011935757519685211,
+              -0.024183306947602436,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 8.22230060582518,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 4.170265285506392,
+          "cost": 17784.25033195974,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 2240,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front6": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1030.4275089959083,
+              0.0,
+              993.1440655170594
+            ],
+            [
+              0.0,
+              1030.4275089959083,
+              598.4061883393725
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.05180709868819822,
+            0.003442325533272444,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              -0.3266464915607284,
+              0.9450024527429711,
+              -0.016505570600129766,
+              0.0
+            ],
+            [
+              0.007623997335872606,
+              -0.014828452640914936,
+              -0.9998609861660266,
+              -0.0
+            ],
+            [
+              -0.9451158364008558,
+              -0.3267269216058649,
+              -0.002361034151676138,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 7.89170774757201,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 2.8106862254632716,
+          "cost": 14803.898115122634,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 2280,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front7": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1025.5284456234344,
+              0.0,
+              968.746753691478
+            ],
+            [
+              0.0,
+              1025.5284456234344,
+              625.4756154513034
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.06148015575329513,
+            0.020707712967136742,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.018725194871014962,
+              0.9470480973271731,
+              0.32054526735864336,
+              0.0
+            ],
+            [
+              0.032595243624188634,
+              0.319852826744906,
+              -0.9469063941680683,
+              -0.0
+            ],
+            [
+              -0.999293208808167,
+              0.028179257837542857,
+              -0.024879956945360115,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 7.122559337167377,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 3.524422559323993,
+          "cost": 7290.705024685456,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 1080,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front8": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1023.2742650643744,
+              0.0,
+              978.2628175531271
+            ],
+            [
+              0.0,
+              1023.2742650643744,
+              640.4147384876387
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.06231643000722282,
+            0.021252481225958957,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.00879369796993645,
+              0.9999280297157901,
+              -0.008161266121844661,
+              0.0
+            ],
+            [
+              0.023465774023166346,
+              -0.008365686186884162,
+              -0.9996896382098377,
+              -0.0
+            ],
+            [
+              -0.999685964853717,
+              0.008599458315534186,
+              -0.023537650502379426,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 7.563707037739601,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 4.175404017477861,
+          "cost": 10343.785049352267,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 1400,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front9": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1010.0584726503272,
+              0.0,
+              999.052288615308
+            ],
+            [
+              0.0,
+              1010.0584726503272,
+              600.0291416338707
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.054759612411442296,
+            0.011518213719768904,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.02224297531654217,
+              0.9397446335684029,
+              -0.3411528597688365,
+              0.0
+            ],
+            [
+              -0.0011524895708823622,
+              -0.34121295495610376,
+              -0.939985314320342,
+              -0.0
+            ],
+            [
+              -0.9997519301391002,
+              0.02130124525729978,
+              -0.006506545445292763,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 8.382850273091945,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 3.8388674288848135,
+          "cost": 6048.442790906243,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 760,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_top": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1023.28190812342,
+              0.0,
+              954.8832439782209
+            ],
+            [
+              0.0,
+              1023.28190812342,
+              609.1066826631994
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.04676076969681707,
+            0.00820099039640929,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.004205789963037541,
+              0.9998854134630404,
+              0.014542051940204444,
+              0.0
+            ],
+            [
+              0.012303384589196576,
+              0.014489339409524788,
+              -0.9998193265641178,
+              -0.0
+            ],
+            [
+              -0.9999154654561739,
+              0.004383946546250683,
+              -0.012241035668704001,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 6.36688746671067,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 3.020069623120504,
+          "cost": 13510.655125220666,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 2360,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_side_left": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1020.901002361157,
+              0.0,
+              941.9541830396157
+            ],
+            [
+              0.0,
+              1020.901002361157,
+              615.8113977557805
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.060444053855871045,
+            0.023012410385043282,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              -0.9480192650421976,
+              0.3181920586813057,
+              0.0036451201631610424,
+              -0.0
+            ],
+            [
+              0.000897008509690807,
+              0.014127116518606608,
+              -0.9998998049577785,
+              -0.0
+            ],
+            [
+              -0.31821167245182075,
+              -0.9479210085081047,
+              -0.013678199603488135,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 5.758087951660922,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 3.326510227284845,
+          "cost": 51988.77583832384,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 9418,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_side_right": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1040.7002396009252,
+              0.0,
+              1013.1237508573656
+            ],
+            [
+              0.0,
+              1040.7002396009252,
+              600.2898953447674
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.06445648355554771,
+            0.01823067525461355,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.9671397960773986,
+              0.2541957759330109,
+              0.005012219187341181,
+              0.0
+            ],
+            [
+              0.004882147128433559,
+              0.00114257367958917,
+              -0.9999874295033929,
+              -0.0
+            ],
+            [
+              -0.2541983073955918,
+              0.9671521090413864,
+              -0.00013599270204999258,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 3.772257535429615,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 2.0529452206498653,
+          "cost": 25222.992059072094,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 8449,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_rear_left": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1081.9742538477003,
+              0.0,
+              954.5377116429243
+            ],
+            [
+              0.0,
+              1081.9742538477003,
+              570.99607057387
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.04462916281247241,
+            0.013527768751780942,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              -0.49999999999999983,
+              -0.8660254037844386,
+              -1.1155626107503079e-17,
+              -0.0
+            ],
+            [
+              9.61481343191782e-17,
+              -5.551115123125781e-17,
+              -1.0,
+              -0.0
+            ],
+            [
+              0.8660254037844387,
+              -0.49999999999999983,
+              1.8585556490221067e-16,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": null,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": null,
+          "cost": 0.0,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 0,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_rear_right": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1065.5988348553856,
+              0.0,
+              970.2706844346314
+            ],
+            [
+              0.0,
+              1065.5988348553856,
+              585.0673789575546
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.032885034064734225,
+            -0.007702808563543564,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.6427876096865395,
+              -0.7660444431189782,
+              -9.189014658463866e-17,
+              -0.0
+            ],
+            [
+              9.189014658463868e-17,
+              1.4956964956450694e-16,
+              -1.0000000000000002,
+              -0.0
+            ],
+            [
+              0.7660444431189783,
+              0.6427876096865394,
+              1.4956964956450697e-16,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": null,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": null,
+          "cost": 0.0,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 0,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        }
+      },
+      "assets": {
+        "map": "assets/map_b99a204a78184c8f96da7e8713b7b3ea.npz",
+        "matching": {
+          "camera_front5": {
+            "width": 960,
+            "height": 600,
+            "source_stamp_ns": 1790250682699902421,
+            "source_window": "S01",
+            "bag_id": "b0",
+            "time_model": "exposure_midpoint",
+            "image_processing": "gamma 0.55",
+            "capture_stamp_ns": 1790250682707753921,
+            "lidar_stamp_ns": 1790250682700590716,
+            "points_frame": "os_lidar_at_image_capture",
+            "row_readout_s": 0.0,
+            "time_offset_s": 0.0,
+            "row_projection_iterations": 0,
+            "image": "assets/preview_331e10b4d56647f4a6e91849ee6a1d74.jpg",
+            "points": "assets/preview_331e10b4d56647f4a6e91849ee6a1d74_eb1f92c074db447387aff66918886281.npz"
+          }
+        }
+      },
+      "gate": {
+        "status": "pending",
+        "pass": null
+      },
+      "status_text": "\uc2e4\uc81c \uacc4\uc0b0 \u00b7 zeroshot_pass1 / A",
+      "provenance": {
+        "synthetic": false,
+        "pose_source": "solver"
+      },
+      "map_frame": "lidar_window:b0/S01",
+      "map_source": "cached-lo-sample",
+      "map_window": "S01",
+      "map_source_window": "S01",
+      "map_bag_id": "b0",
+      "task": "pass1",
+      "pass": "zeroshot_pass1",
+      "bag_id": "b0",
+      "window_id": "S01",
+      "window": 1,
+      "total_windows": 1,
+      "solve_name": "zeroshot_pass1",
+      "solver_pass": "A",
+      "windows": [
+        "S01"
+      ],
+      "iteration": 4,
+      "total_iterations": 8,
+      "accepted": true,
+      "objective_cost": 225285.28536019387,
+      "purpose": "calibration"
+    }
+  },
+  {
+    "file": "calib_live_zero_projection.png",
+    "elapsed_s": 20.683651010040194,
+    "captured_at": 1790433548.4173758,
+    "run_id": "15b7dc3edbc3448685e5c04e6c6df3c9",
+    "seq": 4,
+    "stage": "rgb_ba",
+    "pass": "A",
+    "iteration": 4,
+    "map_frame": "lidar_window:b0/S01",
+    "window_id": "S01",
+    "point_count": 28973,
+    "projected_points": 1501,
+    "selected_camera": "camera_front5",
+    "fps": 12.047394088875377,
+    "camera_pose_change_max_abs": {
+      "camera_front1": 0.02454996876867821,
+      "camera_front2": 0.009171015104602715,
+      "camera_front3": 0.08225781753136557,
+      "camera_front4": 0.015184309527947542,
+      "camera_front5": 0.024183306947602658,
+      "camera_front6": 0.016505570600129717,
+      "camera_front7": 0.032595243624188704,
+      "camera_front8": 0.02353765050237965,
+      "camera_front9": 0.022242975316542093,
+      "camera_top": 0.014542051940204444,
+      "camera_side_left": 0.023828084644363257,
+      "camera_side_right": 0.08782436739265775,
+      "camera_rear_left": 0.0,
+      "camera_rear_right": 0.0
+    },
+    "event": {
+      "schema": "calib-viz/1",
+      "run_id": "15b7dc3edbc3448685e5c04e6c6df3c9",
+      "seq": 4,
+      "t": 1790433546.5002866,
+      "stage": "rgb_ba",
+      "progress": 0.0,
+      "cameras": {
+        "camera_front1": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1007.1109004701528,
+              0.0,
+              951.7798725577734
+            ],
+            [
+              0.0,
+              1007.1109004701528,
+              655.1309025677109
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.043383385143027316,
+            0.0038480352226113296,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              -0.006823359273778432,
+              0.9999474577632097,
+              -0.00765006412493679,
+              0.0
+            ],
+            [
+              -0.31747017455699067,
+              -0.009420663024815219,
+              -0.948221461144456,
+              -0.0
+            ],
+            [
+              -0.9482437081441538,
+              -0.0040413885073798264,
+              0.3175177745323205,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 6.804088959099614,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 2.745935106004374,
+          "cost": 13122.168965856554,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 2360,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front2": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1020.600392741499,
+              0.0,
+              941.0310656906254
+            ],
+            [
+              0.0,
+              1020.600392741499,
+              620.2579960613407
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.06249023502189402,
+            0.01798462327643796,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.003440708296935938,
+              0.9999520700381087,
+              -0.009166196207620636,
+              0.0
+            ],
+            [
+              0.0013873986236882625,
+              -0.009171015104602715,
+              -0.9999569828782686,
+              -0.0
+            ],
+            [
+              -0.9999931183020583,
+              0.003427843119565356,
+              -0.0014188869134868247,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 7.767659362381632,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 4.059164812264684,
+          "cost": 17967.646897746978,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 2400,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front3": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1039.9672915283193,
+              0.0,
+              968.0959176112083
+            ],
+            [
+              0.0,
+              1039.9672915283193,
+              563.8650967524608
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.07726209359291679,
+            0.023071344321493766,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.005319114155614586,
+              0.998619462178812,
+              -0.05225779159416694,
+              0.0
+            ],
+            [
+              0.2598452895390195,
+              -0.05184368996076695,
+              -0.9642575679327777,
+              -0.0
+            ],
+            [
+              -0.965635610636322,
+              -0.00844994490820627,
+              -0.259762325794303,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 7.585654127822596,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 6.343922595885424,
+          "cost": 345.5401439788879,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 40,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front4": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1022.1582094808555,
+              0.0,
+              932.4929888702395
+            ],
+            [
+              0.0,
+              1022.1582094808555,
+              607.3979416892798
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.04304140363354189,
+            0.0011088685235822115,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.340638978127257,
+              0.9401392445331265,
+              -0.010163044283116191,
+              0.0
+            ],
+            [
+              0.010815131268631708,
+              -0.014726970516143396,
+              -0.9998330607031651,
+              -0.0
+            ],
+            [
+              -0.940131969202229,
+              0.3404721974377631,
+              -0.015184309527947347,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 8.233553375951711,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 4.455961797179333,
+          "cost": 46856.42501796852,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 5760,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front5": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1032.6808647797848,
+              0.0,
+              952.4433721464418
+            ],
+            [
+              0.0,
+              1032.6808647797848,
+              606.9431959681999
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.060883740338829116,
+            0.019065958454398266,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.012340726707010615,
+              0.9997849464500397,
+              -0.01666635281740864,
+              0.0
+            ],
+            [
+              0.02397918069562749,
+              -0.01695873062238879,
+              -0.9995686071245153,
+              -0.0
+            ],
+            [
+              -0.9996362865350124,
+              0.011935757519685211,
+              -0.024183306947602436,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 8.22230060582518,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 4.170265285506392,
+          "cost": 17784.25033195974,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 2240,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front6": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1030.4275089959083,
+              0.0,
+              993.1440655170594
+            ],
+            [
+              0.0,
+              1030.4275089959083,
+              598.4061883393725
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.05180709868819822,
+            0.003442325533272444,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              -0.3266464915607284,
+              0.9450024527429711,
+              -0.016505570600129766,
+              0.0
+            ],
+            [
+              0.007623997335872606,
+              -0.014828452640914936,
+              -0.9998609861660266,
+              -0.0
+            ],
+            [
+              -0.9451158364008558,
+              -0.3267269216058649,
+              -0.002361034151676138,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 7.89170774757201,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 2.8106862254632716,
+          "cost": 14803.898115122634,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 2280,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front7": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1025.5284456234344,
+              0.0,
+              968.746753691478
+            ],
+            [
+              0.0,
+              1025.5284456234344,
+              625.4756154513034
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.06148015575329513,
+            0.020707712967136742,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.018725194871014962,
+              0.9470480973271731,
+              0.32054526735864336,
+              0.0
+            ],
+            [
+              0.032595243624188634,
+              0.319852826744906,
+              -0.9469063941680683,
+              -0.0
+            ],
+            [
+              -0.999293208808167,
+              0.028179257837542857,
+              -0.024879956945360115,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 7.122559337167377,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 3.524422559323993,
+          "cost": 7290.705024685456,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 1080,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front8": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1023.2742650643744,
+              0.0,
+              978.2628175531271
+            ],
+            [
+              0.0,
+              1023.2742650643744,
+              640.4147384876387
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.06231643000722282,
+            0.021252481225958957,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.00879369796993645,
+              0.9999280297157901,
+              -0.008161266121844661,
+              0.0
+            ],
+            [
+              0.023465774023166346,
+              -0.008365686186884162,
+              -0.9996896382098377,
+              -0.0
+            ],
+            [
+              -0.999685964853717,
+              0.008599458315534186,
+              -0.023537650502379426,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 7.563707037739601,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 4.175404017477861,
+          "cost": 10343.785049352267,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 1400,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front9": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1010.0584726503272,
+              0.0,
+              999.052288615308
+            ],
+            [
+              0.0,
+              1010.0584726503272,
+              600.0291416338707
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.054759612411442296,
+            0.011518213719768904,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.02224297531654217,
+              0.9397446335684029,
+              -0.3411528597688365,
+              0.0
+            ],
+            [
+              -0.0011524895708823622,
+              -0.34121295495610376,
+              -0.939985314320342,
+              -0.0
+            ],
+            [
+              -0.9997519301391002,
+              0.02130124525729978,
+              -0.006506545445292763,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 8.382850273091945,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 3.8388674288848135,
+          "cost": 6048.442790906243,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 760,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_top": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1023.28190812342,
+              0.0,
+              954.8832439782209
+            ],
+            [
+              0.0,
+              1023.28190812342,
+              609.1066826631994
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.04676076969681707,
+            0.00820099039640929,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.004205789963037541,
+              0.9998854134630404,
+              0.014542051940204444,
+              0.0
+            ],
+            [
+              0.012303384589196576,
+              0.014489339409524788,
+              -0.9998193265641178,
+              -0.0
+            ],
+            [
+              -0.9999154654561739,
+              0.004383946546250683,
+              -0.012241035668704001,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 6.36688746671067,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 3.020069623120504,
+          "cost": 13510.655125220666,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 2360,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_side_left": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1020.901002361157,
+              0.0,
+              941.9541830396157
+            ],
+            [
+              0.0,
+              1020.901002361157,
+              615.8113977557805
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.060444053855871045,
+            0.023012410385043282,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              -0.9480192650421976,
+              0.3181920586813057,
+              0.0036451201631610424,
+              -0.0
+            ],
+            [
+              0.000897008509690807,
+              0.014127116518606608,
+              -0.9998998049577785,
+              -0.0
+            ],
+            [
+              -0.31821167245182075,
+              -0.9479210085081047,
+              -0.013678199603488135,
+              -0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 5.758087951660922,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 3.326510227284845,
+          "cost": 51988.77583832384,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 9418,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_side_right": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1040.7002396009252,
+              0.0,
+              1013.1237508573656
+            ],
+            [
+              0.0,
+              1040.7002396009252,
+              600.2898953447674
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.06445648355554771,
+            0.01823067525461355,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.9671397960773986,
+              0.2541957759330109,
+              0.005012219187341181,
+              0.0
+            ],
+            [
+              0.004882147128433559,
+              0.00114257367958917,
+              -0.9999874295033929,
+              -0.0
+            ],
+            [
+              -0.2541983073955918,
+              0.9671521090413864,
+              -0.00013599270204999258,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 3.772257535429615,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 2.0529452206498653,
+          "cost": 25222.992059072094,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 8449,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_rear_left": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1081.9742538477003,
+              0.0,
+              954.5377116429243
+            ],
+            [
+              0.0,
+              1081.9742538477003,
+              570.99607057387
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.04462916281247241,
+            0.013527768751780942,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              -0.49999999999999983,
+              -0.8660254037844386,
+              -1.1155626107503079e-17,
+              -0.0
+            ],
+            [
+              9.61481343191782e-17,
+              -5.551115123125781e-17,
+              -1.0,
+              -0.0
+            ],
+            [
+              0.8660254037844387,
+              -0.49999999999999983,
+              1.8585556490221067e-16,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": null,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": null,
+          "cost": 0.0,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 0,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_rear_right": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1065.5988348553856,
+              0.0,
+              970.2706844346314
+            ],
+            [
+              0.0,
+              1065.5988348553856,
+              585.0673789575546
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.032885034064734225,
+            -0.007702808563543564,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.6427876096865395,
+              -0.7660444431189782,
+              -9.189014658463866e-17,
+              -0.0
+            ],
+            [
+              9.189014658463868e-17,
+              1.4956964956450694e-16,
+              -1.0000000000000002,
+              -0.0
+            ],
+            [
+              0.7660444431189783,
+              0.6427876096865394,
+              1.4956964956450697e-16,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": null,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": null,
+          "cost": 0.0,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 0,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "A",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 4,
+          "total_iterations": 8,
+          "purpose": "calibration",
+          "accepted": true
+        }
+      },
+      "assets": {
+        "map": "assets/map_b99a204a78184c8f96da7e8713b7b3ea.npz",
+        "matching": {
+          "camera_front5": {
+            "width": 960,
+            "height": 600,
+            "source_stamp_ns": 1790250682699902421,
+            "source_window": "S01",
+            "bag_id": "b0",
+            "time_model": "exposure_midpoint",
+            "image_processing": "gamma 0.55",
+            "capture_stamp_ns": 1790250682707753921,
+            "lidar_stamp_ns": 1790250682700590716,
+            "points_frame": "os_lidar_at_image_capture",
+            "row_readout_s": 0.0,
+            "time_offset_s": 0.0,
+            "row_projection_iterations": 0,
+            "image": "assets/preview_331e10b4d56647f4a6e91849ee6a1d74.jpg",
+            "points": "assets/preview_331e10b4d56647f4a6e91849ee6a1d74_eb1f92c074db447387aff66918886281.npz"
+          }
+        }
+      },
+      "gate": {
+        "status": "pending",
+        "pass": null
+      },
+      "status_text": "\uc2e4\uc81c \uacc4\uc0b0 \u00b7 zeroshot_pass1 / A",
+      "provenance": {
+        "synthetic": false,
+        "pose_source": "solver"
+      },
+      "map_frame": "lidar_window:b0/S01",
+      "map_source": "cached-lo-sample",
+      "map_window": "S01",
+      "map_source_window": "S01",
+      "map_bag_id": "b0",
+      "task": "pass1",
+      "pass": "zeroshot_pass1",
+      "bag_id": "b0",
+      "window_id": "S01",
+      "window": 1,
+      "total_windows": 1,
+      "solve_name": "zeroshot_pass1",
+      "solver_pass": "A",
+      "windows": [
+        "S01"
+      ],
+      "iteration": 4,
+      "total_iterations": 8,
+      "accepted": true,
+      "objective_cost": 225285.28536019387,
+      "purpose": "calibration"
+    }
+  },
+  {
+    "file": "calib_live_zero_rgb_converging.png",
+    "elapsed_s": 40.70397338503972,
+    "captured_at": 1790433568.4376848,
+    "run_id": "15b7dc3edbc3448685e5c04e6c6df3c9",
+    "seq": 6,
+    "stage": "rgb_ba",
+    "pass": "B1",
+    "iteration": 3,
+    "map_frame": "lidar_window:b0/S01",
+    "window_id": "S01",
+    "point_count": 28973,
+    "projected_points": 1407,
+    "selected_camera": "camera_front5",
+    "fps": 12.047600638707264,
+    "camera_pose_change_max_abs": {
+      "camera_front1": 0.590914316474792,
+      "camera_front2": 0.5424266385625202,
+      "camera_front3": 2.1141374129457593,
+      "camera_front4": 0.4741337884221038,
+      "camera_front5": 0.8414120567345172,
+      "camera_front6": 0.4531291721262429,
+      "camera_front7": 1.1978634524259524,
+      "camera_front8": 0.9547310558989551,
+      "camera_front9": 1.0270438255639882,
+      "camera_top": 0.1804264055312118,
+      "camera_side_left": 0.5537630913928153,
+      "camera_side_right": 0.3916463184376588,
+      "camera_rear_left": 0.0,
+      "camera_rear_right": 0.0
+    },
+    "event": {
+      "schema": "calib-viz/1",
+      "run_id": "15b7dc3edbc3448685e5c04e6c6df3c9",
+      "seq": 6,
+      "t": 1790433567.975997,
+      "stage": "rgb_ba",
+      "progress": 0.0,
+      "cameras": {
+        "camera_front1": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1058.2798557631559,
+              0.0,
+              956.8749328083111
+            ],
+            [
+              0.0,
+              1058.2798557631559,
+              612.7012490003551
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.04475576449013959,
+            0.005280013870981329,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              -0.007591834960281815,
+              0.9998983953037355,
+              -0.012064953831298176,
+              0.044928790139859294
+            ],
+            [
+              -0.3417212948326332,
+              -0.013933120929508503,
+              -0.9396980498006111,
+              -0.23756984321642613
+            ],
+            [
+              -0.939770674526421,
+              -0.0030111808612577344,
+              0.3417923522988428,
+              -0.590914316474792
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 3.8116752099619733,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 1.0379145642342258,
+          "cost": 4739.329419104219,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 2360,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "B1",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 3,
+          "total_iterations": 4,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front2": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1060.7227203176262,
+              0.0,
+              957.6435045514626
+            ],
+            [
+              0.0,
+              1060.7227203176262,
+              614.0229394930327
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.048295580338424106,
+            0.005154521438044787,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              -0.0005144329904783782,
+              0.9998239459442209,
+              -0.018756664821517235,
+              0.009218211362678797
+            ],
+            [
+              -0.005067517261065624,
+              -0.01875903290850844,
+              -0.9998111916522768,
+              -0.05250942902657543
+            ],
+            [
+              -0.9999870277296136,
+              -0.0004192861384923836,
+              0.0050762753694967066,
+              -0.5424266385625202
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 3.326701643205594,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 1.1781430343164754,
+          "cost": 4800.8059364933115,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 2400,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "B1",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 3,
+          "total_iterations": 4,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front3": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1029.6028404812146,
+              0.0,
+              985.427900370519
+            ],
+            [
+              0.0,
+              1029.6028404812146,
+              586.1876978570648
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.03331198561198377,
+            -0.002790502751448945,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              -0.03179108609069662,
+              0.999190162268162,
+              -0.024664680652659754,
+              0.1357268969597489
+            ],
+            [
+              0.2866586903702898,
+              -0.014525428436685988,
+              -0.9579226519734886,
+              1.7912668956509454
+            ],
+            [
+              -0.957505155119472,
+              -0.037523746551410386,
+              -0.28596476420073363,
+              -2.1141374129457593
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 0.6134045284031102,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 0.455264703826323,
+          "cost": 7.50473397506031,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 40,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "B1",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 3,
+          "total_iterations": 4,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front4": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1058.4668880987447,
+              0.0,
+              956.1170159719663
+            ],
+            [
+              0.0,
+              1058.4668880987447,
+              601.8713817256028
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.03951034634346814,
+            -0.0019358622223861607,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.32781178595933735,
+              0.9446631002411862,
+              -0.012290648024427616,
+              0.13823950893946232
+            ],
+            [
+              0.005028286052080383,
+              -0.014753922622421988,
+              -0.9998785116736082,
+              0.006857201631274019
+            ],
+            [
+              -0.944729669972066,
+              0.3277101597600577,
+              -0.009586546015619774,
+              -0.4741337884221038
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 3.4847307418581646,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 1.2683063719254262,
+          "cost": 13241.271962824852,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 5760,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "B1",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 3,
+          "total_iterations": 4,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front5": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1052.5424941854924,
+              0.0,
+              962.1983960418047
+            ],
+            [
+              0.0,
+              1052.5424941854924,
+              595.6664811176848
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.03854793059118086,
+            -0.0009287275329492701,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.0022262801412580597,
+              0.9998672099596186,
+              -0.016143299672044177,
+              -0.13728500460306842
+            ],
+            [
+              0.01179975554636307,
+              -0.016168481983755412,
+              -0.9997996529102157,
+              0.011520079883400992
+            ],
+            [
+              -0.9999279021238374,
+              0.0020353471226689374,
+              -0.01183418422670227,
+              -0.8414120567345172
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 3.735646569160549,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 1.2035882386234404,
+          "cost": 5388.067020292356,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 2240,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "B1",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 3,
+          "total_iterations": 4,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front6": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1056.8426074955062,
+              0.0,
+              980.2796695706949
+            ],
+            [
+              0.0,
+              1056.8426074955062,
+              591.9246753277431
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.033934849925114426,
+            -0.0034438768816039403,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              -0.3350784750778281,
+              0.9420454631712505,
+              -0.016515473289680737,
+              -0.36186636298946245
+            ],
+            [
+              0.0006192530231828802,
+              -0.017308610143921183,
+              -0.9998500030207429,
+              0.13918229835586857
+            ],
+            [
+              -0.9421900190859646,
+              -0.33503844157551615,
+              0.0052163781916972985,
+              -0.4531291721262429
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 3.595567498135122,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 1.3596992541662174,
+          "cost": 5426.2924370088585,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 2280,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "B1",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 3,
+          "total_iterations": 4,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front7": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1035.8235155465543,
+              0.0,
+              971.9044198524155
+            ],
+            [
+              0.0,
+              1035.8235155465543,
+              621.8659117457186
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.02760831141632554,
+            -0.001964495563869217,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.0011915999494651593,
+              0.9455777768246196,
+              0.32539398898100547,
+              -0.5691132704751801
+            ],
+            [
+              0.015812866124105637,
+              0.32533571833505015,
+              -0.9454663524633535,
+              -0.2380559884169685
+            ],
+            [
+              -0.9998742587718228,
+              0.006272029243161715,
+              -0.014564624769329817,
+              -1.1978634524259524
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 4.469240823699526,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 1.6869461656095808,
+          "cost": 3638.4220076789675,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 1080,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "B1",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 3,
+          "total_iterations": 4,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front8": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1054.3781444749152,
+              0.0,
+              980.2324749896214
+            ],
+            [
+              0.0,
+              1054.3781444749152,
+              629.3151616363889
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.05496377191456028,
+            0.01709316593046429,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              -1.6942816561744787e-05,
+              0.9998964381015494,
+              -0.014391413578084232,
+              -0.5471323481032401
+            ],
+            [
+              0.010284856384056438,
+              -0.014390478174209615,
+              -0.999843555696128,
+              0.16048016888884986
+            ],
+            [
+              -0.999947109322338,
+              -0.00016495378776881884,
+              -0.010283547449572083,
+              -0.9547310558989551
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 3.570120740415731,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 1.4805180369887279,
+          "cost": 3678.3210830876596,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 1400,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "B1",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 3,
+          "total_iterations": 4,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_front9": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1048.2845346139113,
+              0.0,
+              988.4315029116162
+            ],
+            [
+              0.0,
+              1048.2845346139113,
+              595.8935899065814
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.019989735890588868,
+            -0.014643507861102974,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.007526585484297182,
+              0.9341736546581971,
+              -0.35673930741298326,
+              -0.12100547497999925
+            ],
+            [
+              -0.0036712784982563564,
+              -0.3567211933348167,
+              -0.9342036779739054,
+              0.2982004535987996
+            ],
+            [
+              -0.9999649354978084,
+              0.008341053190803562,
+              0.0007447190962890967,
+              -1.0270438255639882
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 3.2718663968697808,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 0.9792789344922312,
+          "cost": 1381.0303079038224,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 760,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "B1",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 3,
+          "total_iterations": 4,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_top": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1056.0828815456966,
+              0.0,
+              965.9907726235803
+            ],
+            [
+              0.0,
+              1056.0828815456966,
+              592.9436330190467
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.03950956877205408,
+            -0.00047624124116972186,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.0037351641450370475,
+              0.9999314175871888,
+              0.011099940129761687,
+              -0.09982731062807143
+            ],
+            [
+              -0.0017487880540985588,
+              0.011106532240672613,
+              -0.9999367913432975,
+              0.1804264055312118
+            ],
+            [
+              -0.9999914951084091,
+              0.003715516607628734,
+              0.001790152838995381,
+              -0.16702438677114528
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 3.0369994070595956,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 1.1156694614372835,
+          "cost": 4694.501500349155,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 2360,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "B1",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 3,
+          "total_iterations": 4,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_side_left": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1052.153271437191,
+              0.0,
+              957.6224421005641
+            ],
+            [
+              0.0,
+              1052.153271437191,
+              592.8165072396839
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.03968693729784767,
+            0.0026815253441819665,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              -0.9521007600986764,
+              0.3057518173732824,
+              0.004468645483544524,
+              0.0060116284271609765
+            ],
+            [
+              -0.010172439034049467,
+              -0.017064243143113715,
+              -0.9998026470709362,
+              -0.06573259340700163
+            ],
+            [
+              -0.3056152223035055,
+              -0.9519583172486535,
+              0.019357120588846775,
+              -0.5537630913928153
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 3.0596029366285507,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 1.1349151661054377,
+          "cost": 17433.48960208612,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 9418,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "B1",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 3,
+          "total_iterations": 4,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_side_right": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1039.1366640634574,
+              0.0,
+              992.6250951963292
+            ],
+            [
+              0.0,
+              1039.1366640634574,
+              583.7468892817907
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.03506791261258468,
+            0.0009683056568435076,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.9556899559085958,
+              0.2943594174106705,
+              0.0030399929401993624,
+              0.1155388125592414
+            ],
+            [
+              0.00578858256043862,
+              -0.00846671457224231,
+              -0.9999474021448794,
+              0.00042161706104380326
+            ],
+            [
+              -0.294318195984154,
+              0.9556572859168728,
+              -0.009795477866361172,
+              -0.3916463184376588
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": 2.4739193255938403,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": 0.93569785837038,
+          "cost": 11237.666509996401,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 8449,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "B1",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 3,
+          "total_iterations": 4,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_rear_left": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1081.9742538477003,
+              0.0,
+              954.5377116429243
+            ],
+            [
+              0.0,
+              1081.9742538477003,
+              570.99607057387
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.04462916281247241,
+            0.013527768751780942,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              -0.49999999999999983,
+              -0.8660254037844386,
+              -1.1155626107503079e-17,
+              -0.0
+            ],
+            [
+              9.61481343191782e-17,
+              -5.551115123125781e-17,
+              -1.0,
+              -0.0
+            ],
+            [
+              0.8660254037844387,
+              -0.49999999999999983,
+              1.8585556490221067e-16,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": null,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": null,
+          "cost": 0.0,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 0,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "B1",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 3,
+          "total_iterations": 4,
+          "purpose": "calibration",
+          "accepted": true
+        },
+        "camera_rear_right": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1065.5988348553856,
+              0.0,
+              970.2706844346314
+            ],
+            [
+              0.0,
+              1065.5988348553856,
+              585.0673789575546
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.032885034064734225,
+            -0.007702808563543564,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.6427876096865395,
+              -0.7660444431189782,
+              -9.189014658463866e-17,
+              -0.0
+            ],
+            [
+              9.189014658463868e-17,
+              1.4956964956450694e-16,
+              -1.0000000000000002,
+              -0.0
+            ],
+            [
+              0.7660444431189783,
+              0.6427876096865394,
+              1.4956964956450697e-16,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converging",
+          "gate_pass": null,
+          "reprojection_px": null,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.accepted_residuals",
+          "reprojection_median_px": null,
+          "cost": 0.0,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 0,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "zeroshot_pass1",
+          "solver_pass": "B1",
+          "windows": [
+            "S01"
+          ],
+          "iteration": 3,
+          "total_iterations": 4,
+          "purpose": "calibration",
+          "accepted": true
+        }
+      },
+      "assets": {
+        "map": "assets/map_b99a204a78184c8f96da7e8713b7b3ea.npz",
+        "matching": {
+          "camera_front5": {
+            "width": 960,
+            "height": 600,
+            "source_stamp_ns": 1790250682699902421,
+            "source_window": "S01",
+            "bag_id": "b0",
+            "time_model": "exposure_midpoint",
+            "image_processing": "gamma 0.55",
+            "capture_stamp_ns": 1790250682707753921,
+            "lidar_stamp_ns": 1790250682700590716,
+            "points_frame": "os_lidar_at_image_capture",
+            "row_readout_s": 0.0,
+            "time_offset_s": 0.0,
+            "row_projection_iterations": 0,
+            "image": "assets/preview_e89489ab0bdc477194a92213b744adf0.jpg",
+            "points": "assets/preview_e89489ab0bdc477194a92213b744adf0_9791fd33d3ee43dea955fde2d28c284f.npz"
+          }
+        }
+      },
+      "gate": {
+        "status": "pending",
+        "pass": null
+      },
+      "status_text": "\uc2e4\uc81c \uacc4\uc0b0 \u00b7 zeroshot_pass1 / B1",
+      "provenance": {
+        "synthetic": false,
+        "pose_source": "solver"
+      },
+      "map_frame": "lidar_window:b0/S01",
+      "map_source": "cached-lo-sample",
+      "map_window": "S01",
+      "map_source_window": "S01",
+      "map_bag_id": "b0",
+      "task": "pass1",
+      "pass": "zeroshot_pass1",
+      "bag_id": "b0",
+      "window_id": "S01",
+      "window": 1,
+      "total_windows": 1,
+      "solve_name": "zeroshot_pass1",
+      "solver_pass": "B1",
+      "windows": [
+        "S01"
+      ],
+      "iteration": 3,
+      "total_iterations": 4,
+      "accepted": true,
+      "objective_cost": 75747.84043960457,
+      "purpose": "calibration"
+    }
+  },
+  {
+    "file": "calib_live_zero_final.png",
+    "elapsed_s": 242.34126136102714,
+    "captured_at": 1790433770.0749745,
+    "run_id": "15b7dc3edbc3448685e5c04e6c6df3c9",
+    "seq": 36,
+    "stage": "validation",
+    "pass": "final",
+    "iteration": null,
+    "map_frame": "lidar_window:b0/S01",
+    "window_id": "S01",
+    "point_count": 28973,
+    "projected_points": 1354,
+    "selected_camera": "camera_front5",
+    "fps": 12.04834435366275,
+    "camera_pose_change_max_abs": {
+      "camera_front1": 0.6559302204954055,
+      "camera_front2": 0.7888200840661753,
+      "camera_front3": 2.1141374129457593,
+      "camera_front4": 0.7049591723658161,
+      "camera_front5": 0.8414120567345172,
+      "camera_front6": 0.7099016569126316,
+      "camera_front7": 1.1978634524259524,
+      "camera_front8": 1.1272093691316518,
+      "camera_front9": 1.1468377938238596,
+      "camera_top": 0.33050457171201375,
+      "camera_side_left": 0.567355122567735,
+      "camera_side_right": 0.6584686518941014,
+      "camera_rear_left": 5.551115123125783e-17,
+      "camera_rear_right": 4.930380657631324e-32
+    },
+    "event": {
+      "schema": "calib-viz/1",
+      "run_id": "15b7dc3edbc3448685e5c04e6c6df3c9",
+      "seq": 36,
+      "t": 1790433769.531159,
+      "stage": "validation",
+      "progress": 1.0,
+      "cameras": {
+        "camera_front1": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1055.4119189928185,
+              0.0,
+              963.1358647818571
+            ],
+            [
+              0.0,
+              1055.4119189928185,
+              606.8908382722764
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.04104189782852936,
+            0.0017135954033793632,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              -0.0021256092283434367,
+              0.9999108374393711,
+              -0.013183283229278761,
+              0.47873353021567566
+            ],
+            [
+              -0.34554100802572163,
+              -0.013105688255216623,
+              -0.9383121296817627,
+              -0.48859537371838474
+            ],
+            [
+              -0.9384012433697939,
+              0.0025608800542154856,
+              0.3455380562765431,
+              -0.632854842028
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converged",
+          "gate_pass": null,
+          "reprojection_px": 1.0649489733028377,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.validation",
+          "reprojection_median_px": 1.0649489733028377,
+          "cost": null,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 10099,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "final",
+          "solver_pass": "final",
+          "windows": [
+            "S01"
+          ],
+          "iteration": null,
+          "total_iterations": null,
+          "purpose": "validation",
+          "accepted": null,
+          "gate_reasons": [],
+          "validation_vote": false,
+          "informational_checks": [
+            "RGB edge vote is informational"
+          ]
+        },
+        "camera_front2": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1055.6722871866743,
+              0.0,
+              966.5871249294489
+            ],
+            [
+              0.0,
+              1055.6722871866743,
+              611.6105391367315
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.037443432991349244,
+            -0.002182723622348363,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.005732017356863099,
+              0.9998250545377342,
+              -0.017804614447841826,
+              0.343126416012788
+            ],
+            [
+              -0.007127703777067273,
+              -0.01776360433082325,
+              -0.9998168083204261,
+              -0.35694181828256294
+            ],
+            [
+              -0.9999581690330285,
+              0.005857873316625202,
+              0.007024635529290429,
+              -0.7888200840661753
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converged",
+          "gate_pass": null,
+          "reprojection_px": 1.0802330018164583,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.validation",
+          "reprojection_median_px": 1.0803205011665487,
+          "cost": null,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 8252,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "final",
+          "solver_pass": "final",
+          "windows": [
+            "S01"
+          ],
+          "iteration": null,
+          "total_iterations": null,
+          "purpose": "validation",
+          "accepted": null,
+          "gate_reasons": [],
+          "validation_vote": false,
+          "informational_checks": [
+            "RGB edge vote is informational"
+          ]
+        },
+        "camera_front3": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1056.2851992646436,
+              0.0,
+              984.6723480727663
+            ],
+            [
+              0.0,
+              1056.2851992646436,
+              608.3348627149637
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.040301334892779976,
+            -0.0008491256889493678,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              -0.00921341222244028,
+              0.9997721414677785,
+              -0.019255601266947753,
+              0.28208416561020605
+            ],
+            [
+              0.30607082558522525,
+              -0.015512644981003066,
+              -0.9518823496479345,
+              0.39876728437794856
+            ],
+            [
+              -0.9519641604392463,
+              -0.014663662251485897,
+              -0.30585816034328067,
+              -0.670804586666397
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converged",
+          "gate_pass": null,
+          "reprojection_px": 1.0514789368100708,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.validation",
+          "reprojection_median_px": 1.0517036400616453,
+          "cost": null,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 7980,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "final",
+          "solver_pass": "final",
+          "windows": [
+            "S01"
+          ],
+          "iteration": null,
+          "total_iterations": null,
+          "purpose": "validation",
+          "accepted": null,
+          "gate_reasons": [],
+          "validation_vote": false,
+          "informational_checks": [
+            "RGB edge vote is informational"
+          ]
+        },
+        "camera_front4": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1053.7850331942443,
+              0.0,
+              966.7886183658584
+            ],
+            [
+              0.0,
+              1053.7850331942443,
+              599.5213616547807
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.03759425928424988,
+            -0.0023155727941227724,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.3351122735851995,
+              0.9420898470481048,
+              -0.012902874929149037,
+              0.3445053015471463
+            ],
+            [
+              0.0030334576304797633,
+              -0.014773491447940256,
+              -0.9998862645747477,
+              -0.3392280266652177
+            ],
+            [
+              -0.9421733185711444,
+              0.3350350191238472,
+              -0.00780856794303626,
+              -0.7049591723658161
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converged",
+          "gate_pass": null,
+          "reprojection_px": 1.0456499321432033,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.validation",
+          "reprojection_median_px": 1.0456499321432033,
+          "cost": null,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 7213,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "final",
+          "solver_pass": "final",
+          "windows": [
+            "S01"
+          ],
+          "iteration": null,
+          "total_iterations": null,
+          "purpose": "validation",
+          "accepted": null,
+          "gate_reasons": [],
+          "validation_vote": false,
+          "informational_checks": [
+            "RGB edge vote is informational"
+          ]
+        },
+        "camera_front5": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1054.429094005577,
+              0.0,
+              964.0894956293757
+            ],
+            [
+              0.0,
+              1054.429094005577,
+              596.6814912561049
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.0368903210223251,
+            -0.003205888512261323,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.0038022115893511415,
+              0.9998725070641802,
+              -0.015508475238444116,
+              0.0034836212656523514
+            ],
+            [
+              0.013726798243946646,
+              -0.015559312440235968,
+              -0.9997847182300582,
+              -0.07485597679447077
+            ],
+            [
+              -0.999898553952849,
+              0.003588511331841222,
+              -0.013784207972221662,
+              -0.7893196557966603
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converged",
+          "gate_pass": null,
+          "reprojection_px": 1.0408736261691733,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.validation",
+          "reprojection_median_px": 1.040895738263647,
+          "cost": null,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 7506,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "final",
+          "solver_pass": "final",
+          "windows": [
+            "S01"
+          ],
+          "iteration": null,
+          "total_iterations": null,
+          "purpose": "validation",
+          "accepted": null,
+          "gate_reasons": [],
+          "validation_vote": false,
+          "informational_checks": [
+            "RGB edge vote is informational"
+          ]
+        },
+        "camera_front6": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1056.888706742657,
+              0.0,
+              967.9184879811805
+            ],
+            [
+              0.0,
+              1056.888706742657,
+              588.9924739945321
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.0384923046622493,
+            -0.00026276133187243543,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              -0.34508141677015935,
+              0.9384462093321511,
+              -0.01541194309671549,
+              -0.40548783482448586
+            ],
+            [
+              -0.0009856909853503976,
+              -0.01678296360122302,
+              -0.999858670285977,
+              -0.03286857145363046
+            ],
+            [
+              -0.938572237077776,
+              -0.34501745509883547,
+              0.006716506825886943,
+              -0.701067622215526
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converged",
+          "gate_pass": null,
+          "reprojection_px": 1.0610641685232978,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.validation",
+          "reprojection_median_px": 1.0611117995148027,
+          "cost": null,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 7144,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "final",
+          "solver_pass": "final",
+          "windows": [
+            "S01"
+          ],
+          "iteration": null,
+          "total_iterations": null,
+          "purpose": "validation",
+          "accepted": null,
+          "gate_reasons": [],
+          "validation_vote": false,
+          "informational_checks": [
+            "RGB edge vote is informational"
+          ]
+        },
+        "camera_front7": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1055.4815348556447,
+              0.0,
+              970.4599319931028
+            ],
+            [
+              0.0,
+              1055.4815348556447,
+              604.2417992905671
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.039704303803110894,
+            -0.0009411652994769444,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              -0.0035603025814781144,
+              0.9449907981752481,
+              0.3270775376109399,
+              -0.2551707256588123
+            ],
+            [
+              0.000744842006190261,
+              0.3270820258943994,
+              -0.9449956579515068,
+              -0.25000540103503127
+            ],
+            [
+              -0.9999933847060772,
+              -0.0031208493911965137,
+              -0.001868379823091,
+              -0.7640888319414102
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converged",
+          "gate_pass": null,
+          "reprojection_px": 1.1666645934400155,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.validation",
+          "reprojection_median_px": 1.1666645934400155,
+          "cost": null,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 6607,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "final",
+          "solver_pass": "final",
+          "windows": [
+            "S01"
+          ],
+          "iteration": null,
+          "total_iterations": null,
+          "purpose": "validation",
+          "accepted": null,
+          "gate_reasons": [],
+          "validation_vote": false,
+          "informational_checks": [
+            "RGB edge vote is informational"
+          ]
+        },
+        "camera_front8": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1056.8434094077645,
+              0.0,
+              974.477681412673
+            ],
+            [
+              0.0,
+              1056.8434094077645,
+              621.4060724890493
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.04006560654610684,
+            -0.00011149794022433362,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              -0.003965538205911155,
+              0.9998922088217354,
+              -0.014136663125678474,
+              -0.3617024528267419
+            ],
+            [
+              0.0052558620164077675,
+              -0.014115738615101674,
+              -0.999886554483964,
+              0.08868036547162587
+            ],
+            [
+              -0.9999783249756975,
+              -0.004039388684144111,
+              -0.005199318980065461,
+              -0.7820974454507285
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converged",
+          "gate_pass": null,
+          "reprojection_px": 1.0988050019286177,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.validation",
+          "reprojection_median_px": 1.0988050019286177,
+          "cost": null,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 7619,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "final",
+          "solver_pass": "final",
+          "windows": [
+            "S01"
+          ],
+          "iteration": null,
+          "total_iterations": null,
+          "purpose": "validation",
+          "accepted": null,
+          "gate_reasons": [],
+          "validation_vote": false,
+          "informational_checks": [
+            "RGB edge vote is informational"
+          ]
+        },
+        "camera_front9": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1055.7274129725286,
+              0.0,
+              981.5523271922918
+            ],
+            [
+              0.0,
+              1055.7274129725286,
+              588.4477804255998
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.03933675782008995,
+            -6.356080381019318e-05,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.0025572291673828565,
+              0.9342142078982826,
+              -0.356703342204654,
+              -0.47465135096179817
+            ],
+            [
+              -0.004128534435218915,
+              -0.35669160538378625,
+              -0.9342130666246075,
+              0.11747170965544436
+            ],
+            [
+              -0.9999882078216743,
+              0.0038616589339723266,
+              0.002944793350130642,
+              -0.756431780056795
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converged",
+          "gate_pass": null,
+          "reprojection_px": 1.210186154890304,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.validation",
+          "reprojection_median_px": 1.2104105293112202,
+          "cost": null,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 6670,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "final",
+          "solver_pass": "final",
+          "windows": [
+            "S01"
+          ],
+          "iteration": null,
+          "total_iterations": null,
+          "purpose": "validation",
+          "accepted": null,
+          "gate_reasons": [],
+          "validation_vote": false,
+          "informational_checks": [
+            "RGB edge vote is informational"
+          ]
+        },
+        "camera_top": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1057.1568911351874,
+              0.0,
+              963.8471668729574
+            ],
+            [
+              0.0,
+              1057.1568911351874,
+              586.4326207594147
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.041056133233846666,
+            0.0016834814391435808,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.0013322086622740107,
+              0.99992107087631,
+              0.012493087594962248,
+              0.04732440049057836
+            ],
+            [
+              -0.005972010592732582,
+              0.012500831246617184,
+              -0.9999040275484566,
+              0.05737355720693212
+            ],
+            [
+              -0.9999812799795609,
+              0.0012574719554898093,
+              0.005988192942842258,
+              -0.1489092774922653
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converged",
+          "gate_pass": null,
+          "reprojection_px": 1.072870272828271,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.validation",
+          "reprojection_median_px": 1.0728752764914238,
+          "cost": null,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 8200,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "final",
+          "solver_pass": "final",
+          "windows": [
+            "S01"
+          ],
+          "iteration": null,
+          "total_iterations": null,
+          "purpose": "validation",
+          "accepted": null,
+          "gate_reasons": [],
+          "validation_vote": false,
+          "informational_checks": [
+            "RGB edge vote is informational"
+          ]
+        },
+        "camera_side_left": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1055.3339288253967,
+              0.0,
+              958.8477730952588
+            ],
+            [
+              0.0,
+              1055.3339288253967,
+              590.6795134580832
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.03802616544282973,
+            0.000244243870529579,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              -0.9520164278054682,
+              0.30601916744787866,
+              0.004121934378695354,
+              -0.01657489334817166
+            ],
+            [
+              -0.010683150873707501,
+              -0.019768832106422756,
+              -0.9997474999041298,
+              -0.3497768916509995
+            ],
+            [
+              -0.3058604117500739,
+              -0.9518200788130367,
+              0.02208950185993475,
+              -0.51338261846841
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converged",
+          "gate_pass": null,
+          "reprojection_px": 1.0312232132775854,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.validation",
+          "reprojection_median_px": 1.0312962136624337,
+          "cost": null,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 11612,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "final",
+          "solver_pass": "final",
+          "windows": [
+            "S01"
+          ],
+          "iteration": null,
+          "total_iterations": null,
+          "purpose": "validation",
+          "accepted": null,
+          "gate_reasons": [],
+          "validation_vote": false,
+          "informational_checks": [
+            "RGB edge vote is informational"
+          ]
+        },
+        "camera_side_right": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1058.667259339684,
+              0.0,
+              982.7794945042924
+            ],
+            [
+              0.0,
+              1058.667259339684,
+              586.8718339533459
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.04048733504304025,
+            0.0005787540895643356,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.9520409694360353,
+              0.305952645008441,
+              0.003312329638487035,
+              0.01354621723196631
+            ],
+            [
+              0.006063055958356332,
+              -0.008040839127980561,
+              -0.9999492908435726,
+              -0.3775244824141321
+            ],
+            [
+              -0.305910496498144,
+              0.9520127750815415,
+              -0.009510216285775086,
+              -0.4869157495339634
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converged",
+          "gate_pass": null,
+          "reprojection_px": 0.7641112132331985,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.validation",
+          "reprojection_median_px": 0.7642095099185205,
+          "cost": null,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 10512,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "final",
+          "solver_pass": "final",
+          "windows": [
+            "S01"
+          ],
+          "iteration": null,
+          "total_iterations": null,
+          "purpose": "validation",
+          "accepted": null,
+          "gate_reasons": [],
+          "validation_vote": false,
+          "informational_checks": [
+            "RGB edge vote is informational"
+          ]
+        },
+        "camera_rear_left": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1081.9742538477003,
+              0.0,
+              954.5377116429243
+            ],
+            [
+              0.0,
+              1081.9742538477003,
+              570.99607057387
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.04462916281247241,
+            0.013527768751780942,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              -0.4999999999999998,
+              -0.8660254037844386,
+              -1.1155626107503079e-17,
+              -0.0
+            ],
+            [
+              9.61481343191782e-17,
+              -5.551115123125781e-17,
+              -1.0,
+              -0.0
+            ],
+            [
+              0.8660254037844387,
+              -0.49999999999999983,
+              1.8585556490221067e-16,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converged",
+          "gate_pass": null,
+          "reprojection_px": null,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.validation",
+          "reprojection_median_px": null,
+          "cost": null,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 0,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "final",
+          "solver_pass": "final",
+          "windows": [
+            "S01"
+          ],
+          "iteration": null,
+          "total_iterations": null,
+          "purpose": "validation",
+          "accepted": null,
+          "gate_reasons": [],
+          "validation_vote": false,
+          "informational_checks": [
+            "RGB edge vote is informational"
+          ]
+        },
+        "camera_rear_right": {
+          "sensor": "rgb",
+          "width": 1920,
+          "height": 1200,
+          "model": "equidistant",
+          "K": [
+            [
+              1065.5988348553856,
+              0.0,
+              970.2706844346314
+            ],
+            [
+              0.0,
+              1065.5988348553856,
+              585.0673789575546
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "D": [
+            -0.032885034064734225,
+            -0.007702808563543564,
+            0.0,
+            0.0
+          ],
+          "T_cam_lidar": [
+            [
+              0.6427876096865395,
+              -0.7660444431189782,
+              -9.189014658463866e-17,
+              -0.0
+            ],
+            [
+              9.189014658463866e-17,
+              1.495696495645069e-16,
+              -1.0000000000000002,
+              -0.0
+            ],
+            [
+              0.7660444431189783,
+              0.6427876096865394,
+              1.4956964956450697e-16,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "state": "converged",
+          "gate_pass": null,
+          "reprojection_px": null,
+          "sigma_rot_deg": null,
+          "sigma_pos_mm": null,
+          "metric_source": "solver.validation",
+          "reprojection_median_px": null,
+          "cost": null,
+          "cost_source": "huber_reprojection_only",
+          "n_obs": 0,
+          "dt_s": 0.0,
+          "time_offset_s": 0.0,
+          "solve_name": "final",
+          "solver_pass": "final",
+          "windows": [
+            "S01"
+          ],
+          "iteration": null,
+          "total_iterations": null,
+          "purpose": "validation",
+          "accepted": null,
+          "gate_reasons": [],
+          "validation_vote": false,
+          "informational_checks": [
+            "RGB edge vote is informational"
+          ]
+        }
+      },
+      "assets": {
+        "map": "assets/map_b99a204a78184c8f96da7e8713b7b3ea.npz",
+        "matching": {
+          "camera_front5": {
+            "width": 960,
+            "height": 600,
+            "source_stamp_ns": 1790250682699902421,
+            "source_window": "S01",
+            "bag_id": "b0",
+            "time_model": "exposure_midpoint",
+            "image_processing": "gamma 0.55",
+            "capture_stamp_ns": 1790250682707753921,
+            "lidar_stamp_ns": 1790250682700590716,
+            "points_frame": "os_lidar_at_image_capture",
+            "row_readout_s": 0.0,
+            "time_offset_s": 0.0,
+            "row_projection_iterations": 0,
+            "image": "assets/preview_d48ecb16d9a245db85d17c4b908d0d40.jpg",
+            "points": "assets/preview_d48ecb16d9a245db85d17c4b908d0d40_43b029f05aeb45d09158574414de2743.npz"
+          }
+        }
+      },
+      "gate": {
+        "status": "fail",
+        "pass": false,
+        "failures": [
+          "layout rule front5_ahead_of_lidar failed: {'name': 'front5_ahead_of_lidar', 'type': 'box', 'position_V_m': [0.787, 0.005, -0.1], 'lo': [0.55, -0.1, -0.6], 'hi': [1.0, 0.1, -0.15], 'pass': False}",
+          "layout rule top_under_lidar failed: {'name': 'top_under_lidar', 'type': 'box', 'position_V_m': [0.149, 0.049, 0.055], 'lo': [-0.1, -0.1, -0.4], 'hi': [0.4, 0.1, -0.05], 'pass': False}"
+        ],
+        "source": "solver.validation"
+      },
+      "status_text": "\uc2e4\uc81c \uacc4\uc0b0 \uc644\ub8cc",
+      "provenance": {
+        "synthetic": false,
+        "pose_source": "solver"
+      },
+      "map_frame": "lidar_window:b0/S01",
+      "map_source": "cached-lo-sample",
+      "map_window": "S01",
+      "map_source_window": "S01",
+      "map_bag_id": "b0",
+      "task": "final",
+      "pass": "final",
+      "bag_id": "b0",
+      "window_id": "S01",
+      "window": 1,
+      "total_windows": 1,
+      "solve_name": "final",
+      "solver_pass": "final",
+      "windows": [
+        "S01"
+      ],
+      "iteration": null,
+      "total_iterations": null,
+      "accepted": null,
+      "objective_cost": null,
+      "purpose": "calibration",
+      "complete": true
+    }
+  }
+]
