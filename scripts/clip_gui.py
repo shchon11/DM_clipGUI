@@ -54,6 +54,7 @@ from sensor_msgs.msg import NavSatFix
 from std_msgs.msg import Header, String
 
 import bag_diagnostics
+import calib_tab
 import gnss_tools
 import net_tools
 import preview_panel
@@ -1917,6 +1918,11 @@ class MainWindow(QMainWindow):
         self.rec_hsplit.setStretchFactor(1, 2)
         self.rec_hsplit.setSizes([620, 460])
 
+        # 3탭 온라인 캘리브레이션 — 녹화 중에는 시작하지 않고, 도는 중에 녹화가 시작되면 중단한다 (_calib_probe)
+        self.calib = calib_tab.CalibTab(self.cfg, probe=self._calib_probe, stage=self.stage)
+        self.calib.sig_log.connect(self.log)
+        self.tabs.addTab(self.calib, "온라인 캘리브레이션")
+
         # 칸 크기 복원 + 끌 때마다 저장 ("record/v" — 토픽 표가 빠져 칸 수가 바뀌어 새 키)
         states = self.cfg["ui"].setdefault("splitters", {})
         for name, splitter in (("record/v", self.rec_split), ("record/net", self.net_split),
@@ -1945,6 +1951,9 @@ class MainWindow(QMainWindow):
         m_tool.addAction("클립 폴더 열기", self._open_clip_dir)
         m_tool.addSeparator()
         m_tool.addAction("GNSS · 지도 (상태 / 현재 위치 / 클립 궤적)…", self.open_gnss)
+        m_tool.addSeparator()
+        m_tool.addAction("온라인 캘리브레이션", lambda: self.tabs.setCurrentWidget(self.calib))
+        m_tool.addAction("캘리브레이션 적용 기록 · 되돌리기…", lambda: self.calib.history_dialog())
 
     # --- 로그 ---
     def log(self, level, text):
@@ -2626,6 +2635,11 @@ class MainWindow(QMainWindow):
                 "QPushButton:disabled {background:#d1d5db; color:#f9fafb;}")
         self._tick_recording()
 
+    def _calib_probe(self):
+        """캘리브레이션 탭이 보는 데이터 수집 상태 — 녹화 · 클립 저장 중이면 시작 불가 (도는 중이면 중단)."""
+        return {"recording": bool(self.recording) or self._rec_pending, "clip_busy": bool(self.busy),
+                "sensors": self.stage.supervisor.any_active(), "recorder": bool(self._alive)}
+
     def toggle_recording(self):
         if self.recording:
             self._request_stop_recording()
@@ -2633,6 +2647,16 @@ class MainWindow(QMainWindow):
         if not self.worker.recorder_alive():
             self.log("ERROR", "레코더가 실행 중이 아님 — 녹화 불가")
             return
+        job = self.calib.running_job()
+        if job:
+            # 녹화가 먼저다. 캘리브레이션은 끝난 단계가 남아 나중에 이어서 할 수 있다.
+            if QMessageBox.question(
+                    self, "녹화 시작",
+                    "온라인 캘리브레이션이 돌고 있습니다 (CPU · 디스크를 대부분 씀).\n"
+                    "녹화를 시작하면 캘리브레이션을 중단합니다 — 나중에 [이어서 실행] 할 수 있습니다.\n\n"
+                    "중단하고 녹화할까요?") != QMessageBox.Yes:
+                return
+            self.calib.cancel_job(job, reason="녹화를 시작해서 중단", ask=False)
         if not self.cfg["topics"]:
             self.log("WARN", "녹화할 토픽을 고르지 않아 레코더가 보는 토픽 전부를 녹화합니다")
         label = self.label_edit.text().strip()
@@ -2973,6 +2997,21 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, ev):
         by_signal = bool(self.quit_signal)
+        job = self.calib.running_job()
+        if job and not by_signal:
+            # 캘리브레이션은 따로 세션에 떠 있어 GUI 를 닫아도 계속 돈다 — 다시 켜면 진행이 이어 보인다
+            box = QMessageBox(QMessageBox.Question, "온라인 캘리브레이션",
+                              "온라인 캘리브레이션이 돌고 있습니다.\nGUI 를 닫아도 백그라운드에서 계속 돌고, 다시 켜면 이어서 "
+                              "보입니다.", QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, self)
+            box.button(QMessageBox.Yes).setText("계속 두고 닫기")
+            box.button(QMessageBox.No).setText("중단하고 닫기")
+            box.button(QMessageBox.Cancel).setText("취소")
+            r = box.exec_()
+            if r == QMessageBox.Cancel:
+                ev.ignore()
+                return
+            if r == QMessageBox.No:
+                self.calib.cancel_job(job, reason="GUI 를 닫으며 중단", ask=False)
         if self.recording:
             if not by_signal and not self._confirm_end_recording("GUI 를 닫으면"):
                 ev.ignore()
