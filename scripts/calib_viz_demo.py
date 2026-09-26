@@ -39,6 +39,7 @@ def main(argv=None):
     parser.add_argument('--screenshots', type=Path, help='리플레이 오프스크린 PNG 저장 후 종료')
     parser.add_argument('--fractions', default='0.06,0.55,1.0', help='스크린샷 시점 0..1')
     parser.add_argument('--camera', default='camera_front5')
+    parser.add_argument('--window', help='스크린샷용 특정 원본 구간 (기본: 재생 시점 구간)')
     args = parser.parse_args(argv)
     if args.screenshots and not args.replay:
         parser.error('--screenshots requires --replay')
@@ -84,14 +85,14 @@ def main(argv=None):
                         break
                     # Exercise the real tail/animation path and populate genuine
                     # synthetic replay histories before each deterministic capture.
-                    for step in range(24):
-                        warmup = producer.snapshot_at(previous_fraction + (fraction-previous_fraction)*step/24)
+                    for step in range(6):
+                        warmup = producer.snapshot_at(previous_fraction + (fraction-previous_fraction)*step/6, window=args.window)
                         warmup['seq'] = seq
                         seq += 1
                         append_snapshot(stream_dir, warmup)
                         if stop_event.wait(.075):
                             return
-                    snapshot = producer.snapshot_at(fraction)
+                    snapshot = producer.snapshot_at(fraction, window=args.window)
                     # A monotonically increasing transport sequence permits arbitrary seeks.
                     snapshot['seq'] = seq
                     seq += 1
@@ -132,7 +133,11 @@ def main(argv=None):
             shot_stats.append({'progress': fraction, 'fps': window.viewer.actual_fps,
                                'points': window.viewer.map.point_count,
                                'projected_points': len(window.viewer.image_panel.uv),
-                               'gl_valid': window.viewer.rig.isValid()})
+                               'gl_valid': window.viewer.rig.isValid(),
+                               'map_window': window.viewer.event.get('map_window'),
+                               'available_cameras': window.viewer.camera_combo.count(),
+                               'selected_camera': window.viewer.selected,
+                               'camera_passes': sum(c.get('gate_pass') is True for c in window.viewer.event['cameras'].values())})
             shot_done.set()
             if len(shot_stats) == len(fractions):
                 (args.screenshots / 'calib_viz_capture.json').write_text(

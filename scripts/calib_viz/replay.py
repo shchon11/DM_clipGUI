@@ -1,14 +1,19 @@
 """A deterministic, explicitly synthetic convergence replay over real assets.
 
 No solver is imported or executed. Only small source frames are mapped; large
-``lo/map_*.npz`` archives are never loaded. Twelve source sweeps and three camera
-previews keep both replay disk use and memory bounded independently of run size.
+``lo/map_*.npz`` archives are never loaded. Each window is sampled separately
+and only a small asset cache is retained.
+Frames are decoded on demand for the current replay step, never for the whole run.
 """
 import argparse
+from collections import OrderedDict, deque
 import hashlib
 import json
 import math
 import os
+import shutil
+import uuid
+import zipfile
 from pathlib import Path
 import threading
 import time
@@ -20,15 +25,19 @@ import yaml
 from . import SCHEMA
 from .geometry import interpolate_pose, vehicle_from_camera
 from .stream import append_snapshot, atomic_json, atomic_npz
+from .results import camera_gate
 
 CAMERA_NAMES = (["camera_front" + str(i) for i in range(1, 10)] +
                 ["camera_top", "camera_side_left", "camera_side_right",
                  "camera_rear_left", "camera_rear_right", "thermal_left", "thermal_right"])
-PREVIEW_CAMERAS = ("camera_front5", "camera_side_left", "thermal_left")
+PREVIEW_CAMERAS = tuple(CAMERA_NAMES)
 ASSET_STEPS = 12
 POINTS_PER_SWEEP = 4800
 PREVIEW_POINTS = 7000
 MAX_SNAPSHOTS = 4096
+MAX_ASSET_SETS = 3
+MAX_TRAJECTORY_POSES = 4096
+MAX_TRACK_BYTES = 32 * 1024 * 1024
 
 
 def _read_json(path):
@@ -62,8 +71,8 @@ def _sample_scan(path, limit):
 class ReplayProducer:
     """Read a completed run and publish visualization-only mock iterations.
 
-    ``prepare`` writes the manifest and a finite asset pool. ``snapshot_at``
-    supports deterministic screenshot/seek without mutating the event log.
+    ``prepare`` writes metadata only. ``snapshot_at`` lazily builds a bounded
+    per-window asset cache and supports deterministic screenshot/seek without mutating the event log.
     ``run(stop_event)`` emits complete snapshots at <= 4 Hz with real event
     timing divided by speed. Do not call prepare/run from the GUI thread.
     """
@@ -76,9 +85,14 @@ class ReplayProducer:
         # A replay must never overwrite the completed solver run's real events.
         if self.output_dir == self.workdir or self.output_dir == self.out_dir:
             raise ValueError("replay output must be separate from source work/out")
+        # OpenCV otherwise creates a machine-wide thread pool even for tiny
+        # previews. This affects only the separate replay/viewer process.
+        cv2.setNumThreads(1)
         self.speed = float(speed)
         self.manifest = None
-        self.assets = []
+        self.assets = OrderedDict()
+        self._retired_assets = deque()
+        self.window_name = None
         self.prepared = False
 
     def prepare(self):
@@ -86,7 +100,7 @@ class ReplayProducer:
             return self.manifest
         rig = _read_yaml(self.out_dir / "rig.yaml")
         self.metrics = _read_json(self.out_dir / "metrics.json")
-        summary = _read_json(self.out_dir / "summary.json")
+        summary = self.summary = _read_json(self.out_dir / "summary.json")
         self.final_gate = summary.get("validation", {}).get("gate", {})
         self.window_names = summary.get("windows", {}).get("kept", [])
         self.total_windows = len(self.window_names) or 1
@@ -139,33 +153,32 @@ class ReplayProducer:
         candidates = sorted((self.workdir / "lo").glob("ref_*.npz"))
         if not candidates:
             raise FileNotFoundError("replay needs lo/ref_<window>.npz")
-        preferred = self.workdir / "lo/ref_S01.npz"
-        trajectory_path = preferred if preferred.exists() else candidates[0]
-        self.window_name = trajectory_path.stem[4:]
-        with np.load(trajectory_path, allow_pickle=False) as archive:
-            self._tau = archive["tau"]
-            self._poses = archive["T_w_L"]
-        self._lidar_files = sorted((self.workdir / "extract" / self.window_name / "lidar").glob("*.npy"))
-        if not self._lidar_files:
+        sources = {path.stem[4:]: path for path in candidates
+                   if (self.workdir / "extract" / path.stem[4:] / "lidar").is_dir()}
+        self.replay_windows = [name for name in self.window_names if name in sources]
+        self.replay_windows += [name for name in sources if name not in self.replay_windows]
+        if not self.replay_windows:
             raise FileNotFoundError("replay needs extracted raw LiDAR NPY frames")
-        self._lidar_stamps = np.array([int(p.stem) for p in self._lidar_files], dtype=np.int64)
+        self._window_sources = sources
         digest = hashlib.sha256((str(self.workdir) + str(self.end_time)).encode()).hexdigest()[:12]
         self.manifest = {
             "schema": SCHEMA, "run_id": "replay-" + digest, "mode": "replay",
             "parent_frame": "os_lidar", "display_frame": "vehicle",
             "R_lidar_V": self.R_lidar_V.tolist(), "cameras": self.cameras,
             "preview_cameras": list(PREVIEW_CAMERAS),
-            "map_frame": "vehicle_aligned_window:" + self.window_name,
+            "map_frame": "vehicle_aligned_window:" + self.replay_windows[0],
+            "windows": self.replay_windows,
             "source_workdir": str(self.workdir), "source_outdir": str(self.out_dir),
             "source_duration_s": self.duration_s, "replay_speed": self.speed,
             "rate_limits": {"snapshots_hz": 4, "map_points": ASSET_STEPS * POINTS_PER_SWEEP,
-                            "preview_points": PREVIEW_POINTS, "asset_sets": ASSET_STEPS,
+                            "preview_points": PREVIEW_POINTS, "asset_sets": MAX_ASSET_SETS,
+                            "samples_per_window": ASSET_STEPS,
                             "max_snapshots_per_replay": MAX_SNAPSHOTS},
             "provenance": {
                 "poses": "synthetic perturbation and decaying noise, exact measured final extrinsics",
                 "metrics": "synthetic intermediate uncertainty, measured final empirical 1sigma and reprojection",
                 "timing": "real events.jsonl wall clock, including source restarts, divided by replay_speed",
-                "map": "representative " + self.window_name + " only; sampled real sweeps with LO deskew",
+                "map": "all available windows, sampled independently with LO deskew; no unregistered fusion",
                 "tracks": "real image tracks; not certified image-to-LiDAR correspondences",
                 "thermal": "real 16-bit image normalized; center-row header+offset approximation; rolling shutter omitted",
             },
@@ -178,12 +191,46 @@ class ReplayProducer:
                 raise ValueError("output contains a different replay; choose a fresh output directory")
         self.output_dir.mkdir(parents=True, exist_ok=True)
         (self.output_dir / "assets").mkdir(exist_ok=True)
-        self._prepare_assets()
+        # Only replay-owned directories are retired; unrelated stream files stay intact.
+        self._retired_assets = deque(sorted(
+            (path for path in (self.output_dir / "assets").glob("replay_*")
+             if path.is_dir() and not path.is_symlink()), key=lambda path: path.stat().st_mtime_ns))
+        self._trim_assets()
         atomic_json(self.output_dir / "manifest.json", self.manifest)
         self.prepared = True
         return self.manifest
 
+    def _activate_window(self, name):
+        if name == self.window_name:
+            return
+        with np.load(self._window_sources[name], allow_pickle=False) as archive:
+            tau, poses = archive["tau"], archive["T_w_L"]
+            take = np.linspace(0, len(tau) - 1, min(len(tau), MAX_TRAJECTORY_POSES), dtype=int)
+            self._tau, self._poses = tau[take], poses[take]
+        if not len(self._tau):
+            raise ValueError("empty trajectory for " + name)
+        self._lidar_files = sorted((self.workdir / "extract" / name / "lidar").glob("*.npy"))
+        if not self._lidar_files:
+            raise FileNotFoundError("no raw LiDAR frames for " + name)
+        self._lidar_stamps = np.array([int(path.stem) for path in self._lidar_files], np.int64)
+        self._indices = np.unique(np.linspace(0, len(self._lidar_files) - 1, ASSET_STEPS, dtype=int))
+        self._sample_times = self._lidar_stamps[self._indices] + 50_000_000
+        self.window_name = name
+        self._camera_frames = {}
+        self._camera_tracks = {}
+        self._map_chunks = {}
+
+    def _trim_assets(self):
+        while len(self._retired_assets) + len(self.assets) > MAX_ASSET_SETS:
+            if self._retired_assets:
+                directory = self._retired_assets.popleft()
+            else:
+                _, (_, directory) = self.assets.popitem(last=False)
+            shutil.rmtree(directory)
+
     def _pose_at(self, stamp):
+        if len(self._tau) == 1:
+            return self._poses[0].copy()
         idx = int(np.clip(np.searchsorted(self._tau, stamp) - 1, 0, len(self._tau) - 2))
         alpha = (float(stamp) - float(self._tau[idx])) / float(self._tau[idx + 1] - self._tau[idx])
         return interpolate_pose(self._poses[idx], self._poses[idx + 1], alpha)
@@ -205,11 +252,17 @@ class ReplayProducer:
         empty = lambda: (np.empty((0, 2), np.float32), np.empty((0, 2), np.float32))
         if not path.exists():
             return [empty() for _ in selected_stamps]
-        # One track archive at a time, only the three selected previews.
+        # One bounded archive at a time; retain only sampled observations for
+        # this window. Missing/oversized tracks do not prevent image previews.
+        with zipfile.ZipFile(path) as archive:
+            if sum(item.file_size for item in archive.infolist()) > MAX_TRACK_BYTES:
+                return [empty() for _ in selected_stamps]
         with np.load(path, allow_pickle=False) as archive:
             stamps = archive["header_ns" if camera.startswith("thermal") else "frame_ns"]
             frames, ids, xy = archive["obs_frame"], archive["obs_track"], archive["obs_xy"]
             result = []
+            if not len(stamps):
+                return [empty() for _ in selected_stamps]
             for stamp in selected_stamps:
                 frame = int(np.argmin(np.abs(stamps - stamp)))
                 if abs(int(stamps[frame]) - stamp) > 1_000_000:
@@ -231,34 +284,46 @@ class ReplayProducer:
         temporary.write_bytes(encoded.tobytes())
         os.replace(temporary, path)
 
-    def _prepare_assets(self):
-        indices = np.linspace(0, len(self._lidar_files) - 1, ASSET_STEPS, dtype=int)
-        self._sample_times = self._lidar_stamps[indices] + 50_000_000
-        map_chunks = []
-        self.assets = [{"matching": {}} for _ in indices]
-        for step, idx in enumerate(indices):
-            points = self._world_points(self._lidar_files[idx], POINTS_PER_SWEEP)
-            # W is the window's first LiDAR frame, rotated once into vehicle axes.
-            map_chunks.append((points @ self.R_lidar_V).astype(np.float32))
-            end = max(2, int(np.searchsorted(self._tau, self._sample_times[step], side="right")))
+    def _assets_at(self, window, step):
+        key = (window, step)
+        if key in self.assets:
+            self.assets.move_to_end(key)
+            return self.assets[key][0]
+        self._activate_window(window)
+        step = min(step, len(self._indices) - 1)
+        directory = self.output_dir / "assets" / ("replay_" + uuid.uuid4().hex)
+        directory.mkdir()
+        relative = directory.relative_to(self.output_dir).as_posix()
+        asset = {"matching": {}}
+        try:
+            for index in range(step + 1):
+                if index not in self._map_chunks:
+                    points = self._world_points(self._lidar_files[self._indices[index]], POINTS_PER_SWEEP)
+                    # W is this window's first LiDAR frame. Never fuse windows.
+                    self._map_chunks[index] = (points @ self.R_lidar_V).astype(np.float32)
+            end = max(1, int(np.searchsorted(self._tau, self._sample_times[step], side="right")))
             trajectory = (self._poses[:end, :3, 3] @ self.R_lidar_V).astype(np.float32)
-            relative = "assets/map_%02d.npz" % step
-            atomic_npz(self.output_dir / relative, points=np.vstack(map_chunks), trajectory=trajectory)
-            self.assets[step]["map"] = relative
-        for camera in PREVIEW_CAMERAS:
-            thermal = camera.startswith("thermal")
-            folder = (self.workdir / "thermal16" / self.window_name / camera if thermal else
-                      self.workdir / "extract" / self.window_name / "cam" / camera)
-            files = sorted(folder.glob("*.png" if thermal else "*.jpg"))
-            if not files:
-                continue
-            stamps = np.array([int(p.stem) for p in files], np.int64)
-            offset = self.cameras[camera]["time_offset_s"] * 1e9
-            chosen = [int(np.argmin(np.abs(stamps.astype(float) + offset - t))) for t in self._sample_times]
-            tracks = self._tracks_for_frames(camera, [int(stamps[i]) for i in chosen])
-            mask_path = Path("/hdd/DM_calib/online/work/masks") / (camera + ".png")
-            mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE) if mask_path.exists() else None
-            for step, selected in enumerate(chosen):
+            asset["map"] = relative + "/map.npz"
+            atomic_npz(self.output_dir / asset["map"],
+                       points=np.vstack([self._map_chunks[i] for i in range(step + 1)]),
+                       trajectory=trajectory)
+            world_scans = {}
+            for camera in PREVIEW_CAMERAS:
+                thermal = camera.startswith("thermal")
+                if camera not in self._camera_frames:
+                    folder = (self.workdir / "thermal16" / window / camera if thermal else
+                              self.workdir / "extract" / window / "cam" / camera)
+                    files = sorted(folder.glob("*.png" if thermal else "*.jpg"))
+                    stamps = np.array([int(path.stem) for path in files], np.int64)
+                    self._camera_frames[camera] = files, stamps
+                files, stamps = self._camera_frames[camera]
+                if not files:
+                    continue
+                offset = self.cameras[camera]["time_offset_s"] * 1e9
+                chosen = [int(np.argmin(np.abs(stamps.astype(float) + offset - t))) for t in self._sample_times]
+                if camera not in self._camera_tracks:
+                    self._camera_tracks[camera] = self._tracks_for_frames(camera, [int(stamps[i]) for i in chosen])
+                selected = chosen[step]
                 image = cv2.imread(str(files[selected]), cv2.IMREAD_UNCHANGED)
                 if image is None:
                     continue
@@ -267,37 +332,48 @@ class ReplayProducer:
                     gray = np.clip((image.astype(float) - lo) * (255 / max(hi - lo, 1)), 0, 255).astype(np.uint8)
                     image = cv2.applyColorMap(gray, cv2.COLORMAP_INFERNO)
                 else:
-                    # Record was collected at night: same gamma lift as source report.
                     image = cv2.LUT(image, np.array([(i / 255) ** .55 * 255 for i in range(256)], np.uint8))
                 width, height = self.cameras[camera]["width"], self.cameras[camera]["height"]
                 scale = min(1., 960 / width)
                 image = cv2.resize(image, (round(width * scale), round(height * scale)), interpolation=cv2.INTER_AREA)
-                stem = "assets/" + camera + "_%02d" % step
+                stem = relative + "/" + camera
                 self._write_image(stem + ".jpg", image)
                 stamp = int(stamps[selected])
                 capture_stamp = stamp + offset
                 scan_idx = int(np.argmin(np.abs(self._lidar_stamps.astype(float) + 50_000_000 - capture_stamp)))
-                world = self._world_points(self._lidar_files[scan_idx], PREVIEW_POINTS)
+                if scan_idx not in world_scans:
+                    world_scans[scan_idx] = self._world_points(self._lidar_files[scan_idx], PREVIEW_POINTS)
                 T = self._pose_at(capture_stamp)
-                points_lidar = ((world - T[:3, 3]) @ T[:3, :3]).astype(np.float32)
+                points_lidar = ((world_scans[scan_idx] - T[:3, 3]) @ T[:3, :3]).astype(np.float32)
+                tracks = self._camera_tracks[camera][step]
                 arrays = {"points_lidar": points_lidar,
-                          "tracks_uv": (tracks[step][0] * scale).astype(np.float32),
-                          "tracks_prev_uv": (tracks[step][1] * scale).astype(np.float32)}
-                if mask is not None:
-                    arrays["mask"] = cv2.resize(mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
+                          "tracks_uv": (tracks[0] * scale).astype(np.float32),
+                          "tracks_prev_uv": (tracks[1] * scale).astype(np.float32)}
+                mask_path = self.workdir / "masks" / (camera + ".png")
+                if mask_path.exists():
+                    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+                    if mask is not None:
+                        arrays["mask"] = cv2.resize(mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
                 atomic_npz(self.output_dir / (stem + ".npz"), **arrays)
-                self.assets[step]["matching"][camera] = {
+                asset["matching"][camera] = {
                     "image": stem + ".jpg", "points": stem + ".npz",
                     "width": image.shape[1], "height": image.shape[0],
                     "source_stamp_ns": stamp, "capture_stamp_ns": int(capture_stamp),
                     "lidar_stamp_ns": int(self._lidar_stamps[scan_idx]),
-                    "source_window": self.window_name,
+                    "source_window": window,
                     "image_processing": "thermal percentile+inferno" if thermal else "gamma 0.55",
                     "points_frame": "os_lidar_at_image_capture",
                     "time_model": "header+center_offset; no row readout" if thermal else "effective exposure",
                 }
+        except Exception:
+            shutil.rmtree(directory)
+            raise
+        self.assets[key] = (asset, directory)
+        self._trim_assets()
+        return asset
 
-    def snapshot_at(self, fraction):
+    def snapshot_at(self, fraction, window=None):
+        """Deterministic seek; optional window selects its local fraction 0..1."""
         if not self.prepared:
             self.prepare()
         fraction = float(np.clip(fraction, 0, 1))
@@ -334,23 +410,35 @@ class ReplayProducer:
                 current = final.copy()  # preserve the exact measured endpoint
             metrics = self.metrics[name]
             vote = metrics.get("vote", {}).get("pass")
+            result = camera_gate(self.summary, self.metrics, name)
+            gate_pass = result["pass"] if source_time >= self.validation_end_time else None
             cameras[name] = {
                 "T_cam_lidar": current.tolist(),
                 "sigma_rot_deg": metrics.get("rot_deg", 0) + (2.8 + index % 3 * .3) * decay,
                 "sigma_pos_mm": metrics.get("pos_mm", 0) + (110 + index % 4 * 13) * decay,
                 "reprojection_px": metrics.get("track_reproj_px", 0) + (22 + index % 5 * 2) * decay,
-                "state": "pending" if progress == 0 else ("converging" if progress < 1 else "converged"),
+                "state": ("failed" if gate_pass is False else "validated" if gate_pass is True else
+                          "pending" if progress == 0 else "converging" if progress < 1 else "converged"),
                 "validation_vote": vote if source_time >= self.validation_end_time else None,
+                "gate_pass": gate_pass,
+                "gate_reasons": result["reasons"] if source_time >= self.validation_end_time else [],
+                "informational_checks": result["informational"] if source_time >= self.validation_end_time else [],
                 "metric_source": "measured_final" if progress == 1 else "synthetic_replay",
             }
         failed_votes = [name for name, metric in self.metrics.items() if metric.get("vote", {}).get("pass") is False]
         validated = source_time >= self.validation_end_time
         gate_pass = self.final_gate.get("pass") if validated else None
-        map_progress = np.clip((source_time - self.stage_times[1][1]) /
-                               max(rgb_start - self.stage_times[1][1], 1), 0, 1)
-        map_step = min(ASSET_STEPS - 1, int(map_progress * ASSET_STEPS))
-        preview_step = min(ASSET_STEPS - 1, int(fraction * ASSET_STEPS))
-        matching = self.assets[preview_step]["matching"]
+        if window is None:
+            window_index = min(len(self.replay_windows) - 1, int(fraction * len(self.replay_windows)))
+            window = self.replay_windows[window_index]
+            map_progress = min(1., fraction * len(self.replay_windows) - window_index)
+        else:
+            if window not in self._window_sources:
+                raise ValueError("unknown replay window: " + window)
+            map_progress = fraction
+        self._activate_window(window)
+        map_step = min(len(self._indices) - 1, int(map_progress * len(self._indices)))
+        assets = self._assets_at(window, map_step)
         # Window counts reflect observed source completions, not simulated
         # fractional progress. Joint BA operates on all LO-completed windows.
         counter_stage = "extract" if stage == "extract" else "lo"
@@ -372,12 +460,12 @@ class ReplayProducer:
                      "pass": gate_pass, "source": "summary.validation.gate",
                      "camera_vote_failures": failed_votes if validated else [],
                      "warning": ("RGB 영상 투표 %d개 미통과 · 종합 게이트와 별도" % len(failed_votes)) if validated and failed_votes else ""},
-            "assets": {"map": self.assets[map_step]["map"], "matching": matching},
-            "map_frame": self.manifest["map_frame"], "map_window": self.window_name,
+            "assets": assets,
+            "map_frame": "vehicle_aligned_window:" + window, "map_window": window,
             "map_progress": float(map_progress),
             "provenance": {"mode": "replay", "synthetic_intermediate": True,
                            "label_ko": "실측 데이터 · 수렴 과정 모의 재생",
-                           "map_label_ko": self.window_name + " 구간 대표 지도 · 전체 주행 병합 아님"},
+                           "map_label_ko": window + " 구간 표본 지도 · %d개 창 순회 · 창별 독립 좌표" % len(self.replay_windows)},
         }
 
     def run(self, stop_event=None):
@@ -385,7 +473,14 @@ class ReplayProducer:
         self.prepare()
         start = time.monotonic()
         seq = 0
-        interval = max(.25, self.duration_s / self.speed / (MAX_SNAPSHOTS - 1))
+        # At least one snapshot per window, even when requested speed would
+        # otherwise jump from the first window straight to the final window.
+        base_count = min(max(2, MAX_SNAPSHOTS - len(self.replay_windows)),
+                         max(2, math.ceil(self.duration_s / self.speed * 4) + 1))
+        fractions = sorted(set(np.linspace(0, 1, base_count)) |
+                           {(index + .999) / len(self.replay_windows)
+                            for index in range(len(self.replay_windows))})
+        replay_duration = max(self.duration_s / self.speed, (len(fractions) - 1) * .25)
         # Replay can append after a previous invocation while keeping seq monotonic.
         existing = self.output_dir / "events.jsonl"
         if existing.exists():
@@ -396,15 +491,15 @@ class ReplayProducer:
                         seq = max(seq, int(json.loads(line).get("seq", -1)) + 1)
                     except (ValueError, TypeError, AttributeError):
                         pass
-        while not stop_event.is_set():
-            fraction = min(1., (time.monotonic() - start) * self.speed / self.duration_s)
+        for index, fraction in enumerate(fractions):
+            if stop_event.is_set():
+                return
+            if index and stop_event.wait(max(.25, start + fraction * replay_duration - time.monotonic())):
+                return
             snapshot = self.snapshot_at(fraction)
             snapshot["seq"] = seq
             append_snapshot(self.output_dir, snapshot)
             seq += 1
-            if fraction >= 1:
-                return
-            stop_event.wait(interval)
 
 
 def main(argv=None):
