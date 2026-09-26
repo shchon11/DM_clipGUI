@@ -85,8 +85,10 @@ TOOL_DEFAULTS = {
 
 def tool_defaults():
     out = json.loads(json.dumps(TOOL_DEFAULTS))
-    for d in VENDORED_CANDIDATES:
-        f = d / "nontarget_cal" / "config" / "default.yaml"
+    # 설치된 venv 의 것이 실제로 도는 값 — 먼저. 없으면 리포 사본.
+    files = sorted(DEFAULT_VENV.glob("lib/python3*/site-packages/nontarget_cal/config/default.yaml"))
+    files += [d / "nontarget_cal" / "config" / "default.yaml" for d in VENDORED_CANDIDATES]
+    for f in files:
         if not f.is_file():
             continue
         try:
@@ -245,8 +247,10 @@ def dir_size_gb(p):
     return tot / 1e9
 
 
-def check_space(est, workdir, outdir, already_gb=0.0, free_fn=free_gb, same_fs_fn=same_fs):
+def check_space(est, workdir, outdir, already_gb=0.0, free_fn=None, same_fs_fn=None):
     """(ok, 메시지, 자세히). already_gb = 이어서 실행할 때 작업 폴더에 이미 있는 양 (그만큼 덜 필요)."""
+    free_fn = free_fn or free_gb
+    same_fs_fn = same_fs_fn or same_fs
     work_need = max(est["work_need_gb"] - already_gb, GUI_MARGIN_GB)
     out_need = est["out_need_gb"]
     detail = {"work_need_gb": round(work_need, 1), "out_need_gb": out_need,
@@ -312,9 +316,11 @@ def tool_args(job):
     return a
 
 
-def check_args(job):
-    """nontarget_cal check (사전 점검만, 약 30초 · 가벼움)."""
-    a = ["check", "--bags", *job["bags"], "--workdir", str(Path(job["workdir"]).parent / "check"),
+def check_args(job, workdir=None):
+    """nontarget_cal check (사전 점검만, 약 30초 · 가벼움). workdir: 점검 파일(작음)을 둘 곳 — 여유 공간도
+    거기서 재므로 실제 작업 폴더와 같은 디스크여야 한다."""
+    wd = workdir or str(Path(job["workdir"]).parent.parent / "_preflight" / time.strftime("%Y%m%d_%H%M%S"))
+    a = ["check", "--bags", *job["bags"], "--workdir", wd,
          "--sensors", ",".join(job["sensors"])]
     if job.get("name_map"):
         a += ["--name-map", str(job["name_map"])]
