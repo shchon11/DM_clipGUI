@@ -45,7 +45,7 @@ FLIR_GROUP = "flir_cameras"
 LOG_TAIL_BYTES = 64 * 1024
 
 NOTICE = ("⚠ 데이터 수집(녹화) 중에는 실행하지 마세요. 캘리브레이션은 CPU 를 대부분 쓰고 수십 분에서 수 시간이 걸립니다 "
-          "(15분 주행 bag 하나 ≈ 3–3.5시간, 작업 폴더 100 GB 이상). 녹화가 시작되면 캘리브레이션은 자동으로 중단되고, "
+          "(15분 주행 bag 하나 ≈ 50분–1.5시간, 작업 폴더 약 80 GB). 녹화가 시작되면 캘리브레이션은 자동으로 중단되고, "
           "끝난 단계는 남아 나중에 [이어서 실행] 할 수 있습니다. GUI 를 닫아도 계속 돕니다.")
 
 
@@ -212,7 +212,7 @@ class CalibTab(QWidget):
         default_root = str(Path(os.path.expanduser(self.cfg.get("recorder", {}).get("output_dir", "~/DM_clipGUI/clips"))).parent
                            / "online_calib")
         self.ed_work = QLineEdit(self.c.get("workdir_root") or default_root)
-        self.ed_work.setToolTip("큰 중간 파일(100 GB 이상)이 쌓이는 곳 — 여유가 큰 디스크 (NVMe 면 더 빠름). "
+        self.ed_work.setToolTip("큰 중간 파일(약 80 GB)이 쌓이는 곳 — 여유가 큰 디스크 (NVMe 면 더 빠름). "
                                 "작업마다 <여기>/<작업 id>/work")
         self.ed_out = QLineEdit(self.c.get("out_root") or default_root)
         self.ed_out.setToolTip("결과(YAML · 보고서 · 이미지, 수십 MB) — 작업마다 <여기>/<작업 id>/out")
@@ -349,7 +349,11 @@ class CalibTab(QWidget):
         self.btn_apply.clicked.connect(self.apply_dialog)
         self.btn_hist = QPushButton("적용 기록 · 되돌리기…")
         self.btn_hist.clicked.connect(self.history_dialog)
-        for w in (self.btn_report, self.btn_outdir, self.btn_apply):
+        self.btn_import = QPushButton("결과 폴더 불러오기…")
+        self.btn_import.setToolTip("다른 PC 에서 계산한 nontarget_cal 결과 폴더(summary.json · extrinsic/ · intrinsic/)를 "
+                                   "목록에 올려 [차량에 적용…] 할 수 있게 한다. 계산은 하지 않는다.")
+        self.btn_import.clicked.connect(self.import_result)
+        for w in (self.btn_report, self.btn_outdir, self.btn_apply, self.btn_import):
             rb.addWidget(w)
         rb.addStretch(1)
         rb.addWidget(self.btn_hist)
@@ -716,6 +720,20 @@ class CalibTab(QWidget):
                 return
         job["workdir"] = str(Path(d) / job["id"] / "work")
         self.store.save()
+        self.refresh_jobs(select=job["id"])
+
+    def import_result(self):
+        d = QFileDialog.getExistingDirectory(self, "nontarget_cal 결과 폴더 (summary.json 이 있는 out 폴더)",
+                                             str(Path(__file__).resolve().parent.parent / "calib_results"))
+        if not d:
+            return
+        try:
+            job = oc.imported_job(d)
+        except Exception as e:
+            QMessageBox.warning(self, "결과 불러오기", str(e))
+            return
+        self.store.add(job)
+        self._log("OK", f"결과 폴더를 불러왔습니다: {job['out']}")
         self.refresh_jobs(select=job["id"])
 
     def delete_job(self):

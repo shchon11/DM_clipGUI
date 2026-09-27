@@ -1,6 +1,6 @@
 # DM_clipGUI 가 차량에 가져가는 nontarget_cal 사본 — 직접 고치지 말고 원본에서 고친 뒤 다시 동기화한다
 source: /hdd/DM_calib/nontarget_cal
-commit: 54dac2505b4878fefef72331d6ef52577362859d
-commit_date: 2026-09-27T17:16:11+09:00
-subject: "Merge feat/speed 6226cbb (README runtime numbers, regression_speed_20260927.md, project_runtime CUDA tracker)"
-synced_at: 2026-09-27T17:17:36+09:00
+commit: 0216ef3b2e003cfd93c96d18135f3b761a453163
+commit_date: 2026-09-27T20:48:49+09:00
+subject: "Preflight estimates from the 2026-09-27 scaling benchmark: 76 GB / 49 min for the 25-window night bag (was 124 GB / 561 min)"
+synced_at: 2026-09-27T20:49:22+09:00

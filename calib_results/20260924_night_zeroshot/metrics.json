@@ -1,0 +1,320 @@
+{
+ "camera_front1": {
+  "sensor": "rgb",
+  "track_reproj_px": 0.6588400842023602,
+  "rot_deg": 0.12586330565736462,
+  "pos_mm": 4.851148188752459,
+  "along_axis_mm": 4.122765324328768,
+  "focal_px": 0.5420188775969191,
+  "heldout_track_reproj_px": 0.8065948557174956,
+  "lidar_edge_moving_px": 7.990699768066406,
+  "lidar_edge_parked_px": 2.0,
+  "lidar_edge_px": 2.0,
+  "vote": {
+   "pass": false,
+   "du": -0.93,
+   "dv": 6.0,
+   "contrast": 1.09,
+   "cells_at_origin": 0,
+   "gate": false
+  }
+ },
+ "camera_front2": {
+  "sensor": "rgb",
+  "track_reproj_px": 0.6739930279319234,
+  "rot_deg": 0.013123822271447927,
+  "pos_mm": 6.974196695409066,
+  "along_axis_mm": 3.402321199169612,
+  "focal_px": 0.10544551195589164,
+  "heldout_track_reproj_px": 0.8460514126959213,
+  "lidar_edge_moving_px": 7.1937994956970215,
+  "lidar_edge_parked_px": 4.393799781799316,
+  "lidar_edge_px": 4.393799781799316,
+  "vote": {
+   "pass": false,
+   "du": -0.16,
+   "dv": 3.12,
+   "contrast": 1.13,
+   "cells_at_origin": 0,
+   "gate": false
+  }
+ },
+ "camera_front3": {
+  "sensor": "rgb",
+  "track_reproj_px": 0.6637210525043101,
+  "rot_deg": 0.03657041832308715,
+  "pos_mm": 6.84635585777821,
+  "along_axis_mm": 2.4700271631585955,
+  "focal_px": 0.1358022860863671,
+  "heldout_track_reproj_px": 0.8320268875867952,
+  "lidar_edge_moving_px": 5.0,
+  "lidar_edge_parked_px": 3.0,
+  "lidar_edge_px": 3.0,
+  "vote": {
+   "pass": false,
+   "du": 4.02,
+   "dv": 1.45,
+   "contrast": 1.18,
+   "cells_at_origin": 0,
+   "gate": false
+  }
+ },
+ "camera_front4": {
+  "sensor": "rgb",
+  "track_reproj_px": 0.664346963971735,
+  "rot_deg": 0.015304794318144627,
+  "pos_mm": 6.007435996911705,
+  "along_axis_mm": 1.320905366857751,
+  "focal_px": 0.03445543228475228,
+  "heldout_track_reproj_px": 0.832946125883665,
+  "lidar_edge_moving_px": 6.196899890899658,
+  "lidar_edge_parked_px": 3.59689998626709,
+  "lidar_edge_px": 3.59689998626709,
+  "vote": {
+   "pass": false,
+   "du": -2.76,
+   "dv": 0.21,
+   "contrast": 1.23,
+   "cells_at_origin": 0,
+   "gate": false
+  }
+ },
+ "camera_front5": {
+  "sensor": "rgb",
+  "track_reproj_px": 0.6510189827705265,
+  "rot_deg": 0.04368420648589862,
+  "pos_mm": 8.689353579431158,
+  "along_axis_mm": 2.013646964080835,
+  "focal_px": 0.3764534427034253,
+  "heldout_track_reproj_px": 0.826034249029931,
+  "lidar_edge_moving_px": 5.196899890899658,
+  "lidar_edge_parked_px": 3.0,
+  "lidar_edge_px": 3.0,
+  "vote": {
+   "pass": false,
+   "du": -0.27,
+   "dv": 1.5,
+   "contrast": 1.1,
+   "cells_at_origin": 0,
+   "gate": false
+  }
+ },
+ "camera_front6": {
+  "sensor": "rgb",
+  "track_reproj_px": 0.6491462522622113,
+  "rot_deg": 0.04685816884982288,
+  "pos_mm": 10.759250121975219,
+  "along_axis_mm": 1.448106905147283,
+  "focal_px": 0.11211658873552881,
+  "heldout_track_reproj_px": 0.8234612185726348,
+  "lidar_edge_moving_px": 5.793799877166748,
+  "lidar_edge_parked_px": 3.0,
+  "lidar_edge_px": 3.0,
+  "vote": {
+   "pass": false,
+   "du": 4.2,
+   "dv": 0.08,
+   "contrast": 1.13,
+   "cells_at_origin": 1,
+   "gate": false
+  }
+ },
+ "camera_front7": {
+  "sensor": "rgb",
+  "track_reproj_px": 0.6522647485537965,
+  "rot_deg": 0.06005613903402746,
+  "pos_mm": 6.419729012199591,
+  "along_axis_mm": 0.9361511937310741,
+  "focal_px": 0.3587605710034851,
+  "heldout_track_reproj_px": 0.8271668075916047,
+  "lidar_edge_moving_px": 5.196899890899658,
+  "lidar_edge_parked_px": 3.0,
+  "lidar_edge_px": 3.0,
+  "vote": {
+   "pass": false,
+   "du": -0.33,
+   "dv": 2.1,
+   "contrast": 1.08,
+   "cells_at_origin": 0,
+   "gate": false
+  }
+ },
+ "camera_front8": {
+  "sensor": "rgb",
+  "track_reproj_px": 0.6672056845126971,
+  "rot_deg": 0.012975216958485867,
+  "pos_mm": 8.949635514354208,
+  "along_axis_mm": 4.839450724178633,
+  "focal_px": 0.5661453684602005,
+  "heldout_track_reproj_px": 0.8390339098242036,
+  "lidar_edge_moving_px": 6.590699672698975,
+  "lidar_edge_parked_px": 3.59689998626709,
+  "lidar_edge_px": 3.59689998626709,
+  "vote": {
+   "pass": false,
+   "du": -1.14,
+   "dv": 1.94,
+   "contrast": 1.13,
+   "cells_at_origin": 0,
+   "gate": false
+  }
+ },
+ "camera_front9": {
+  "sensor": "rgb",
+  "track_reproj_px": 0.692115329086033,
+  "rot_deg": 0.03323755396632163,
+  "pos_mm": 4.982235185197706,
+  "along_axis_mm": 1.6274095046240533,
+  "focal_px": 0.3154977381366775,
+  "heldout_track_reproj_px": 0.8645374615177247,
+  "lidar_edge_moving_px": 8.0,
+  "lidar_edge_parked_px": 4.393799781799316,
+  "lidar_edge_px": 4.393799781799316,
+  "vote": {
+   "pass": false,
+   "du": 2.82,
+   "dv": 0.74,
+   "contrast": 1.09,
+   "cells_at_origin": 0,
+   "gate": false
+  }
+ },
+ "camera_top": {
+  "sensor": "rgb",
+  "track_reproj_px": 0.6611485235823709,
+  "rot_deg": 0.08516482492173738,
+  "pos_mm": 11.249567768456703,
+  "along_axis_mm": 9.51080701132006,
+  "focal_px": 0.7633396450924671,
+  "heldout_track_reproj_px": 0.8132090496743457,
+  "lidar_edge_moving_px": 10.787599563598633,
+  "lidar_edge_parked_px": 2.0,
+  "lidar_edge_px": 2.0,
+  "vote": {
+   "pass": false,
+   "du": -2.68,
+   "dv": 1.79,
+   "contrast": 1.11,
+   "cells_at_origin": 0,
+   "gate": false
+  }
+ },
+ "camera_side_left": {
+  "sensor": "rgb",
+  "track_reproj_px": 0.6923583750963173,
+  "rot_deg": 0.03439644287894949,
+  "pos_mm": 8.496961763868242,
+  "along_axis_mm": 4.3590569299170525,
+  "focal_px": 0.3236128988121541,
+  "heldout_track_reproj_px": 0.8271796636742532,
+  "lidar_edge_moving_px": 24.181396484375,
+  "lidar_edge_parked_px": 2.0,
+  "lidar_edge_px": 2.0,
+  "vote": {
+   "pass": false,
+   "du": 0.05,
+   "dv": 2.68,
+   "contrast": 1.1,
+   "cells_at_origin": 0,
+   "gate": false
+  }
+ },
+ "camera_side_right": {
+  "sensor": "rgb",
+  "track_reproj_px": 0.6706293714511988,
+  "rot_deg": 0.042776519620771156,
+  "pos_mm": 6.305877497353466,
+  "along_axis_mm": 5.709004139093714,
+  "focal_px": 0.056016116230430894,
+  "heldout_track_reproj_px": 0.7888243401108486,
+  "lidar_edge_moving_px": 11.996898651123047,
+  "lidar_edge_parked_px": 6.590699672698975,
+  "lidar_edge_px": 6.590699672698975,
+  "vote": {
+   "pass": false,
+   "du": -3.09,
+   "dv": -0.79,
+   "contrast": 1.14,
+   "cells_at_origin": 0,
+   "gate": false
+  }
+ },
+ "camera_rear_left": {
+  "sensor": "rgb",
+  "track_reproj_px": 0.6729994240441438,
+  "rot_deg": 0.04006170016256525,
+  "pos_mm": 11.498070017524721,
+  "along_axis_mm": 5.112404212694577,
+  "focal_px": 2.020946154227301,
+  "heldout_track_reproj_px": 1.0855364520728614,
+  "lidar_edge_moving_px": 7.196899890899658,
+  "lidar_edge_parked_px": 2.196899890899658,
+  "lidar_edge_px": 2.196899890899658,
+  "vote": {
+   "pass": false,
+   "du": 0.19,
+   "dv": 1.53,
+   "contrast": 1.08,
+   "cells_at_origin": 0,
+   "gate": false
+  }
+ },
+ "camera_rear_right": {
+  "sensor": "rgb",
+  "track_reproj_px": 0.7217203206667505,
+  "rot_deg": 0.12703871604221162,
+  "pos_mm": 2.6075654654954463,
+  "along_axis_mm": 2.531928277595731,
+  "focal_px": 0.11699525923644084,
+  "heldout_track_reproj_px": 1.141835475782511,
+  "lidar_edge_moving_px": 12.0,
+  "lidar_edge_parked_px": 3.0,
+  "lidar_edge_px": 3.0,
+  "vote": {
+   "pass": false,
+   "du": 1.97,
+   "dv": 0.56,
+   "contrast": 1.15,
+   "cells_at_origin": 1,
+   "gate": false
+  }
+ },
+ "thermal_left": {
+  "sensor": "thermal",
+  "track_reproj_px": 0.939350812651486,
+  "rot_deg": 0.011903469297778257,
+  "pos_mm": 4.39547466030009,
+  "along_axis_mm": 3.551033525876961,
+  "focal_px": 0.1620541036183693,
+  "heldout_track_reproj_px": 0.9012130153043882,
+  "lidar_edge_px": 1.0908375616388915,
+  "lidar_edge_dist_px": 3.0,
+  "vote": {
+   "pass": true,
+   "du": -0.46,
+   "dv": 0.2,
+   "contrast": 1.74,
+   "cells_at_origin": 16,
+   "gate": true
+  }
+ },
+ "thermal_right": {
+  "sensor": "thermal",
+  "track_reproj_px": 0.9475079974347929,
+  "rot_deg": 0.015033184332437608,
+  "pos_mm": 5.699896263188194,
+  "along_axis_mm": 4.894782806258703,
+  "focal_px": 0.3623964195836541,
+  "heldout_track_reproj_px": 0.9111581210226352,
+  "lidar_edge_px": 1.0901346064857282,
+  "lidar_edge_dist_px": 3.0,
+  "vote": {
+   "pass": true,
+   "du": -0.18,
+   "dv": 0.18,
+   "contrast": 1.69,
+   "cells_at_origin": 16,
+   "gate": true
+  }
+ }
+}

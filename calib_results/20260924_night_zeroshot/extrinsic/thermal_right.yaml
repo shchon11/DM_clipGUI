@@ -1,0 +1,89 @@
+camera: thermal_right
+parent_frame: os_lidar
+child_frame: thermal_right
+description: 'x_cam = R @ x_lidar + t  (lidar -> camera). Camera optical frame (OpenCV: x right, y down, z forward).'
+R:
+- - -0.008003003401717437
+  - 0.999790869363792
+  - -0.018819390886736877
+- - 0.014190649864313119
+  - -0.018704547096485377
+  - -0.9997243446942472
+- - -0.9998672798891751
+  - -0.0082678567181009
+  - -0.014037989610638058
+t:
+- -0.18622091618253914
+- -0.3734153123124339
+- -0.6947341752841019
+T_cam_lidar:
+- - -0.008003003401717437
+  - 0.999790869363792
+  - -0.018819390886736877
+  - -0.18622091618253914
+- - 0.014190649864313119
+  - -0.018704547096485377
+  - -0.9997243446942472
+  - -0.3734153123124339
+- - -0.9998672798891751
+  - -0.0082678567181009
+  - -0.014037989610638058
+  - -0.6947341752841019
+- - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+rpy_deg_xyz:
+- -149.50348809339022
+- 89.06650756779081
+- 119.42139583726076
+quaternion_xyzw:
+- 0.5061470965305951
+- 0.500833416895247
+- -0.5031574209150559
+- 0.489707683187419
+camera_position_in_os_lidar_m:
+- -0.6908332907620452
+- 0.173453444769749
+- -0.38656961374806453
+camera_position_vehicle_m:
+  value:
+  - 0.6841
+  - -0.1765
+  - -0.3971
+  axes: forward / left / up, origin at the Ouster (os_lidar x points BACKWARD)
+time_offset_s: -0.10084
+time_offset_meaning: capture of the CENTRE row relative to t_frame (~header.stamp), PTP clock
+time_offset_per_bag_s:
+  b0: -0.10084
+time_offset_per_window_sd_ms: 1.85
+row_readout_s: -0.043
+row_readout_meaning: capture time of row v = t_frame + time_offset_s + row_readout_s * (v/480 - 0.5); negative = bottom rows
+  first (includes the bolometer lag)
+topic: thermal0
+method: 'targetless (nontarget_cal): thermal KLT BA with the LiDAR-odometry trajectory fixed, landmark-to-plane ties, near-range
+  LiDAR-edge term (LO-accumulated), left-right stereo links'
+data: 'rec_20260924_204902: 25 windows, 894 s'
+uncertainty_empirical_1sigma:
+  rot_deg: 0.015033184332437608
+  pos_mm: 5.699896263188194
+  along_axis_mm: 4.894782806258703
+  focal_px: 0.3623964195836541
+validation:
+  track_reproj_px: 0.9475079974347929
+  heldout_track_reproj_px: 0.9111581210226352
+  lidar_edge_px: 1.0901346064857282
+  vote:
+    pass: true
+    du: -0.18
+    dv: 0.18
+    contrast: 1.69
+    cells_at_origin: 16
+    gate: true
+generated_by: nontarget_cal 1.0.0 (zeroshot)
+camera_position_rig_m:
+  value:
+  - 0.18518698704220948
+  - 0.023934394354143414
+  - -0.0770206142838316
+  frame: reference camera (camera_front5) optical frame

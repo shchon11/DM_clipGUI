@@ -1,0 +1,55 @@
+image_width: 640
+image_height: 480
+camera_name: thermal_left
+camera_matrix:
+  rows: 3
+  cols: 3
+  data:
+  - 682.1136406955484
+  - 0.0
+  - 322.6624777386317
+  - 0.0
+  - 674.6567385986184
+  - 251.24154183721578
+  - 0.0
+  - 0.0
+  - 1.0
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data:
+  - 0.011614139894311318
+  - 0.09106015561595375
+  - 0.0
+  - 0.0
+  - 0.0
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data:
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+projection_matrix:
+  rows: 3
+  cols: 4
+  data:
+  - 682.1136406955484
+  - 0.0
+  - 322.6624777386317
+  - 0.0
+  - 0.0
+  - 674.6567385986184
+  - 251.24154183721578
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0

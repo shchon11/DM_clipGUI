@@ -1,0 +1,54 @@
+image_width: 1920
+image_height: 1200
+camera_name: camera_top
+camera_matrix:
+  rows: 3
+  cols: 3
+  data:
+  - 1057.272818926453
+  - 0.0
+  - 964.7588844410861
+  - 0.0
+  - 1057.272818926453
+  - 586.1148015573797
+  - 0.0
+  - 0.0
+  - 1.0
+distortion_model: equidistant
+distortion_coefficients:
+  rows: 1
+  cols: 4
+  data:
+  - -0.04016634224179098
+  - 0.0006679484502731897
+  - 0.0
+  - 0.0
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data:
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+projection_matrix:
+  rows: 3
+  cols: 4
+  data:
+  - 1057.272818926453
+  - 0.0
+  - 964.7588844410861
+  - 0.0
+  - 0.0
+  - 1057.272818926453
+  - 586.1148015573797
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0

@@ -108,13 +108,15 @@ preflight:
   thermal_stream:
     min_fps: 25.0
     max_duplicate_frac: 0.05
-  estimate:                    # per 40 s of moving data, measured on the 16-core dev box (lidar_odo/thermal_lo READMEs)
-    rgb_disk_gb: 4.3
-    thermal_disk_gb: 0.8
-    fixed_disk_gb: 10.0
-    rgb_cpu_min: 18.0          # extraction + KISS + refine + tracks (14 cams) + share of the BA, 4 procs
-    thermal_cpu_min: 6.0
-    fixed_min: 25.0
+  estimate:                    # per 40 s of moving data; measured 2026-09-27 on the merged code (54dac25), from scratch,
+                               # 25 windows (22.4 x 40 s), 16 threads, NVMe work dir, 32 GB cap: work dir peak 65-78 GB,
+                               # wall 49-50 min for 8/12/16 workers (nt_regress scaling benchmark)
+    rgb_disk_gb: 2.9
+    thermal_disk_gb: 0.3
+    fixed_disk_gb: 5.0
+    rgb_cpu_min: 1.45          # wall minutes per 40 s at >= 16 threads (not CPU minutes); a HDD work dir is ~2x slower
+    thermal_cpu_min: 0.4
+    fixed_min: 8.0
   disk_margin_frac: 0.30       # refuse unless free >= estimate * (1 + margin) + margin_gb
   disk_margin_gb: 20.0
 

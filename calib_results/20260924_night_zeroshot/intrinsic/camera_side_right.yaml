@@ -1,0 +1,24 @@
+camera: camera_side_right
+session: 'rec_20260924_204902: 25 windows, 894 s'
+model: equidistant
+model_note: Kannala-Brandt = OpenCV fisheye = ROS distortion_model 'equidistant'; D = [k1, k2, k3, k4]
+image_width: 1920
+image_height: 1200
+camera_matrix:
+- - 1057.1029736030177
+  - 0.0
+  - 981.1387369424906
+- - 0.0
+  - 1057.1029736030177
+  - 586.1400352074205
+- - 0.0
+  - 0.0
+  - 1.0
+distortion_coefficients:
+- -0.03994767055391626
+- 0.000850486787857864
+- 0.0
+- 0.0
+horizontal_fov_deg: 107.76
+vertical_fov_deg: 65.86
+estimation: targetless, jointly with the extrinsic (see extrinsic YAML); fy tied to fx (square pixels)

@@ -97,15 +97,15 @@ def _bag(dur, gb, n_rgb=14, n_th=2):
 
 def test_storage_estimate_is_conservative():
     d = oc.TOOL_DEFAULTS
-    # 2026-09-24 야간 bag: 1000 s · 182 GB · 실측 작업 폴더 107 GB
+    # 2026-09-24 야간 bag: 1000 s · 182 GB · 실측 작업 폴더 최대 78 GB (2026-09-27 통합본, 처음부터)
     est = oc.estimate_storage([_bag(1000, 182)], defaults=d)
-    assert est["work_gb"] >= 107
+    assert est["work_gb"] >= 78
     tool_need = est["work_gb"] * 1.3 + 20
     assert est["work_need_gb"] >= tool_need            # 도구가 디스크로 거절할 일이 없다
-    assert est["work_need_gb"] >= 1.5 * 107             # 실측의 1.5배 이상
-    # 15분 14대 주행 ≈ 110 GB 기준도
+    assert est["work_need_gb"] >= 1.5 * 78              # 실측의 1.5배 이상
+    # 15분 14대 주행 ≈ 75 GB 기준도
     est15 = oc.estimate_storage([_bag(900, 165)], defaults=d)
-    assert est15["work_gb"] >= 110 and est15["work_need_gb"] >= 180
+    assert est15["work_gb"] >= 75 and est15["work_need_gb"] >= 1.5 * 75
     # 창 수 상한 (30 × 40 s): 1시간 bag 이라도 끝없이 커지지 않지만 크기 기준은 비례
     est60 = oc.estimate_storage([_bag(3600, 650)], defaults=d)
     assert est60["windows"] == 30
@@ -494,3 +494,27 @@ def test_vehicle_paths():
     assert ci == Path.home() / "FLIR_control" / "calibration" / "flir_camera_info.yaml"
     ci, ex, _ = ca.vehicle_paths(g, {"launch_args": {"extrinsics_yaml_path": "/abs/e.yaml"}})
     assert ex == Path("/abs/e.yaml")
+
+
+def test_imported_job_from_result_folder(tmp_path):
+    import json as _json
+    out = tmp_path / "res"
+    (out / "extrinsic").mkdir(parents=True)
+    (out / "intrinsic").mkdir()
+    (out / "summary.json").write_text(_json.dumps({"mode": "zeroshot", "sensors": ["rgb"], "bags": {"b0": "/x/rec"}}))
+    j = oc.imported_job(out)
+    assert j["state"] == oc.DONE and j["imported"] and j["out"] == str(out.resolve())
+    assert j["workdir"] == "" and j["bags"] == ["/x/rec"] and j["sensors"] == ["rgb"]
+    import pytest as _pt
+    with _pt.raises(ValueError):
+        oc.imported_job(tmp_path)          # summary.json 없음
+
+
+def test_bundled_result_folder_loads():
+    root = Path(__file__).resolve().parent.parent / "calib_results" / "20260924_night_zeroshot"
+    if not root.is_dir():
+        return
+    cams = ca.load_result_cameras(root)
+    assert len(cams) == 16
+    r = oc.load_result(root)
+    assert r["gate_pass"] and len(r["cameras"]) == 16

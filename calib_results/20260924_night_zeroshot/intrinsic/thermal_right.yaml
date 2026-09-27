@@ -1,0 +1,26 @@
+camera: thermal_right
+session: 'rec_20260924_204902: 25 windows, 894 s'
+model: plumb_bob
+model_note: pinhole + radial k1 k2 (OpenCV / ROS plumb_bob, D = [k1, k2, p1, p2, k3], p1 = p2 = k3 = 0)
+image_width: 640
+image_height: 480
+camera_matrix:
+- - 680.6440688468181
+  - 0.0
+  - 320.29361142287627
+- - 0.0
+  - 673.002416937297
+  - 251.80068902437185
+- - 0.0
+  - 0.0
+  - 1.0
+distortion_coefficients:
+- 0.009642406044913029
+- 0.07901472288341026
+- 0.0
+- 0.0
+- 0.0
+horizontal_fov_deg: 50.03
+vertical_fov_deg: 39.08
+estimation: fx, cx, cy, k1, k2 from a rotation-only solve on far points; fx and fy/fx refined in the final solve (fy/fx weakly
+  determined)

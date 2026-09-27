@@ -1,0 +1,79 @@
+camera: camera_front6
+parent_frame: os_lidar
+child_frame: camera_front6
+description: 'x_cam = R @ x_lidar + t  (lidar -> camera). Camera optical frame (OpenCV: x right, y down, z forward).'
+R:
+- - -0.33408440285259833
+  - 0.9424118561283703
+  - -0.01573229796635936
+- - -0.0030582911609778854
+  - -0.017775101309794098
+  - -0.999837333084038
+- - -0.9425382000883542
+  - -0.33398194442530343
+  - 0.008820553956324927
+t:
+- -0.3250320742543402
+- -0.3617496454425971
+- -0.6972029327496629
+T_cam_lidar:
+- - -0.33408440285259833
+  - 0.9424118561283703
+  - -0.01573229796635936
+  - -0.3250320742543402
+- - -0.0030582911609778854
+  - -0.017775101309794098
+  - -0.999837333084038
+  - -0.3617496454425971
+- - -0.9425382000883542
+  - -0.33398194442530343
+  - 0.008820553956324927
+  - -0.6972029327496629
+- - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+rpy_deg_xyz:
+- -88.487154557711
+- 70.48227850897953
+- -179.47551492945172
+quaternion_xyzw:
+- -0.41075240245824146
+- -0.5717273711277258
+- 0.5832409575207141
+- -0.4052656689734318
+camera_position_in_os_lidar_m:
+- -0.7668348795085358
+- 0.0670307526640063
+- -0.3606545860973893
+camera_position_vehicle_m:
+  value:
+  - 0.76
+  - -0.0693
+  - -0.3743
+  axes: forward / left / up, origin at the Ouster (os_lidar x points BACKWARD)
+time_offset_s: 0.0
+topic: camera_25415255
+method: 'targetless (nontarget_cal): KLT tracks + trajectory fixed from refined LiDAR odometry + landmark-to-LiDAR-plane ties;
+  lens free (fx = fy, cx, cy, k1, k2)'
+data: 'rec_20260924_204902: 25 windows, 894 s'
+uncertainty_empirical_1sigma:
+  rot_deg: 0.04685816884982288
+  pos_mm: 10.759250121975219
+  along_axis_mm: 1.448106905147283
+  focal_px: 0.11211658873552881
+uncertainty_note: from two disjoint halves of the data (sigma of a half-data solve, conservative); the rig-to-LiDAR common
+  offset of ~1-2 cm is the floor of the method; solver formal sigmas are 10-50x optimistic and are not quoted
+validation:
+  track_reproj_px: 0.6491462522622113
+  heldout_track_reproj_px: 0.8234612185726348
+  lidar_edge_px: 3.0
+  lidar_edge_parked_px: 3.0
+  vote:
+    pass: false
+    du: 4.2
+    dv: 0.08
+    contrast: 1.13
+    cells_at_origin: 1
+    gate: false
+generated_by: nontarget_cal 1.0.0 (zeroshot)

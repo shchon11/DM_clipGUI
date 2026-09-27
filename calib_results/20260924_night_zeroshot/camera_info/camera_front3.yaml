@@ -1,0 +1,54 @@
+image_width: 1920
+image_height: 1200
+camera_name: camera_front3
+camera_matrix:
+  rows: 3
+  cols: 3
+  data:
+  - 1056.9125977704955
+  - 0.0
+  - 988.6733972120951
+  - 0.0
+  - 1056.9125977704955
+  - 609.1280923731052
+  - 0.0
+  - 0.0
+  - 1.0
+distortion_model: equidistant
+distortion_coefficients:
+  rows: 1
+  cols: 4
+  data:
+  - -0.04115892285974164
+  - 0.0006980180685330278
+  - 0.0
+  - 0.0
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data:
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+projection_matrix:
+  rows: 3
+  cols: 4
+  data:
+  - 1056.9125977704955
+  - 0.0
+  - 988.6733972120951
+  - 0.0
+  - 0.0
+  - 1056.9125977704955
+  - 609.1280923731052
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0
