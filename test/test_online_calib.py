@@ -494,3 +494,27 @@ def test_vehicle_paths():
     assert ci == Path.home() / "FLIR_control" / "calibration" / "flir_camera_info.yaml"
     ci, ex, _ = ca.vehicle_paths(g, {"launch_args": {"extrinsics_yaml_path": "/abs/e.yaml"}})
     assert ex == Path("/abs/e.yaml")
+
+
+def test_imported_job_from_result_folder(tmp_path):
+    import json as _json
+    out = tmp_path / "res"
+    (out / "extrinsic").mkdir(parents=True)
+    (out / "intrinsic").mkdir()
+    (out / "summary.json").write_text(_json.dumps({"mode": "zeroshot", "sensors": ["rgb"], "bags": {"b0": "/x/rec"}}))
+    j = oc.imported_job(out)
+    assert j["state"] == oc.DONE and j["imported"] and j["out"] == str(out.resolve())
+    assert j["workdir"] == "" and j["bags"] == ["/x/rec"] and j["sensors"] == ["rgb"]
+    import pytest as _pt
+    with _pt.raises(ValueError):
+        oc.imported_job(tmp_path)          # summary.json 없음
+
+
+def test_bundled_result_folder_loads():
+    root = Path(__file__).resolve().parent.parent / "calib_results" / "20260924_night_zeroshot"
+    if not root.is_dir():
+        return
+    cams = ca.load_result_cameras(root)
+    assert len(cams) == 16
+    r = oc.load_result(root)
+    assert r["gate_pass"] and len(r["cameras"]) == 16

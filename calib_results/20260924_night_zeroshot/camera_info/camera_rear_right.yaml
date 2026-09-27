@@ -1,0 +1,54 @@
+image_width: 1920
+image_height: 1200
+camera_name: camera_rear_right
+camera_matrix:
+  rows: 3
+  cols: 3
+  data:
+  - 1050.355450169911
+  - 0.0
+  - 984.2173295011785
+  - 0.0
+  - 1050.355450169911
+  - 590.7629956219126
+  - 0.0
+  - 0.0
+  - 1.0
+distortion_model: equidistant
+distortion_coefficients:
+  rows: 1
+  cols: 4
+  data:
+  - -0.03688587153817905
+  - -0.0001392033806787645
+  - 0.0
+  - 0.0
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data:
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+projection_matrix:
+  rows: 3
+  cols: 4
+  data:
+  - 1050.355450169911
+  - 0.0
+  - 984.2173295011785
+  - 0.0
+  - 0.0
+  - 1050.355450169911
+  - 590.7629956219126
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0

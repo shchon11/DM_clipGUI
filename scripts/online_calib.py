@@ -302,6 +302,29 @@ def new_job(bags, mode, workdir_root, out_root, sensors=("rgb", "thermal"), init
     }
 
 
+def imported_job(out, label=""):
+    """이미 계산된 결과 폴더(summary.json 이 있는 nontarget_cal 결과)를 작업 목록에 올린다 — 다른 PC 에서 돌린
+    결과를 차량에 적용할 때. 계산은 하지 않는다: 상태는 완료, 작업 폴더 없음(삭제해도 결과 폴더는 안 지움)."""
+    out = Path(os.path.expanduser(str(out))).resolve()
+    f = out / "summary.json"
+    if not f.is_file():
+        raise ValueError(f"{out}: summary.json 이 없습니다 — nontarget_cal 결과 폴더가 아님")
+    if not (out / "extrinsic").is_dir() or not (out / "intrinsic").is_dir():
+        raise ValueError(f"{out}: extrinsic/ · intrinsic/ 폴더가 없습니다")
+    s = json.loads(f.read_text(encoding="utf-8"))
+    bags = s.get("bags") or {}
+    jid = time.strftime("import_%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4]
+    return {
+        "id": jid, "label": label or f"불러옴: {out.parent.name}/{out.name}", "created": time.time(),
+        "state": DONE, "state_msg": "불러온 결과 (이 PC 에서 계산하지 않음)",
+        "bags": [str(b) for b in (bags.values() if isinstance(bags, dict) else bags)],
+        "mode": s.get("mode") or "zeroshot", "sensors": list(s.get("sensors") or ["rgb", "thermal"]),
+        "init": None, "name_map": None, "config": None, "force": False,
+        "workdir": "", "out": str(out), "attempts": [], "pid": None, "result": None, "imported": True,
+        "tool": {"commit": str((s.get("tool") or {}).get("commit") or s.get("version") or "")},
+    }
+
+
 def tool_args(job):
     """nontarget_cal run 인자 (실행 파일 뒤)."""
     a = ["run", "--bags", *job["bags"], "--out", job["out"], "--workdir", job["workdir"],

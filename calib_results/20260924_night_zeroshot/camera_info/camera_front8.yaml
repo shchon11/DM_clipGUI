@@ -1,0 +1,54 @@
+image_width: 1920
+image_height: 1200
+camera_name: camera_front8
+camera_matrix:
+  rows: 3
+  cols: 3
+  data:
+  - 1056.9850576846034
+  - 0.0
+  - 975.769073757879
+  - 0.0
+  - 1056.9850576846034
+  - 620.6186444087539
+  - 0.0
+  - 0.0
+  - 1.0
+distortion_model: equidistant
+distortion_coefficients:
+  rows: 1
+  cols: 4
+  data:
+  - -0.039667315326861935
+  - 0.00039963102119229885
+  - 0.0
+  - 0.0
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data:
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+projection_matrix:
+  rows: 3
+  cols: 4
+  data:
+  - 1056.9850576846034
+  - 0.0
+  - 975.769073757879
+  - 0.0
+  - 0.0
+  - 1056.9850576846034
+  - 620.6186444087539
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0

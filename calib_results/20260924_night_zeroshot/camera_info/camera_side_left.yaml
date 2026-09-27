@@ -1,0 +1,54 @@
+image_width: 1920
+image_height: 1200
+camera_name: camera_side_left
+camera_matrix:
+  rows: 3
+  cols: 3
+  data:
+  - 1055.6540192587322
+  - 0.0
+  - 964.5673526923796
+  - 0.0
+  - 1055.6540192587322
+  - 590.2929636392543
+  - 0.0
+  - 0.0
+  - 1.0
+distortion_model: equidistant
+distortion_coefficients:
+  rows: 1
+  cols: 4
+  data:
+  - -0.03945351999196472
+  - 0.0006688598992325155
+  - 0.0
+  - 0.0
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data:
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+projection_matrix:
+  rows: 3
+  cols: 4
+  data:
+  - 1055.6540192587322
+  - 0.0
+  - 964.5673526923796
+  - 0.0
+  - 0.0
+  - 1055.6540192587322
+  - 590.2929636392543
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0

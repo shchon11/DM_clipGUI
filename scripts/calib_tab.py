@@ -349,7 +349,11 @@ class CalibTab(QWidget):
         self.btn_apply.clicked.connect(self.apply_dialog)
         self.btn_hist = QPushButton("적용 기록 · 되돌리기…")
         self.btn_hist.clicked.connect(self.history_dialog)
-        for w in (self.btn_report, self.btn_outdir, self.btn_apply):
+        self.btn_import = QPushButton("결과 폴더 불러오기…")
+        self.btn_import.setToolTip("다른 PC 에서 계산한 nontarget_cal 결과 폴더(summary.json · extrinsic/ · intrinsic/)를 "
+                                   "목록에 올려 [차량에 적용…] 할 수 있게 한다. 계산은 하지 않는다.")
+        self.btn_import.clicked.connect(self.import_result)
+        for w in (self.btn_report, self.btn_outdir, self.btn_apply, self.btn_import):
             rb.addWidget(w)
         rb.addStretch(1)
         rb.addWidget(self.btn_hist)
@@ -716,6 +720,20 @@ class CalibTab(QWidget):
                 return
         job["workdir"] = str(Path(d) / job["id"] / "work")
         self.store.save()
+        self.refresh_jobs(select=job["id"])
+
+    def import_result(self):
+        d = QFileDialog.getExistingDirectory(self, "nontarget_cal 결과 폴더 (summary.json 이 있는 out 폴더)",
+                                             str(Path(__file__).resolve().parent.parent / "calib_results"))
+        if not d:
+            return
+        try:
+            job = oc.imported_job(d)
+        except Exception as e:
+            QMessageBox.warning(self, "결과 불러오기", str(e))
+            return
+        self.store.add(job)
+        self._log("OK", f"결과 폴더를 불러왔습니다: {job['out']}")
         self.refresh_jobs(select=job["id"])
 
     def delete_job(self):
