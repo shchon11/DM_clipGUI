@@ -511,6 +511,25 @@ def _get_msg_class(type_name):
         return None
 
 
+def _is_typesupport_error(exc):
+    """타입 지원 라이브러리를 못 불러온 경우. 데이터 손상이 아니라 읽는 쪽(빌드·환경) 문제다.
+
+    예: 패키지에서 .msg 를 지우고 증분 빌드하면 예전 빌드 산물이 남아
+    'undefined symbol: …__convert_from_py' → UnsupportedTypeSupport 가 난다.
+    이때 bag 안의 바이트는 멀쩡하므로 '깨진 메시지' 로 세면 안 된다.
+    """
+    if isinstance(exc, ImportError) or type(exc).__name__ == "UnsupportedTypeSupport":
+        return True
+    text = str(exc)
+    return "Could not import" in text or "undefined symbol" in text
+
+
+def _typesupport_hint(exc):
+    """오류 문구에서 패키지 이름만 뽑는다 (못 뽑으면 첫 줄)."""
+    m = re.search(r"for package '([^']+)'", str(exc))
+    return m.group(1) if m else str(exc).splitlines()[0][:80]
+
+
 def _check_payload(type_name, msg):
     """역직렬화된 메시지의 내용 검증. 문제 문자열 리스트를 돌려준다."""
     issues = []
@@ -781,6 +800,7 @@ def _analyze_topic(name, info, bag_t0, bag_t1, fetch_samples, progress, sensor=N
         "lost_mid": 0, "head_trunc": 0, "tail_trunc": 0,
         "dup_stamps": 0, "nonmonotonic": 0, "zero_size": 0,
         "deser_checked": 0, "deser_failed": 0, "payload_issues": [],
+        "typesupport_error": None,
     }
     if not rows:
         r["level"] = FAIL
@@ -928,6 +948,11 @@ def _analyze_topic(name, info, bag_t0, bag_t1, fetch_samples, progress, sensor=N
             try:
                 msg = deserialize_message(data, cls)
             except Exception as e:
+                if _is_typesupport_error(e):
+                    # 이 타입은 어느 메시지도 못 읽는다 — 더 볼 필요가 없다
+                    r["typesupport_error"] = _typesupport_hint(e)
+                    r["deser_checked"] -= 1
+                    break
                 r["deser_failed"] += 1
                 if len(r["payload_issues"]) < 10:
                     r["payload_issues"].append(f"#{i} 역직렬화 실패: {e}")
@@ -935,7 +960,12 @@ def _analyze_topic(name, info, bag_t0, bag_t1, fetch_samples, progress, sensor=N
             for issue in _check_payload(info["type"], msg):
                 if len(r["payload_issues"]) < 10:
                     r["payload_issues"].append(f"#{i} {issue}")
-        if r["deser_failed"]:
+        if r["typesupport_error"]:
+            r["level"] = _worse(r["level"], WARN)
+            r["notes"].append(
+                f"메시지 타입을 못 불러옴 ({r['typesupport_error']}) — 내용 검사 생략. "
+                "bag 이 아니라 읽는 쪽 문제다 (그 패키지 재빌드 필요)")
+        elif r["deser_failed"]:
             r["level"] = FAIL
             r["notes"].append(
                 f"역직렬화 실패 {r['deser_failed']}/{r['deser_checked']} — 데이터 손상")
@@ -1212,6 +1242,13 @@ def _summarize_sensor(key, names, topics):
     broken = sum(topics[n].get("zero_size", 0) + topics[n].get("deser_failed", 0) for n in names)
     if broken:
         add(FAIL, f"깨진 메시지 {broken}개 (0바이트 · 읽기 실패)", "녹화 · 디스크 오류 — 레코더 로그 확인")
+
+    ts_pkgs = sorted({topics[n]["typesupport_error"] for n in names
+                      if topics[n].get("typesupport_error")})
+    if ts_pkgs:
+        add(WARN, f"메시지 타입을 못 불러와 내용 검사를 못 함 ({', '.join(ts_pkgs)})",
+            "녹화된 데이터가 아니라 읽는 쪽 문제입니다 — 그 패키지의 build · install 을 지우고 "
+            "다시 빌드하세요 (.msg 를 지운 뒤 증분 빌드하면 예전 산물이 남아 이렇게 됩니다)")
 
     n, fut = worst("future_stamps")
     if fut:
