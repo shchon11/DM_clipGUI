@@ -1997,8 +1997,12 @@ class MainWindow(QMainWindow):
 
         # 3탭 온라인 캘리브레이션 — 녹화 중에는 시작하지 않고, 도는 중에 녹화가 시작되면 중단한다 (_calib_probe)
         self.calib = calib_tab.CalibTab(self.cfg, probe=self._calib_probe, stage=self.stage)
+        self.calib.ros_worker = self.worker
+        self.calib.release = self._calib_release
         self.calib.sig_log.connect(self.log)
         self.tabs.addTab(self.calib, "온라인 캘리브레이션")
+        self.calib.sig_title.connect(lambda t: self.tabs.setTabText(self.tabs.indexOf(self.calib), t))
+        self.tabs.setTabText(self.tabs.indexOf(self.calib), self.calib.current_title())
 
         # 칸 크기 복원 + 끌 때마다 저장 ("record/v" — 토픽 표가 빠져 칸 수가 바뀌어 새 키)
         states = self.cfg["ui"].setdefault("splitters", {})
@@ -2839,8 +2843,17 @@ class MainWindow(QMainWindow):
         region_ko = self.region_edit.text().strip()       # 입력한 이름 (한글이면 현황표에 같이 보인다)
 
         def work():
+            # 녹화 당시 카메라 시리얼 → 토픽 이름 (GUI 가 기동 때 넘긴 인벤토리 사본). 이름을 나중에 바꿔도
+            # 온라인 캘리브레이션이 이 bag 의 카메라를 시리얼로 찾는다 (calib_tab 이름 대응표)
             try:
-                dataset_catalog.write_info(bag, label=label, region_name=region_ko, **crew)
+                import online_calib
+                import sensor_config
+                cameras = online_calib.launched_inventory(sensor_config.GENERATED_DIR) or None
+            except Exception as e:
+                cameras = None
+                self._catalog_msg.emit("WARN", f"{bag.name}: 카메라 시리얼 ↔ 이름 기록 실패 — {e}")
+            try:
+                dataset_catalog.write_info(bag, label=label, region_name=region_ko, cameras=cameras, **crew)
                 path, n = dataset_catalog.rebuild(base)
                 self._catalog_msg.emit("GUI", f"데이터셋 목록 갱신: {path} ({n}개)")
             except Exception as e:
@@ -2881,6 +2894,24 @@ class MainWindow(QMainWindow):
         """캘리브레이션 탭이 보는 데이터 수집 상태 — 녹화 · 클립 저장 중이면 시작 불가 (도는 중이면 중단)."""
         return {"recording": bool(self.recording) or self._rec_pending, "clip_busy": bool(self.busy),
                 "sensors": self.stage.supervisor.any_active(), "recorder": bool(self._alive)}
+
+    def _calib_release(self):
+        """캘리브레이션 시작 전: 켜져 있는 센서군과 GUI 가 띄운 레코더를 끈다. 끈 것 이름 목록 (못 끄면 예외)."""
+        if self.recording or self._rec_pending or self.busy:
+            raise RuntimeError("녹화 · 클립 저장 중")
+        stopped = []
+        if self.stage.supervisor.any_active():
+            stopped += [self.stage.groups[k]["label"] for k, p in self.stage.supervisor.procs.items()
+                        if p.is_active() and k in self.stage.groups]
+            self.stage.stop_all()
+        if self.worker.recorder_alive() or self.recorder.state() != QProcess.NotRunning:
+            if not self.owns_recorder:
+                raise RuntimeError("외부에서 띄운 레코더가 돌고 있습니다 — GUI 에서 끄지 않으니 직접 끄세요")
+            self.recorder.stop_recorder()
+            stopped.append("레코더")
+        if stopped:
+            self.log("GUI", f"온라인 캘리브레이션을 위해 끔: {', '.join(stopped)}")
+        return stopped
 
     def toggle_recording(self):
         if self.recording:

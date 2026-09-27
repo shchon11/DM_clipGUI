@@ -103,14 +103,14 @@ def test_run_result_apply_rollback(env):
     _pump(app, tab, lambda: job["state"] != oc.RUNNING)
     assert job["state"] == oc.DONE, job
     tab.refresh_jobs(select=job["id"])
-    assert tab.tbl_res.rowCount() == 16 and tab.btn_apply.isEnabled()
+    assert tab.tbl_res.rowCount() == 16 and not tab.btn_apply.isHidden()
     assert "working on outputs" in tab.log_view.toPlainText()
     assert tab.bar.value() == 1000
-    assert tab.viz is not None
-    assert tab.detail_tabs.widget(0) is tab.viz
-    assert tab.detail_tabs.widget(2) is tab.log_view
-    assert tab.setup_panel.isHidden()
-    assert tab.viz.max_fps <= 20
+    assert tab.detail_tabs.widget(1) is tab.cmp                 # 끝나면 판정 (기존 vs 새)
+    assert tab.detail_tabs.widget(2) is tab.ba                  # 전/후 투영 비교
+    assert tab.detail_tabs.currentIndex() == 1
+    assert tab.detail_tabs.widget(4) is tab.log_view
+    assert tab.btn_cancel.isHidden()                            # 끝난 작업엔 중단 버튼 없음
 
     # 적용 (임시 차량 파일) → 되돌리기
     if not (FLIR_CAL / "flir_camera_info.yaml").is_file():

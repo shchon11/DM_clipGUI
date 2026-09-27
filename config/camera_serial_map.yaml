@@ -11,6 +11,10 @@
 #               assuming the vehicle used that same table (its names match it exactly)
 #   unknown   - no serial evidence available in the bag or in any local repo
 #
+# 2026-09-27, checked ON the vehicle: every serial <-> topic_20260924 pair below equals the vehicle's
+# ~/FLIR_control multicam_cameras.yaml / multicam_thermal_cameras.yaml. The serial <-> dm_name (physical
+# position) assignment is still the image-geometry inference; nontarget_cal re-verifies it from geometry.
+#
 # Group A: flir_camera_info.yaml is keyed by serial ("camera_info_by_serial"). The 8 serials of
 # the old 8-camera rig carry a 1045/960/600 placeholder (25415248 carries a real calibration).
 # In BOTH the 09-23/24 daytime bag (old names) and the 09-24 night bag (new names), exactly the
@@ -28,11 +32,11 @@ cameras:
   - {serial: "25415249", dm_name: camera_front9,     topic_20260924: camera_side_left_2,  confidence: set}
   - {serial: "26076003", dm_name: camera_side_left,  topic_20260924: camera_rear,         confidence: set}
   - {serial: "26076471", dm_name: camera_side_right, topic_20260924: camera_26076471,     confidence: certain, evidence: "serial in topic name"}
-  - {serial: null,       dm_name: camera_rear_left,  topic_20260924: camera1,             confidence: unknown, evidence: "not in the old 8-camera table, not serial-named. The only other Blackfly serial seen in local repos is 25415251 (FLIR_control copy, named camera2) - unverified candidate. Check on the vehicle."}
+  - {serial: "25415251", dm_name: camera_rear_left,  topic_20260924: camera1,             confidence: set, evidence: "vehicle ~/FLIR_control multicam_cameras.yaml (checked on the vehicle 2026-09-27): camera1 = 25415251; the 09-27 GUI names that serial camera_rear_left"}
   - {serial: "25415254", dm_name: camera_rear_right, topic_20260924: camera_side_right_1, confidence: set}
 thermal:
-  - {serial: "89905157", dm_name: thermal_left,  topic_20260924: thermal1, confidence: set, evidence: "thermal1 is LEFT of thermal0 by essential matrix (12/12 frames); serial from FLIR_control_master multicam_thermal_cameras.yaml"}
-  - {serial: "89905156", dm_name: thermal_right, topic_20260924: thermal0, confidence: set}
+  - {serial: "89905157", dm_name: thermal_left,  topic_20260924: thermal1, confidence: certain, evidence: "confirmed on the vehicle 2026-09-27 (thermal1 = 89905157 is the LEFT camera); also thermal1 LEFT by essential matrix (12/12 frames, 09-24). nontarget_cal's single-pair geometry check flips on some bags (2 of 6 on 09-27)"}
+  - {serial: "89905156", dm_name: thermal_right, topic_20260924: thermal0, confidence: certain, evidence: "confirmed on the vehicle 2026-09-27"}
 note: >
   The physical-to-dm_name assignment (which camera is front1, which is side_left, ...) was
   established independently of serials, from image geometry - see camera_name_map_20260924.yaml.

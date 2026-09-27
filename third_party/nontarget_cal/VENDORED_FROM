@@ -4,3 +4,5 @@ commit: 0216ef3b2e003cfd93c96d18135f3b761a453163
 commit_date: 2026-09-27T20:48:49+09:00
 subject: "Preflight estimates from the 2026-09-27 scaling benchmark: 76 GB / 49 min for the 25-window night bag (was 124 GB / 561 min)"
 synced_at: 2026-09-27T20:49:22+09:00
+local_patch: 0001-thermal-left-right-vote-per-moment.patch
+local_patch: 0002-json-numpy-bool.patch

@@ -3730,6 +3730,31 @@ class SensorStageWidget(QWidget):
         cards = [c for c in self._cards_of(group_key) if self.card_widgets[c["key"]].check.isChecked()]
         self._fix_ip_then(cards, lambda: self._start_group(group_key, self._checked_subsets(group_key)))
 
+    def start_groups(self, group_keys):
+        """다른 탭에서 '이 센서군들을 켜 줘' ([실시간 projection 보기] 등). [기동] 과 같은 길 (IP 맞추기 → 기동).
+        센서군 안에서 체크된 카드만 — 하나도 체크 안 돼 있으면 그 센서군의 카드 전부. 반환: 켜기 시작한 센서군 이름."""
+        started = []
+        for gk in group_keys:
+            if gk not in self.groups or self._active(gk):
+                continue
+            cards = self._cards_of(gk)
+            if not cards:
+                continue
+            if not any(self.card_widgets[c["key"]].check.isChecked() for c in cards):
+                for c in cards:
+                    self.card_widgets[c["key"]].check.setChecked(True)
+            chosen = [c for c in cards if self.card_widgets[c["key"]].check.isChecked()]
+            self._fix_ip_then(chosen, lambda gk=gk: self._start_group(gk, self._checked_subsets(gk)))
+            started.append(self.groups[gk]["label"])
+        if started:
+            self.sig_log.emit("GUI", f"다른 탭 요청으로 센서 기동: {', '.join(started)}")
+        return started
+
+    def group_state(self, group_key):
+        """(한글 상태, 켜져 있나) — stopped/starting/running/failed."""
+        st = self.supervisor.state(group_key)
+        return {"stopped": "꺼짐", "starting": "켜는 중…", "running": "켜짐", "failed": "기동 실패"}.get(st, st), st == "running"
+
     def stop_group(self, group_key):
         self.supervisor.stop(group_key)
 

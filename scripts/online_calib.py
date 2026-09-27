@@ -116,6 +116,10 @@ def bag_dir(path):
     return p.parent if p.is_file() else p
 
 
+MIN_BAG_S = 15.0        # 도구 windows.min_length_s — bag 하나에서 창이 하나라도 나오는 길이
+MIN_TOTAL_MOVING_S = 80.0   # 도구 preflight.rgb.min_moving_s — 고른 bag 전체의 움직인 시간
+
+
 def inspect_bag(path):
     """rosbag2 폴더의 metadata.yaml 만 읽는다 (bag 본문은 안 연다 — 수백 GB).
 
@@ -124,7 +128,7 @@ def inspect_bag(path):
     """
     d = bag_dir(path)
     info = {"path": str(d), "ok": False, "error": "", "duration_s": 0.0, "size_gb": 0.0,
-            "n_rgb": 0, "n_thermal": 0, "has_lidar": False, "has_gnss": False, "storage": "",
+            "n_rgb": 0, "n_thermal": 0, "rgb_ns": [], "thermal_ns": [], "has_lidar": False, "has_gnss": False, "storage": "",
             "start_ns": 0, "label": d.name}
     meta = d / "metadata.yaml"
     if not d.is_dir():
@@ -151,19 +155,25 @@ def inspect_bag(path):
     info["storage"] = m.get("storage_identifier", "")
     names = [((t or {}).get("topic_metadata") or {}).get("name", "")
              for t in m.get("topics_with_message_count") or []]
-    info["n_rgb"] = sum(1 for n in names if n.endswith("/image_rgb/compressed"))
-    info["n_thermal"] = sum(1 for n in names if n.startswith("/thermal") and n.endswith("/image_raw"))
+    info["rgb_ns"] = sorted(n.split("/")[1] for n in names if n.endswith("/image_rgb/compressed"))
+    info["thermal_ns"] = sorted(n.split("/")[1] for n in names if n.startswith("/thermal") and n.endswith("/image_raw"))
+    info["n_rgb"] = len(info["rgb_ns"])
+    info["n_thermal"] = len(info["thermal_ns"])
     info["has_lidar"] = "/ouster/points" in names
     info["has_gnss"] = "/gps/fix" in names
     problems = []
+    if info["storage"] and info["storage"] != "sqlite3":
+        problems.append(f"{info['storage']} 형식 — 도구는 sqlite3(.db3) bag 만 읽음")
     if not info["has_lidar"]:
         problems.append("/ouster/points 없음")
     if not info["has_gnss"]:
         problems.append("/gps/fix 없음")
     if info["n_rgb"] == 0 and info["n_thermal"] == 0:
         problems.append("카메라 영상 토픽 없음")
-    if info["duration_s"] < 80:
-        problems.append(f"너무 짧음 ({info['duration_s']:.0f} s, 최소 80 s 주행)")
+    # 도구는 움직인 구간 15 s 이상이면 창 하나로 쓴다 (windows.min_length_s). 최소 80 s 주행은 고른 bag 전체의 합
+    # (preflight rgb.min_moving_s) — bag 하나에 요구하지 않는다 (30 s 클립도 여러 개 모으면 쓸 수 있음)
+    if info["duration_s"] < MIN_BAG_S:
+        problems.append(f"너무 짧음 ({info['duration_s']:.0f} s — 창 하나에 {MIN_BAG_S:.0f} s 이상 주행 필요)")
     info["error"] = ", ".join(problems)
     info["ok"] = not problems
     return info
@@ -325,10 +335,101 @@ def imported_job(out, label=""):
     }
 
 
+# ---------------------------------------------------------------- 카메라 이름 대응표 (--name-map)
+# 도구는 캘리브레이션 이름(camera_front1 … thermal_right)으로 풀고, 차량 토픽 이름은 GUI 설정에 따라 바뀐다
+# (09-24 이름 → 09-27 camera_1 …). 시리얼을 사이에 두고 bag 마다 "녹화 당시 이름 체계" 를 찾아 대응표를 만든다.
+# 도구는 받은 대응표를 영상 기하로 다시 확인하고, 모순이면 거절한다.
+
+def bag_camera_snapshot(bag):
+    """녹화할 때 남긴 {시리얼: 토픽 이름} (dataset_info.json 의 cameras). 없으면 {}."""
+    try:
+        info = json.loads((bag_dir(bag) / "dataset_info.json").read_text(encoding="utf-8"))
+        return {str(k): str(v) for k, v in (info.get("cameras") or {}).items()}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def naming_candidates(serial_map, snapshot=None, launched=None, settings=None):
+    """[(이름 체계 설명, {시리얼: 토픽 이름})] — 앞의 것부터 믿는다.
+    serial_map: calib_apply.load_serial_map. snapshot: 이 bag 녹화 당시 기록. launched: GUI 가 마지막 기동에 넘긴
+    인벤토리 사본. settings: 지금 GUI 설정의 인벤토리."""
+    out = []
+    for label, m in (("녹화 당시 기록", snapshot), ("마지막 기동 인벤토리", launched), ("지금 GUI 설정", settings)):
+        if m:
+            out.append((label, {str(k): str(v) for k, v in m.items()}))
+    old = {v["serial"]: v["topic_20260924"] for v in serial_map.values() if v.get("serial") and v.get("topic_20260924")}
+    out.append(("2026-09-24 이름", old))
+    out.append(("캘리브레이션 이름 그대로", {v["serial"]: k for k, v in serial_map.items() if v.get("serial")}))
+    return out
+
+
+def name_map_for_bag(info, serial_map, candidates):
+    """bag 하나의 {캘리브레이션 이름: 토픽 이름}. bag 의 카메라 토픽을 모두 시리얼로 설명하는 첫 이름 체계를 쓴다.
+    반환 (map, 근거) 또는 (None, 이유)."""
+    ns = set(info.get("rgb_ns") or []) | set(info.get("thermal_ns") or [])
+    if not ns:
+        return None, "카메라 토픽 없음"
+    for label, by_serial in candidates:
+        if not ns <= set(by_serial.values()):
+            continue
+        m = {}
+        for dm, v in serial_map.items():
+            topic = by_serial.get(v.get("serial") or "")
+            if topic in ns:
+                m[dm] = topic
+        if set(m.values()) == ns:
+            return m, label
+    return None, f"토픽 {', '.join(sorted(ns))} 을(를) 설명하는 이름 체계가 없음 (시리얼 표 · 인벤토리에 없는 이름)"
+
+
+def auto_name_map(infos, serial_map, candidates_of):
+    """고른 bag 들의 공통 대응표. candidates_of(info) → naming_candidates.
+    반환 {"ok", "map", "why", "per_bag": [(bag 이름, 근거)]}. 도구는 대응표 하나만 받으므로 bag 끼리 다르면 실패."""
+    per, maps = [], []
+    for info in infos:
+        m, why = name_map_for_bag(info, serial_map, candidates_of(info))
+        name = Path(info["path"]).name
+        if m is None:
+            return {"ok": False, "map": None, "why": f"{name}: {why}", "per_bag": per}
+        per.append((name, why))
+        maps.append(m)
+    if any(m != maps[0] for m in maps[1:]):
+        diff = sorted({k for m in maps for k in m if any(o.get(k) != m.get(k) for o in maps)})
+        return {"ok": False, "map": None, "per_bag": per,
+                "why": "고른 bag 들의 카메라 이름 체계가 다름 (" + ", ".join(diff[:6]) + ") — "
+                       "같은 이름 체계로 녹화한 bag 끼리 돌리세요"}
+    return {"ok": True, "map": maps[0], "why": "; ".join(f"{n}: {w}" for n, w in per), "per_bag": per}
+
+
+def write_name_map(m, path):
+    """도구의 --name-map 형식 (평평한 {캘리브레이션 이름: 토픽 이름})."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("# DM_clipGUI 가 시리얼로 만든 카메라 이름 대응표 (캘리브레이션 이름: bag 토픽 이름)\n"
+                    + yaml.safe_dump(dict(sorted(m.items())), allow_unicode=True, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def launched_inventory(generated_dir):
+    """GUI 가 마지막 기동 때 런치에 넘긴 FLIR 인벤토리 사본들 → {시리얼: 토픽 이름(namespace)}."""
+    out = {}
+    for f in sorted(Path(generated_dir).glob("flir_cameras__*__inventory.yaml")):
+        try:
+            y = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+            node = next(iter(y.values()))
+            for e in (node.get("ros__parameters") or {}).get("cameras") or []:
+                if e.get("serial"):
+                    out[str(e["serial"])] = str(e.get("namespace") or e.get("name"))
+        except (OSError, ValueError, StopIteration, AttributeError, yaml.YAMLError):
+            continue
+    return out
+
+
 def tool_args(job):
     """nontarget_cal run 인자 (실행 파일 뒤)."""
     a = ["run", "--bags", *job["bags"], "--out", job["out"], "--workdir", job["workdir"],
-         "--mode", job["mode"], "--sensors", ",".join(job["sensors"])]
+         "--mode", job["mode"], "--sensors", ",".join(job["sensors"]),
+         "--no-viz"]        # 3D 수렴 스트림은 GUI 가 안 쓴다 (진행은 stdout 이벤트, 결과는 out/images)
     if job["mode"] == "warm":
         a += ["--init", str(job["init"])]
     if job.get("name_map"):
@@ -522,11 +623,31 @@ def settle_state(job, alive=None):
 # ---------------------------------------------------------------- 진행 이벤트
 # 도구의 큰 단계 (stage_start/stage_end 이름) — 무게는 README §6 의 15분 주행 실측(분)
 STAGES = [
-    ("names", "카메라 이름 확인", 1), ("preflight", "사전 점검", 1), ("windows", "구간 선택", 0.5),
-    ("extract", "데이터 추출", 27), ("lo", "LiDAR 오도메트리", 75), ("rgb_tracks", "RGB 특징점 추적", 10),
-    ("thermal_tracks", "열화상 추적", 3), ("rgb_solve", "RGB 풀이", 40), ("thermal_solve", "열화상 풀이", 15),
-    ("validation", "검증", 20), ("outputs", "결과 파일", 5),
+    ("names", "카메라 이름 확인", 0), ("preflight", "사전 점검", 0), ("windows", "구간 선택", 0),
+    ("extract", "데이터 추출", 0), ("lo", "LiDAR 오도메트리", 0), ("rgb_tracks", "RGB 특징점 추적", 0),
+    ("thermal_tracks", "열화상 추적", 0), ("rgb_solve", "RGB 풀이", 0), ("thermal_solve", "열화상 풀이", 0),
+    ("validation", "검증", 0), ("outputs", "결과 파일", 0),
 ]
+# 진행률: 단계마다 (시작, 끝) 시점이 전체 시간의 몇 % 인가. 단계들이 겹쳐 돌아서 (추출 · LO · 추적 동시, 열화상 풀이는
+# RGB 추적 · 풀이와 동시) 무게를 더하면 초반이 부풀려진다. 이 차량 2026-09-27 실측 (bag 12개 · 창 30개 · 20코어,
+# 82분): 이름 5분 · 추출 끝 25 · LO 끝 38 · 열화상 추적 끝 38 · RGB 추적 끝 55 · 열화상 풀이 38→62 · RGB 풀이 55→82.
+STAGE_SPAN = {
+    ("rgb", "thermal"): {"names": (0, .06), "preflight": (.06, .06), "windows": (.06, .06), "extract": (.06, .30),
+                         "lo": (.06, .46), "thermal_tracks": (.06, .47), "rgb_tracks": (.06, .67),
+                         "thermal_solve": (.47, .75), "rgb_solve": (.67, .99), "validation": (.67, .99),
+                         "outputs": (.99, 1.0)},
+    ("rgb",): {"names": (0, .06), "preflight": (.06, .06), "windows": (.06, .06), "extract": (.06, .30),
+               "lo": (.06, .46), "rgb_tracks": (.06, .67), "rgb_solve": (.67, .99), "validation": (.67, .99),
+               "outputs": (.99, 1.0)},
+    ("thermal",): {"names": (0, .08), "preflight": (.08, .08), "windows": (.08, .08), "extract": (.08, .40),   # 추정
+                   "lo": (.08, .65), "thermal_tracks": (.08, .67), "thermal_solve": (.67, .98),
+                   "validation": (.67, .98), "outputs": (.98, 1.0)},
+}
+# 창(구간) 단위로 done/total 이 오는 단계 — 그 비율로 채운다. 나머지(풀이 등)는 들어간 뒤 시간 / 예상 시간으로.
+# 검증은 열화상 쪽이 중간에 먼저 돌고 (1/3 …) RGB 쪽이 마지막이라 RGB 풀이 구간 안에서 시간으로 채운다.
+WINDOW_STAGES = ("extract", "lo", "rgb_tracks", "thermal_tracks")
+# 도구의 사전 점검 추정(runtime_min)은 NVMe 개발 PC 기준 — 이 차량(SATA SSD)에서는 1.3배 (62분 추정 → 82분)
+TOOL_ESTIMATE_FACTOR = 1.3
 STAGE_LABEL = {k: lbl for k, lbl, _ in STAGES}
 SENSOR_STAGES = {"rgb": ("rgb_tracks", "rgb_solve"), "thermal": ("thermal_tracks", "thermal_solve")}
 # stage_progress 의 세부 이름 → 큰 단계
@@ -552,6 +673,7 @@ class Progress:
 
     def __init__(self, sensors=("rgb", "thermal")):
         self.sensors = tuple(sensors)
+        self.tool_estimate = None       # 도구의 사전 점검 추정 {"runtime_min", "disk_gb", ...} (이어서 실행해도 유지)
         self.bad_lines = 0
         self._offset = 0
         self._partial = b""
@@ -571,6 +693,7 @@ class Progress:
         self.error = None
         self.run_start = None
         self.run_end = None
+        self.start_fraction = None      # 이 시도에서 처음 도는 단계가 시작될 때의 진행률 (이어서 실행이면 0 보다 큼)
         self.check = None
         self.task_failed = []
         self.last = None
@@ -607,7 +730,9 @@ class Progress:
         if kind == "run_start":
             self.run_start = ev
         elif kind == "stage_start" and st in self.stages:
-            self.stages[st].update(state="run", done=0, total=0)
+            if self.start_fraction is None:
+                self.start_fraction = self.fraction(ev.get("t"))     # 이어서 실행: 캐시로 건너뛴 만큼
+            self.stages[st].update(state="run", done=0, total=0, t0=ev.get("t") or time.time())
         elif kind == "stage_skip":
             for s in SKIP_ALIAS.get(st, (st,)):
                 if s in self.stages:
@@ -618,9 +743,12 @@ class Progress:
                 s = self.stages[m]
                 if s["state"] == "wait":
                     s["state"] = "run"
+                    s["t0"] = ev.get("t") or time.time()
                 s.update(done=int(ev.get("done", 0)), total=int(ev.get("total", 0)), sub=st)
         elif kind == "stage_end" and st in self.stages:
             self.stages[st].update(state="ok" if ev.get("ok", True) else "fail", wall_s=ev.get("wall_s"))
+            if st == "preflight" and ev.get("estimate"):
+                self.tool_estimate = ev["estimate"]
         elif kind == "warning":
             self.warnings.append(ev)
             del self.warnings[:-200]
@@ -662,19 +790,71 @@ class Progress:
                 skip.update(sts)
         return [(k, lbl, w) for k, lbl, w in STAGES if k not in skip]
 
-    def fraction(self):
-        """대략의 전체 진행률 0..1 (단계 무게 = 실측 시간)."""
-        tot = got = 0.0
-        for k, _, w in self.expected():
-            s = self.stages[k]
-            tot += w
-            if s["state"] in ("ok", "skip"):
-                got += w
-            elif s["state"] == "run" and s["total"] > 0:
-                got += w * min(1.0, s["done"] / s["total"])
+    def _spans(self):
+        key = tuple(x for x in ("rgb", "thermal") if x in self.sensors) or ("rgb", "thermal")
+        return STAGE_SPAN.get(key, STAGE_SPAN[("rgb", "thermal")])
+
+    def total_estimate_s(self):
+        tool = (self.tool_estimate or {}).get("runtime_min")
+        return float(tool) * 60 * TOOL_ESTIMATE_FACTOR if tool else None
+
+    def fraction(self, now=None):
+        """전체 진행률 0..1. 끝난 단계는 그 끝 시점, 도는 단계는 (시작, 끝) 사이를 창 진행률 또는 경과 시간으로."""
         if self.run_end:
             return 1.0
-        return got / tot if tot else 0.0
+        now = time.time() if now is None else now
+        spans = self._spans()
+        T = self.total_estimate_s()
+        f = 0.0
+        for k, _, _ in self.expected():
+            st, sp = self.stages[k], spans.get(k)
+            if sp is None:
+                continue
+            a, b = sp
+            if st["state"] in ("ok", "skip"):
+                f = max(f, b)
+            elif st["state"] == "run":
+                if k in WINDOW_STAGES and st["total"] > 0:
+                    f = max(f, a + (b - a) * min(1.0, st["done"] / st["total"]))
+                elif T and st.get("t0"):
+                    f = max(f, a + (b - a) * min(0.9, (now - st["t0"]) / max(1.0, (b - a) * T)))
+                else:
+                    f = max(f, a)
+        return min(f, 0.999)
+
+    def remaining_s(self, elapsed_s, now=None):
+        """남은 시간(초) 추정, 모르면 None. 도구 추정(× 이 PC 보정)과 실제 속도를 섞는다 — 진행이 쌓일수록 실제 속도 쪽.
+        이어서 실행한 시도는 캐시로 건너뛴 만큼(시작 때 진행률)을 빼고 속도를 잰다."""
+        f = self.fraction(now)
+        if f >= 1.0:
+            return 0.0
+        f0 = self.start_fraction or 0.0
+        T = self.total_estimate_s()
+        rem_tool = T * (1 - f) if T else None
+        rem_pace = elapsed_s * (1 - f) / (f - f0) if (f - f0) > 0.05 and elapsed_s > 120 else None
+        if rem_tool is None and rem_pace is None:
+            return None
+        if rem_tool is None:
+            rem = rem_pace
+        elif rem_pace is None:
+            rem = rem_tool
+        else:
+            w = min(1.0, (f - f0) / 0.4)
+            rem = (1 - w) * rem_tool + w * rem_pace
+        return max(rem, 60.0 * (1 - f))
+
+    def now_text(self):
+        """지금 도는 단계를 한 줄로: ("4/11 단계", "LiDAR 오도메트리 · 12/30 + 열화상 추적 · 3/30")."""
+        exp = self.expected()
+        run = [(i, k, lbl) for i, (k, lbl, _) in enumerate(exp) if self.stages[k]["state"] == "run"]
+        if not run:
+            done = sum(1 for k, _, _ in exp if self.stages[k]["state"] in ("ok", "skip"))
+            return f"{done}/{len(exp)} 단계", ""
+        parts = []
+        for _, k, lbl in run:
+            s = self.stages[k]
+            parts.append(lbl + (f" · {s['done']}/{s['total']}" if s["total"] else ""))
+        return f"{run[0][0] + 1}/{len(exp)} 단계", " + ".join(parts)
 
     def current(self):
         """지금 도는 단계들 [(key, 한글, done, total, sub)]."""

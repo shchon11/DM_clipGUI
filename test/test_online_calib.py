@@ -7,6 +7,7 @@
   /hdd/DM_calib/nt_regress/full/out       nontarget_cal 전체 실행 결과 (2026-09-24 야간 bag, 창 25개)
   /hdd/DM_calib/nt_regress/full/work/events.jsonl   그 실행의 진행 이벤트
   ~/projects/DM/FLIR_control_master/calibration     차량 스택의 camera_info / extrinsics 파일 (시리얼 키)
+  ~/FLIR_control/calibration                        (차량 PC 에서는 이것)
 """
 import json
 import os
@@ -27,7 +28,9 @@ import online_calib as oc      # noqa: E402
 
 REF_OUT = Path("/hdd/DM_calib/nt_regress/full/out")
 REF_EVENTS = Path("/hdd/DM_calib/nt_regress/full/work/events.jsonl")
-FLIR_CAL = Path.home() / "projects" / "DM" / "FLIR_control_master" / "calibration"
+FLIR_CAL = next((p for p in (Path.home() / "projects" / "DM" / "FLIR_control_master" / "calibration",
+                              Path.home() / "FLIR_control" / "calibration")        # 차량 PC
+                 if (p / "flir_camera_info.yaml").is_file()), Path("/없음"))
 SERIAL_MAP = ROOT / "config" / "camera_serial_map.yaml"
 need_ref = pytest.mark.skipif(not (REF_OUT / "summary.json").is_file(), reason="참조 결과 없음")
 need_flir = pytest.mark.skipif(not (FLIR_CAL / "flir_camera_info.yaml").is_file(), reason="FLIR_control 파일 없음")
@@ -362,11 +365,17 @@ def _vehicle_copy(tmp_path):
 
 @need_flir
 def test_node_like_parser_reads_existing_files():
+    # 차량 파일은 적용할 때마다 바뀐다 — 값이 아니라 "노드 규칙으로 모든 항목을 읽을 수 있나" 만 본다
     text = (FLIR_CAL / "flir_camera_info.yaml").read_text()
-    got = ca.parse_camera_info_like_node(text, "25415248")
-    assert got["distortion_model"] == "plumb_bob" and len(got["k"]) == 9 and abs(got["k"][0] - 1045.6207934842) < 1e-9
-    items = ca.parse_extrinsics_like_node((FLIR_CAL / "flir_camera_extrinsics.yaml").read_text())
-    assert len(items) == 8 and items[0]["parent_frame"] == "flir_rig_frame"
+    serials = list(yaml.safe_load(text)["camera_info_by_serial"])
+    assert "25415248" in serials
+    for s in serials:
+        got = ca.parse_camera_info_like_node(text, s)
+        assert got["distortion_model"] in ("plumb_bob", "equidistant") and len(got["k"]) == 9 and got["k"][0] > 0
+    ex_text = (FLIR_CAL / "flir_camera_extrinsics.yaml").read_text()
+    items = ca.parse_extrinsics_like_node(ex_text)
+    assert len(items) == len(yaml.safe_load(ex_text)["extrinsics_by_serial"])
+    assert all(it["parent_frame"] in ("flir_rig_frame", "os_lidar") for it in items)
     with pytest.raises(ValueError):
         ca.parse_camera_info_like_node(text, "00000000")
     # 블록 목록(여러 줄)은 노드가 못 읽는다 → 검증이 잡아야 한다
@@ -391,15 +400,20 @@ def test_plan_apply_serials():
     res = ca.load_result_cameras(REF_OUT)
     rows = {r["camera"]: r for r in ca.plan_apply(res, sm, inv)}
     assert len(rows) == 16
-    rl = rows["camera_rear_left"]
-    assert not rl["ok"] and not rl["selected"] and "시리얼" in rl["issues"][0]
+    assert rows["camera_rear_left"]["serial"] == "25415251" and rows["camera_rear_left"]["ok"]
     f5 = rows["camera_front5"]
     assert f5["serial"] == "26076474" and f5["frame_id"] == "camera_26076474_optical_frame" and f5["selected"]
     assert rows["thermal_left"]["serial"] == "89905157" and rows["thermal_left"]["name"] == "thermal1"
+    # 표에 시리얼이 없으면 적용 못 함
+    unk = dict(sm, camera_rear_left=dict(sm["camera_rear_left"], serial=None))
+    rl = {r["camera"]: r for r in ca.plan_apply(res, unk, inv)}["camera_rear_left"]
+    assert not rl["ok"] and not rl["selected"] and "시리얼" in rl["issues"][0]
     # 사용자가 시리얼을 넣으면 적용 가능 — 단 확인 필요
-    rows2 = {r["camera"]: r for r in ca.plan_apply(res, sm, inv, serial_overrides={"camera_rear_left": "25415251"})}
+    rows2 = {r["camera"]: r for r in ca.plan_apply(res, unk, inv, serial_overrides={"camera_rear_left": "25415251"})}
     rl2 = rows2["camera_rear_left"]
     assert rl2["ok"] and rl2["needs_confirm"] and not rl2["selected"]
+    # 인벤토리를 못 읽었으면 (옛 이름으로 frame 을 지으면 엉뚱한 frame) 적용 못 함
+    assert not any(r["ok"] for r in ca.plan_apply(res, sm, {}))
     # 토픽 이름의 시리얼과 모순되면 막는다
     bad = {r["camera"]: r for r in ca.plan_apply(res, sm, inv, serial_overrides={"camera_front5": "26075999"})}
     assert not bad["camera_front5"]["ok"]
@@ -518,3 +532,121 @@ def test_bundled_result_folder_loads():
     assert len(cams) == 16
     r = oc.load_result(root)
     assert r["gate_pass"] and len(r["cameras"]) == 16
+
+
+# ------------------------------------------------------------------ 차량에서 찾은 문제 (2026-09-27)
+def test_num_exponent_keeps_dot():
+    """소수점 없는 지수(1e-05)는 PyYAML 이 문자열로 읽어, 다음 적용 때 따옴표가 붙고 카메라 노드가 죽는다."""
+    for v in (1e-05, -4e-05, 2.5e-06, 1e16, 0.001, 123.0, -0.3278882638):
+        t = ca._num(v)
+        back = yaml.safe_load(t)
+        assert isinstance(back, float) and back == v, (v, t)
+        float(t)        # std::stod 처럼
+
+
+def test_validate_checks_untouched_entries():
+    text = ("camera_info_by_serial:\n  \"1\":\n    camera_info:\n      distortion_model: \"equidistant\"\n"
+            "      d: [0.01, \"-4e-05\", 0.0, 0.0]\n      k: [1, 0, 1, 0, 1, 1, 0, 0, 1]\n")
+    probs = ca.validate_written(text, "extrinsics_by_serial: {}\n", {}, {})
+    assert any("1 (기존 항목)" in p for p in probs)
+
+
+def _fake_bag(tmp_path, name, rgb, thermal=("thermal0", "thermal1"), storage="sqlite3", cameras=None, dur_s=300):
+    d = tmp_path / name
+    d.mkdir(parents=True)
+    names = ["/ouster/points", "/gps/fix"] + [f"/{n}/image_rgb/compressed" for n in rgb] + \
+            [f"/{n}/image_raw" for n in thermal]
+    (d / "metadata.yaml").write_text(yaml.safe_dump({"rosbag2_bagfile_information": {
+        "duration": {"nanoseconds": int(dur_s * 10**9)}, "starting_time": {"nanoseconds_since_epoch": 1},
+        "storage_identifier": storage,
+        "topics_with_message_count": [{"topic_metadata": {"name": n, "type": "t"}, "message_count": 1} for n in names]}}))
+    if cameras:
+        (d / "dataset_info.json").write_text(json.dumps({"cameras": cameras}))
+    return oc.inspect_bag(d)
+
+
+def test_short_clips_are_usable(tmp_path):
+    """80 s 는 고른 bag 전체의 합 — 30 s 클립 하나는 창 하나 (도구 windows.min_length_s 15 s)."""
+    assert _fake_bag(tmp_path, "clip_30", ["c1"], dur_s=30)["ok"]
+    b = _fake_bag(tmp_path, "clip_10", ["c1"], dur_s=10)
+    assert not b["ok"] and "너무 짧음" in b["error"]
+
+
+def test_inspect_bag_rejects_mcap(tmp_path):
+    b = _fake_bag(tmp_path, "rec_m", ["c1"], storage="mcap")
+    assert not b["ok"] and "sqlite3" in b["error"]
+
+
+def test_auto_name_map_by_serial(tmp_path):
+    sm = ca.load_serial_map(SERIAL_MAP)
+    serial = {k: v["serial"] for k, v in sm.items()}
+    # 09-27 GUI 이름: 시리얼 → camera_N 등 (26076474 = camera_6, 25415255 = camera_5)
+    now = {serial["camera_front1"]: "camera_1", serial["camera_front2"]: "camera_2", serial["camera_front3"]: "camera_3",
+           serial["camera_front4"]: "camera_4", serial["camera_front5"]: "camera_6", serial["camera_front6"]: "camera_5",
+           serial["camera_front7"]: "camera_7", serial["camera_front8"]: "camera_8", serial["camera_front9"]: "camera_9",
+           serial["camera_top"]: "camera_top", serial["camera_side_left"]: "camera_side_left",
+           serial["camera_side_right"]: "camera_side_right", serial["camera_rear_left"]: "camera_rear_left",
+           serial["camera_rear_right"]: "camera_rear_right", "89905156": "thermal0", "89905157": "thermal1"}
+    new_bag = _fake_bag(tmp_path, "route_001_x/rec_2", [v for v in now.values() if not v.startswith("thermal")])
+    old_names = [v["topic_20260924"] for v in sm.values() if v["topic_20260924"] and not v["topic_20260924"].startswith("thermal")]
+    old_bag = _fake_bag(tmp_path, "rec_1", old_names)
+    cands = lambda launched: (lambda i: oc.naming_candidates(sm, oc.bag_camera_snapshot(i["path"]), launched))  # noqa: E731
+    r = oc.auto_name_map([new_bag], sm, cands(now))
+    assert r["ok"] and r["map"]["camera_front5"] == "camera_6" and r["map"]["thermal_left"] == "thermal1"
+    assert len(r["map"]) == 16
+    r = oc.auto_name_map([old_bag], sm, cands(now))
+    assert r["ok"] and r["map"]["camera_front5"] == "camera_26076474" and "09-24" in r["why"]
+    # 이름 체계가 다른 bag 은 대응표 하나로 못 돌린다
+    assert not oc.auto_name_map([new_bag, old_bag], sm, cands(now))["ok"]
+    # 기동 사본이 없어도 녹화 당시 기록이 있으면 그것으로
+    snap_bag = _fake_bag(tmp_path, "rec_3", [v for v in now.values() if not v.startswith("thermal")], cameras=now)
+    r = oc.auto_name_map([snap_bag], sm, cands({}))
+    assert r["ok"] and "녹화 당시" in r["why"]
+    # 아무 체계로도 설명 못 하면 이유와 함께 실패
+    assert not oc.auto_name_map([_fake_bag(tmp_path, "rec_4", ["mystery"])], sm, cands(now))["ok"]
+    p = oc.write_name_map(r["map"], tmp_path / "nm.yaml")
+    assert yaml.safe_load(p.read_text())["camera_front6"] == "camera_5"
+
+
+def test_progress_fraction_and_eta():
+    """단계가 겹쳐 도는 실행: 진행률은 단조 증가, 남은 시간은 도구 추정(× 이 PC 보정)과 실제 속도를 섞는다."""
+    p = oc.Progress()
+    t0 = 1_000_000.0
+    evs = [(0, {"ev": "run_start"}), (0, {"ev": "stage_start", "stage": "names"}),
+           (300, {"ev": "stage_end", "stage": "names"}), (300, {"ev": "stage_start", "stage": "preflight"}),
+           (306, {"ev": "stage_end", "stage": "preflight", "estimate": {"runtime_min": 62}}),
+           (310, {"ev": "stage_start", "stage": "extract"}), (310, {"ev": "stage_start", "stage": "lo"}),
+           (400, {"ev": "stage_progress", "stage": "rgb_tracks", "done": 1, "total": 210}),   # 1/210 에 뛰면 안 된다
+           (1500, {"ev": "stage_end", "stage": "extract"}),
+           (2300, {"ev": "stage_end", "stage": "lo"}),
+           (3000, {"ev": "stage_progress", "stage": "rgb_tracks", "done": 150, "total": 210}),
+           (3700, {"ev": "stage_progress", "stage": "validation", "done": 1, "total": 3})]   # 열화상 검증이 먼저 돈다
+    last = 0.0
+    for dt, e in evs:
+        p.feed(dict(e, t=t0 + dt))
+        f = p.fraction(t0 + dt)
+        assert f >= last - 1e-9, (e, f, last)
+        last = f
+        if e.get("stage") == "rgb_tracks" and e["done"] == 1:
+            assert f < 0.15
+    assert last < 0.9                                   # 검증 1/3 로 끝 근처까지 뛰지 않는다
+    step, what = p.now_text()
+    assert step.endswith("단계") and "RGB 특징점 추적" in what
+    rem = p.remaining_s(3700, t0 + 3700)
+    assert 10 * 60 < rem < 60 * 60
+    p.feed({"ev": "run_end", "t": t0 + 5000})
+    assert p.fraction() == 1.0 and p.remaining_s(5000) == 0.0
+
+
+def test_compare_verdict_rules():
+    """기존 캘 vs 새 결과 판정: 문턱을 넘는 차이만 '낫다', 엇갈리면 강한 지표 쪽, 둘 다 강하면 '엇갈림'."""
+    import calib_compare as cc
+    assert cc._better(0.78, 0.83, cc.HELDOUT_ABS_PX, cc.HELDOUT_REL) == 1        # 새 쪽이 확실히 낮음
+    assert cc._better(0.80, 0.81, cc.HELDOUT_ABS_PX, cc.HELDOUT_REL) == 0        # 문턱 안
+    assert cc._better(0.90, 0.80, cc.HELDOUT_ABS_PX, cc.HELDOUT_REL) == -1
+    assert cc._better(None, 0.8, 0.03) == 0
+    assert cc.verdict([("h", 1, True), ("e", 0, False)])[0] == "new"
+    assert cc.verdict([("h", 0, True), ("e", -1, False)])[0] == "old"
+    assert cc.verdict([("h", 1, True), ("e", -1, False)])[0] == "new"            # 강한 지표 쪽
+    assert cc.verdict([("h", 1, True), ("e", -1, True)])[0] == "mixed"
+    assert cc.verdict([("h", 0, True)])[0] == "same"

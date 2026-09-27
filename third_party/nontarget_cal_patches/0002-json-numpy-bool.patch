@@ -1,0 +1,18 @@
+nontarget_cal: numpy 스칼라(np.bool 등)를 JSON 으로 (2026-09-27, 차량에서)
+
+bag 이 2개 이상이면 rgb_solve 가 bag 별 풀이를 비교해 rgb/bag_agreement.json 을 쓰는데, 그 안의
+카메라별 판정이 numpy.bool 이라 workspace._default 가 TypeError 를 내고 작업 전체가 죽었다
+(12 bag 실행, 70분 뒤). numpy 2 에서 np.bool 은 np.integer 가 아니다. np.generic 은 .item() 으로.
+원본에 같은 수정을 넣으면 이 파일을 지운다.
+
+--- a/nontarget_cal/workspace.py
++++ b/nontarget_cal/workspace.py
+@@ -106,6 +106,8 @@
+         return int(o)
+     if isinstance(o, (np.floating,)):
+         return float(o)
++    if isinstance(o, np.generic):   # np.bool_ (np.bool in numpy 2) etc. — e.g. bag_agreement's per-bag flags
++        return o.item()
+     if isinstance(o, np.ndarray):
+         return o.tolist()
+     if isinstance(o, Path):

@@ -183,7 +183,11 @@ def plan_apply(result, serial_map, inventory=None, serial_overrides=None, select
         if sm.get("confidence") == "set" and source.startswith("표"):
             pass    # 그룹 안 배정은 FLIR_control 표 기준 — 표의 설명 참고 (README)
         inv = inventory.get(serial) if serial else None
-        if serial and inv is None and inventory:
+        if not inventory:
+            # 인벤토리 없이 옛 이름(topic_20260924)으로 frame 을 지으면 실제 노드의 frame_id 와 달라
+            # TF 가 아무 카메라에도 안 붙는다 — 적용하지 않는다
+            issues.append("차량 인벤토리를 읽지 못해 카메라 frame 이름을 알 수 없음")
+        elif serial and inv is None:
             confirm.append("차량 인벤토리에 없는 시리얼 (지금 안 꽂힌 카메라?)")
         name = (inv or {}).get("name") or sm.get("topic_20260924") or c
         frame = (inv or {}).get("frame_id") or f"{name}_optical_frame"
@@ -210,6 +214,11 @@ def _num(v):
     if not math.isfinite(f):
         raise ValueError(f"유한하지 않은 값: {v}")
     r = repr(f)
+    # YAML 1.1(PyYAML)은 소수점 없는 지수(1e-05)를 문자열로 읽는다 — 다음 적용 때 "1e-05" 로 따옴표가 붙어
+    # 카메라 노드의 stod 가 기동 중에 죽는다. 항상 1.0e-05 꼴로.
+    if "e" in r and "." not in r.split("e")[0]:
+        m, e = r.split("e")
+        r = f"{m}.0e{e}"
     return r
 
 
@@ -545,6 +554,18 @@ def validate_written(ci_text, ex_text, ci_entries, ex_entries):
             yaml.safe_load(text)
         except yaml.YAMLError as e:
             problems.append(f"{name}: YAML 오류 {e}")
+    # 이번에 쓴 항목만이 아니라 다시 쓴 파일의 모든 시리얼 — 하나라도 노드가 못 읽으면 그 카메라 노드가 기동 중에 죽는다
+    try:
+        every = [str(k) for k in ((yaml.safe_load(ci_text) or {}).get("camera_info_by_serial") or {})]
+    except yaml.YAMLError:
+        every = []
+    for serial in every:
+        if serial in ci_entries:
+            continue
+        try:
+            parse_camera_info_like_node(ci_text, serial)
+        except ValueError as ex:
+            problems.append(f"camera_info {serial} (기존 항목): {ex}")
     for serial, e in ci_entries.items():
         try:
             got = parse_camera_info_like_node(ci_text, serial)

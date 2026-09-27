@@ -331,6 +331,37 @@ def identify_thermal(pairs, nss, ref_left_right=("thermal_left", "thermal_right"
     return {ref_left_right[0]: left, ref_left_right[1]: right}, rep
 
 
+def identify_thermal_votes(votes, nss, ref_left_right=("thermal_left", "thermal_right"), min_votes=2,
+                           max_dissent=0.25):
+    """Left/right of the thermal pair by a vote over moments, each solved on its own.
+
+    The A70s are not on PTP: "simultaneous" frames differ by tens of ms, and while driving the vehicle moves about
+    as far as the baseline in that time, differently at every moment. Pooling the matches of all moments into one
+    essential matrix therefore mixes those motions into the baseline and can flip its sign (09-27 vehicle bags: 2
+    of 6 pooled solves flipped while every per-moment solve agreed). votes: [((a, b), (R, t, inliers))]."""
+    if len(nss) != 2 or not votes:
+        return None, {"unresolved": ["thermal pair: no geometry"]}
+    a, b = sorted(nss)
+    w = {a: 0, b: 0}
+    rows = []
+    for (p, q), (R, t, n) in votes:
+        tx = float(t[0]) if (p, q) == (a, b) else -float((R.T @ t)[0])
+        rows.append([round(tx, 3), int(n)])
+        if abs(tx) > 0.5:               # baseline mostly sideways, as designed; else this moment says nothing
+            w[a if tx < 0 else b] += n  # x_b = R x_a + t: a's centre is at image-x sign(t_x) of b
+    total = w[a] + w[b]
+    decisive = sum(1 for tx, _ in rows if abs(tx) > 0.5)
+    left = a if w[a] >= w[b] else b
+    right = b if left == a else a
+    unresolved = []
+    if decisive < min_votes:
+        unresolved.append(f"thermal pair: only {decisive} moments with a sideways baseline")
+    elif min(w.values()) > max_dissent * total:
+        unresolved.append(f"thermal pair: moments disagree ({w})")
+    rep = {"pair": [a, b], "votes_tx_inliers": rows, "weight_left": {a: w[a], b: w[b]}, "unresolved": unresolved}
+    return {ref_left_right[0]: left, ref_left_right[1]: right}, rep
+
+
 def moments(bag: Bag, series_t, series_speed, n=6):
     """Moving moments spread over the bag."""
     t = np.asarray(series_t)
@@ -397,9 +428,11 @@ def resolve_names(bag: Bag, bag_id: str, cfg, sensors, name_map, series, referen
             mapping["thermal"] = {c: cand["thermal"][c] for c in cfg["cameras"]["thermal"]}
         if need_geo and len(tns) == 2:
             fr = grab_frames(bag, cfg, "thermal", tns, times + [t + 2_000_000_000 for t in times])
-            pairs = pair_geometry(fr, lambda ns: np.array([680.0, 680.0, 320.0, 240.0, 0.0, 0.0]), _pinhole_unproject,
-                                  min_inliers=20)
-            geo, rep = identify_thermal(pairs, tns)
+            K_th = np.array([680.0, 680.0, 320.0, 240.0, 0.0, 0.0])
+            votes = []
+            for f in fr:        # one moment at a time — see identify_thermal_votes
+                votes += list(pair_geometry([f], lambda ns: K_th, _pinhole_unproject, min_inliers=20).items())
+            geo, rep = identify_thermal_votes(votes, tns)
             ver["thermal"] = rep
             if not mapping["thermal"]:
                 if geo is None or rep["unresolved"]:

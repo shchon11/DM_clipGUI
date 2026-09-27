@@ -106,6 +106,8 @@ def _default(o):
         return int(o)
     if isinstance(o, (np.floating,)):
         return float(o)
+    if isinstance(o, np.generic):   # np.bool_ (np.bool in numpy 2) etc. — e.g. bag_agreement's per-bag flags
+        return o.item()
     if isinstance(o, np.ndarray):
         return o.tolist()
     if isinstance(o, Path):

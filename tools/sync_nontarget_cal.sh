@@ -37,4 +37,22 @@ commit_date: $CDATE
 subject: "$(echo "$SUBJECT" | sed 's/"/\\"/g')"
 synced_at: $(date -Iseconds)
 INFO
+# 원본에 아직 안 들어간 차량 쪽 수정 (third_party/nontarget_cal_patches/*.patch) 을 다시 적용한다
+PATCH_DIR="$HERE/third_party/nontarget_cal_patches"
+FAILED=0
+for p in "$PATCH_DIR"/*.patch; do
+  [ -e "$p" ] || continue
+  n=$(basename "$p")
+  if (cd "$DST" && patch -p1 --dry-run -s < "$p" >/dev/null 2>&1); then
+    (cd "$DST" && patch -p1 -s < "$p")
+    echo "local_patch: $n" >> "$DST/VENDORED_FROM"
+    echo "로컬 패치 적용: $n"
+  elif (cd "$DST" && patch -p1 -R --dry-run -s < "$p" >/dev/null 2>&1); then
+    echo "로컬 패치 $n 은 원본에 이미 들어 있음 — $p 를 지우세요"
+  else
+    echo "오류: 로컬 패치 $n 이 새 원본에 맞지 않습니다 — 원본에 같은 수정이 들어갔는지 확인하고 패치를 고치거나 지우세요" >&2
+    FAILED=1
+  fi
+done
 echo "nontarget_cal $COMMIT → $DST"
+exit $FAILED

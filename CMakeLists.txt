@@ -60,7 +60,7 @@ install(FILES scripts/bag_diagnostics.py scripts/net_tools.py scripts/gnss_tools
   scripts/sensor_stage.py scripts/ui_theme.py scripts/preview_panel.py scripts/param_doc.py
   scripts/defaults_writer.py scripts/sync_check.py scripts/genicam_doc.py
   scripts/rqt_bag_hdr.py
-  scripts/calib_tab.py scripts/online_calib.py scripts/calib_apply.py
+  scripts/calib_tab.py scripts/online_calib.py scripts/calib_apply.py scripts/projection_check.py scripts/calib_before_after.py scripts/calib_compare.py
   DESTINATION lib/${PROJECT_NAME})
 
 # Embedded online calibration visualization package.

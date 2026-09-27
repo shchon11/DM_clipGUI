@@ -27,12 +27,18 @@ done
 [ -f "$SRC/pyproject.toml" ] || { echo "nontarget_cal 코드가 없습니다: $SRC (tools/sync_nontarget_cal.sh 먼저)" >&2; exit 1; }
 
 mkdir -p "$(dirname "$VENV")"
+# 두 개가 동시에 같은 venv 에 설치하면 torch 등의 파일이 섞인다 — 하나만
+exec 9>"$(dirname "$VENV")/.setup.lock"
+flock -n 9 || { echo "다른 설치가 이미 돌고 있습니다 ($VENV) — 끝난 뒤에 다시" >&2; exit 1; }
 python3 -m venv --system-site-packages "$VENV"
 "$VENV/bin/pip" install -U "pip>=24" "setuptools>=64,<80" wheel
 if [ "$CPU_TORCH" = 1 ]; then
   "$VENV/bin/pip" install torch --index-url https://download.pytorch.org/whl/cpu
 fi
 "$VENV/bin/pip" install -r "$SRC/requirements.txt"
+# --system-site-packages 라 Ubuntu 의 coverage 6.x 가 보이는데, numba 는 coverage 가 있으면 coverage.types(7+)를
+# 쓰다가 import 가 깨진다 (도구는 torch 로 대신 돌지만 느려짐). venv 안에 새 것을 둬서 가린다.
+"$VENV/bin/pip" install "coverage>=7"
 # 복사 설치 — 빌드 디렉터리를 임시로 (원본 사본을 더럽히지 않게)
 BUILD=$(mktemp -d)
 trap 'rm -rf "$BUILD"' EXIT
@@ -50,7 +56,8 @@ cp -r "$SRC/." "$BUILD/"
 echo "설치 완료: $VENV/bin/nontarget_cal"
 cat "$VENV/NONTARGET_CAL_VERSION"
 "$VENV/bin/python" - <<'PY'
-import os, torch, cv2, numpy, scipy, kiss_icp, rosbags
+import os, torch, cv2, numpy, scipy, kiss_icp, rosbags, numba
 print("cpus", os.cpu_count(), "| torch", torch.__version__, "cuda", torch.cuda.is_available(),
-      "| opencv", cv2.__version__, "| numpy", numpy.__version__, "| kiss_icp", kiss_icp.__version__)
+      "| opencv", cv2.__version__, "| numpy", numpy.__version__, "| kiss_icp", kiss_icp.__version__,
+      "| numba", numba.__version__)
 PY
