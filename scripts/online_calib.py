@@ -75,7 +75,7 @@ def vendored_info():
 # ---------------------------------------------------------------- 도구 설정값 (게이트 · 추정 기준)
 # 도구의 config/default.yaml 과 같은 값. 사본이 있으면 거기서 읽고, 없으면 이 값을 쓴다.
 TOOL_DEFAULTS = {
-    "estimate": {"rgb_disk_gb": 4.3, "thermal_disk_gb": 0.8, "fixed_disk_gb": 10.0},
+    "estimate": {"rgb_disk_gb": 2.9, "thermal_disk_gb": 0.3, "fixed_disk_gb": 5.0},
     "disk_margin_frac": 0.30, "disk_margin_gb": 20.0,
     "window_s": 40.0, "max_windows": 30,
     "gate": {"rgb_rot_deg": 0.5, "rgb_axis_mm": 60.0, "thermal_axis_mm": 60.0},
@@ -170,15 +170,16 @@ def inspect_bag(path):
 
 
 # ---------------------------------------------------------------- 디스크 추정
-# 실측 (2026-09-24 야간 bag, 1000 s · 182 GB · RGB 14 + 열화상 2, 창 25개): 작업 폴더 최대 약 92–110 GB
-# (추출 71 · LO 11 · 추적 6 · 열화상 3 GB …), 결과 폴더 46 MB. 도구 자체 추정은 10 + 창수 × 5.1 GB 에 30 % + 20 GB
+# 실측 (2026-09-27 속도 최적화 통합본 54dac25, 2026-09-24 야간 bag 1000 s · 182 GB · RGB 14 + 열화상 2, 창 25개,
+# 처음부터 · NVMe · 32 GB 제한): 작업 폴더 최대 65–78 GB, 결과 폴더 수십 MB, 걸린 시간 49–50분(작업자 8/12/16,
+# 16스레드). 도구 자체 추정은 5 + 창수 × 3.2 GB 에 30 % + 20 GB
 # 여유를 두고 모자라면 거절한다. GUI 는 그보다 더 보수적으로 잡아 도구가 거절할 일이 없게 한다:
 #   - 움직인 시간을 모르므로 bag 길이 전체를 쓴다 (도구는 움직인 시간만) — 창 수 상한(30 × 40 s)까지
 #   - bag 크기로도 따로 추정해 (추출 = 창 구간의 영상 바이트 그대로) 둘 중 큰 쪽
 #   - 여유 50 % + 20 GB, 결과 폴더 5 GB
 GUI_MARGIN_FRAC = 0.50
 GUI_MARGIN_GB = 20.0
-SIZE_FRACTION = 0.65      # 작업 폴더 / (창 구간의 bag 바이트): 실측 110/182 = 0.60
+SIZE_FRACTION = 0.45      # 작업 폴더 / (창 구간의 bag 바이트): 실측 78/182 = 0.43
 OUT_GB = 5.0
 
 
@@ -206,8 +207,8 @@ def estimate_storage(bags, sensors=("rgb", "thermal"), defaults=None):
     work = max(by_time, by_size)
     tool_need = work * (1 + d["disk_margin_frac"]) + d["disk_margin_gb"]
     need = max(work * (1 + GUI_MARGIN_FRAC) + GUI_MARGIN_GB, tool_need)
-    # 시간: 4창 46분, 25창 3–3.5시간(16코어 · HDD). 차량 PC(8코어면 약 1.8배)까지 범위로.
-    lo_h = (20 + 7.5 * n40) / 60.0
+    # 시간: 25창 49–50분(16스레드 · NVMe). 작업 폴더가 HDD 면 약 2배 (디스크 대기) — 그래서 상한은 2배.
+    lo_h = (8 + 1.7 * n40) / 60.0
     hi_h = lo_h * 2.0
     basis = (f"bag {len(bags)}개 · 길이 {total_s / 60:.1f}분 · {total_gb:.0f} GB → 40 s 창 약 {n40:.0f}개"
              f"{' (상한 ' + str(d['max_windows']) + '개)' if total_s > cap_s else ''}; "

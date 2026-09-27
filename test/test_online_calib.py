@@ -97,15 +97,15 @@ def _bag(dur, gb, n_rgb=14, n_th=2):
 
 def test_storage_estimate_is_conservative():
     d = oc.TOOL_DEFAULTS
-    # 2026-09-24 야간 bag: 1000 s · 182 GB · 실측 작업 폴더 107 GB
+    # 2026-09-24 야간 bag: 1000 s · 182 GB · 실측 작업 폴더 최대 78 GB (2026-09-27 통합본, 처음부터)
     est = oc.estimate_storage([_bag(1000, 182)], defaults=d)
-    assert est["work_gb"] >= 107
+    assert est["work_gb"] >= 78
     tool_need = est["work_gb"] * 1.3 + 20
     assert est["work_need_gb"] >= tool_need            # 도구가 디스크로 거절할 일이 없다
-    assert est["work_need_gb"] >= 1.5 * 107             # 실측의 1.5배 이상
-    # 15분 14대 주행 ≈ 110 GB 기준도
+    assert est["work_need_gb"] >= 1.5 * 78              # 실측의 1.5배 이상
+    # 15분 14대 주행 ≈ 75 GB 기준도
     est15 = oc.estimate_storage([_bag(900, 165)], defaults=d)
-    assert est15["work_gb"] >= 110 and est15["work_need_gb"] >= 180
+    assert est15["work_gb"] >= 75 and est15["work_need_gb"] >= 1.5 * 75
     # 창 수 상한 (30 × 40 s): 1시간 bag 이라도 끝없이 커지지 않지만 크기 기준은 비례
     est60 = oc.estimate_storage([_bag(3600, 650)], defaults=d)
     assert est60["windows"] == 30

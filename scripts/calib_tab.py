@@ -45,7 +45,7 @@ FLIR_GROUP = "flir_cameras"
 LOG_TAIL_BYTES = 64 * 1024
 
 NOTICE = ("⚠ 데이터 수집(녹화) 중에는 실행하지 마세요. 캘리브레이션은 CPU 를 대부분 쓰고 수십 분에서 수 시간이 걸립니다 "
-          "(15분 주행 bag 하나 ≈ 3–3.5시간, 작업 폴더 100 GB 이상). 녹화가 시작되면 캘리브레이션은 자동으로 중단되고, "
+          "(15분 주행 bag 하나 ≈ 50분–1.5시간, 작업 폴더 약 80 GB). 녹화가 시작되면 캘리브레이션은 자동으로 중단되고, "
           "끝난 단계는 남아 나중에 [이어서 실행] 할 수 있습니다. GUI 를 닫아도 계속 돕니다.")
 
 
@@ -212,7 +212,7 @@ class CalibTab(QWidget):
         default_root = str(Path(os.path.expanduser(self.cfg.get("recorder", {}).get("output_dir", "~/DM_clipGUI/clips"))).parent
                            / "online_calib")
         self.ed_work = QLineEdit(self.c.get("workdir_root") or default_root)
-        self.ed_work.setToolTip("큰 중간 파일(100 GB 이상)이 쌓이는 곳 — 여유가 큰 디스크 (NVMe 면 더 빠름). "
+        self.ed_work.setToolTip("큰 중간 파일(약 80 GB)이 쌓이는 곳 — 여유가 큰 디스크 (NVMe 면 더 빠름). "
                                 "작업마다 <여기>/<작업 id>/work")
         self.ed_out = QLineEdit(self.c.get("out_root") or default_root)
         self.ed_out.setToolTip("결과(YAML · 보고서 · 이미지, 수십 MB) — 작업마다 <여기>/<작업 id>/out")
