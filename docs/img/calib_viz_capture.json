@@ -1,0 +1,35 @@
+[
+  {
+    "progress": 0.06,
+    "fps": 19.241565063589768,
+    "points": 16190,
+    "projected_points": 1392,
+    "gl_valid": true,
+    "map_window": "S02",
+    "available_cameras": 16,
+    "selected_camera": "camera_front5",
+    "camera_passes": 0
+  },
+  {
+    "progress": 0.55,
+    "fps": 19.999828880559598,
+    "points": 23597,
+    "projected_points": 1364,
+    "gl_valid": true,
+    "map_window": "W03",
+    "available_cameras": 16,
+    "selected_camera": "camera_front5",
+    "camera_passes": 0
+  },
+  {
+    "progress": 1.0,
+    "fps": 19.998819017673696,
+    "points": 27580,
+    "projected_points": 1425,
+    "gl_valid": true,
+    "map_window": "W14",
+    "available_cameras": 16,
+    "selected_camera": "camera_front5",
+    "camera_passes": 16
+  }
+]

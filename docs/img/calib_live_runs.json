@@ -1,0 +1,192 @@
+{
+  "warm": {
+    "run_starts": [
+      {
+        "ev": "run_start",
+        "t": 1790431949.899,
+        "version": "1.0.0",
+        "bags": {
+          "b0": "/media/shchon11/Seonghyun/Data Machine/Calibration/rec_20260924_204902"
+        },
+        "sensors": [
+          "rgb",
+          "thermal"
+        ],
+        "mode": "warm",
+        "workdir": "/hdd/DM_calib/DM_clipGUI_viz/.omx/nt_viz_test/warm/work",
+        "out": "/hdd/DM_calib/DM_clipGUI_viz/.omx/nt_viz_test/warm/out",
+        "run_id": "d73b19df49a54186a1ccc9158ae72032"
+      },
+      {
+        "ev": "run_start",
+        "t": 1790433503.871,
+        "version": "1.0.0",
+        "bags": {
+          "b0": "/media/shchon11/Seonghyun/Data Machine/Calibration/rec_20260924_204902"
+        },
+        "sensors": [
+          "rgb",
+          "thermal"
+        ],
+        "mode": "warm",
+        "workdir": "/hdd/DM_calib/DM_clipGUI_viz/.omx/nt_viz_test/warm/work",
+        "out": "/hdd/DM_calib/DM_clipGUI_viz/.omx/nt_viz_test/warm/out",
+        "run_id": "8ca3a3be43374d33ab3ea8f16cf396d8"
+      }
+    ],
+    "run_ends": [
+      {
+        "ev": "run_end",
+        "t": 1790434120.983,
+        "ok": true,
+        "wall_s": 618.6,
+        "out": "/hdd/DM_calib/DM_clipGUI_viz/.omx/nt_viz_test/warm/out",
+        "gate_pass": false
+      }
+    ],
+    "windows": {
+      "kept": [
+        "S01",
+        "S02"
+      ],
+      "dropped": [],
+      "thermal": [
+        "S01",
+        "S02"
+      ]
+    },
+    "gate": {
+      "failures": [
+        "camera_rear_right: along-axis 1-sigma 62 mm > 60.0",
+        "thermal_left: voting gate failed (peak -1.25/0.26 px, contrast 1.75)"
+      ],
+      "pass": false
+    },
+    "camera_gates": {
+      "camera_front1": true,
+      "camera_front2": true,
+      "camera_front3": true,
+      "camera_front4": true,
+      "camera_front5": true,
+      "camera_front6": true,
+      "camera_front7": true,
+      "camera_front8": true,
+      "camera_front9": true,
+      "camera_top": true,
+      "camera_side_left": true,
+      "camera_side_right": true,
+      "camera_rear_left": true,
+      "camera_rear_right": false,
+      "thermal_left": false,
+      "thermal_right": true
+    },
+    "final_stream": {
+      "run_id": "8ca3a3be43374d33ab3ea8f16cf396d8",
+      "seq": 21,
+      "complete": true,
+      "map_source": "cached-lo-sample"
+    },
+    "config": "/hdd/DM_calib/DM_clipGUI_viz/.omx/nt_viz_test/warm/config.yaml"
+  },
+  "zeroshot": {
+    "run_starts": [
+      {
+        "ev": "run_start",
+        "t": 1790432703.965,
+        "version": "1.0.0",
+        "bags": {
+          "b0": "/media/shchon11/Seonghyun/Data Machine/Calibration/rec_20260924_204902"
+        },
+        "sensors": [
+          "rgb"
+        ],
+        "mode": "zeroshot",
+        "workdir": "/hdd/DM_calib/DM_clipGUI_viz/.omx/nt_viz_test/zeroshot/work",
+        "out": "/hdd/DM_calib/DM_clipGUI_viz/.omx/nt_viz_test/zeroshot/out",
+        "run_id": "93dc674058e74b67a0026fa0e0557efc"
+      },
+      {
+        "ev": "run_start",
+        "t": 1790433525.454,
+        "version": "1.0.0",
+        "bags": {
+          "b0": "/media/shchon11/Seonghyun/Data Machine/Calibration/rec_20260924_204902"
+        },
+        "sensors": [
+          "rgb"
+        ],
+        "mode": "zeroshot",
+        "workdir": "/hdd/DM_calib/DM_clipGUI_viz/.omx/nt_viz_test/zeroshot/work",
+        "out": "/hdd/DM_calib/DM_clipGUI_viz/.omx/nt_viz_test/zeroshot/out",
+        "run_id": "15b7dc3edbc3448685e5c04e6c6df3c9"
+      }
+    ],
+    "run_ends": [
+      {
+        "ev": "run_end",
+        "t": 1790432990.994,
+        "ok": true,
+        "wall_s": 287.4,
+        "out": "/hdd/DM_calib/DM_clipGUI_viz/.omx/nt_viz_test/zeroshot/out",
+        "gate_pass": false
+      },
+      {
+        "ev": "run_end",
+        "t": 1790433769.484,
+        "ok": true,
+        "wall_s": 244.5,
+        "out": "/hdd/DM_calib/DM_clipGUI_viz/.omx/nt_viz_test/zeroshot/out",
+        "gate_pass": false
+      }
+    ],
+    "windows": {
+      "kept": [
+        "S01"
+      ],
+      "dropped": [],
+      "thermal": []
+    },
+    "gate": {
+      "failures": [
+        "layout rule front5_ahead_of_lidar failed: {'name': 'front5_ahead_of_lidar', 'type': 'box', 'position_V_m': [0.787, 0.005, -0.1], 'lo': [0.55, -0.1, -0.6], 'hi': [1.0, 0.1, -0.15], 'pass': False}",
+        "layout rule top_under_lidar failed: {'name': 'top_under_lidar', 'type': 'box', 'position_V_m': [0.149, 0.049, 0.055], 'lo': [-0.1, -0.1, -0.4], 'hi': [0.4, 0.1, -0.05], 'pass': False}"
+      ],
+      "pass": false
+    },
+    "camera_gates": {
+      "camera_front1": null,
+      "camera_front2": null,
+      "camera_front3": null,
+      "camera_front4": null,
+      "camera_front5": null,
+      "camera_front6": null,
+      "camera_front7": null,
+      "camera_front8": null,
+      "camera_front9": null,
+      "camera_top": null,
+      "camera_side_left": null,
+      "camera_side_right": null,
+      "camera_rear_left": null,
+      "camera_rear_right": null
+    },
+    "final_stream": {
+      "run_id": "15b7dc3edbc3448685e5c04e6c6df3c9",
+      "seq": 36,
+      "complete": true,
+      "map_source": "cached-lo-sample"
+    },
+    "config": "/hdd/DM_calib/DM_clipGUI_viz/.omx/nt_viz_test/zeroshot/config.yaml"
+  },
+  "read_only_source_unchanged": true,
+  "read_only_source_checked_paths": [
+    "/hdd/DM_calib/nt_regress/full/work/run.json",
+    "/hdd/DM_calib/nt_regress/full/work/config_snapshot.json",
+    "/hdd/DM_calib/nt_regress/full/work/events.jsonl",
+    "/hdd/DM_calib/nt_regress/full/work/windows/plan.json",
+    "/hdd/DM_calib/nt_regress/full/work/lo/ref_S01.npz",
+    "/hdd/DM_calib/nt_regress/full/work/lo/ref_S02.npz",
+    "/hdd/DM_calib/nt_regress/full/work/rgb/final/result.json",
+    "/hdd/DM_calib/nt_regress/full/work/thermal/final/result.json",
+    "/hdd/DM_calib/nt_regress/full/out/summary.json"
+  ]
+}

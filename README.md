@@ -1193,6 +1193,115 @@ python3 scripts/param_doc.py <params.yaml | *.launch.py>   # '전체 설정' 이
 - 잠깐 뺀 카메라는 저장된 순서에 남아 있다가, 다시 꽂으면 원래 바로 앞에 있던 카메라 뒤로 돌아온다.
 - 새 카메라는 섹션 끝에 붙는다. [순서 초기화] 는 이름순으로 되돌린다.
 
+## 14. 온라인 캘리브레이션 — `[온라인 캘리브레이션]` 탭
+
+보드 없이 **주행 bag 만으로** RGB 14대 · 열화상 2대의 LiDAR(`os_lidar`) 기준 외부 · 내부 파라미터를 구하는
+`nontarget_cal`(자세한 방법 · 데이터 요구사항은 `third_party/nontarget_cal/README.md`)을 GUI 에서 돌리고,
+결과를 차량의 camera_info · TF 에 적용한다.
+
+> ⚠ **데이터 수집 중에는 돌리지 않는다.** CPU 를 대부분 쓰고 수십 분~수 시간 걸린다
+> (15분 주행 bag 하나 ≈ 3–3.5시간 · 작업 폴더 약 110 GB, 16코어 기준. 8코어면 약 1.8배).
+> 수동 녹화 · 클립 저장 중이면 [캘리브레이션 시작] 이 잠기고, 도는 중에 녹화가 시작되면(버튼 · 토픽 · 서비스
+> 어느 쪽이든) 캘리브레이션을 **자동 중단**한다. 끝난 단계 · 창은 작업 폴더에 남아 [이어서 실행] 하면 거기서부터 한다.
+> 센서나 레코더만 켜져 있으면 "수집 중 아님" 을 확인받고 시작한다.
+
+### 14-1. 설치 (차량 PC, 한 번)
+
+도구 코드는 이 리포 `third_party/nontarget_cal/` 에 **사본**으로 들어 있다 (출처 커밋은 `VENDORED_FROM`).
+차량 PC 는 인터넷 없이 DM_clipGUI 만 pull 해도 같은 버전을 갖는다. 파이썬 의존성(torch · kiss-icp 등)만 한 번 설치:
+
+```bash
+bash tools/setup_online_calib.sh --cpu-torch      # → ~/.local/share/dm_clip_gui/nontarget_cal/venv
+```
+
+- 도구는 venv 안에 **복사 설치**된다(-e 아님) — 리포를 pull 해도 돌고 있는 캘리브레이션 코드가 안 바뀐다.
+  설치된 커밋은 `venv/NONTARGET_CAL_VERSION`, 탭 왼쪽 아래에 보이고, 리포 사본과 다르면 다시 설치하라고 알린다.
+- GPU 는 쓰지 않는다 (번들 조정을 GPU 로 옮겨도 이득이 없었음 — 도구 README §6). ROS 도 필요 없다.
+- 도구를 새 버전으로: 개발 PC 에서 `tools/sync_nontarget_cal.sh [원본 경로] [커밋]` → 커밋 · push →
+  차량에서 pull 후 `setup_online_calib.sh` 다시. (원본 리포의 **커밋된** 파일만 가져온다 — 작업 중 수정 · 결과 · venv 는 안 들어옴)
+- 다른 곳에 설치한 도구를 쓰려면 `~/.config/dm_clip_gui/last_session.yaml` 의 `ui.calib.executable`.
+
+### 14-2. 흐름
+
+1. **bag 고르기** — 녹화 폴더(`output_dir`)의 `rec_*`/`clip_*` 가 길이 · 크기 · 카메라 수와 함께 보인다. 여러 개 체크
+   가능 (도구가 창을 모아 한 번에 풀고, bag 끼리 따로 풀어 "리그가 바뀌었나?" 도 본다). 다른 디스크의 bag 은 [다른 bag 추가…].
+2. **시작 값** — *zero-shot*: 설계값에서 (처음 · 렌즈나 카메라를 다시 조였을 때). *warm-start*: 지금 캘리브레이션에서 —
+   ① 차량 파일(아래 두 YAML, `os_lidar` 기준으로 적용된 카메라만), ② 이 GUI 로 마지막 적용한 결과 보관본, ③ 폴더 지정
+   (도구 결과 · deliverable 폴더 `extrinsic/`+`intrinsic/`).
+3. **저장 위치 · 공간** — 작업 폴더(큼)와 결과 폴더(수십 MB). 고르면 바로 추정이 보인다 (아래 14-3).
+   [사전 점검] 은 `nontarget_cal check` (약 30–50초, bag 을 가볍게 훑음): 이름 대응 · 움직임 · 회전 · 동기 · 노출 · 디스크.
+4. **시작** — 공간이 모자라면 시작하지 않고 작업을 **대기** 로 남긴다. 공간을 비우거나 [작업 폴더 바꾸기…] 후
+   [공간 다시 확인]. 한 번에 하나만 돈다.
+5. **진행** — 도구의 stdout JSON 한 줄씩을 읽어 단계(이름 확인 → 사전 점검 → 추출 → LiDAR 오도메트리 → 추적 → 풀이 →
+   검증 → 결과) · 진행률(단계별 실측 시간 무게) · 경과 · 경고를 보인다. 아래는 도구 로그(stderr).
+   프로세스는 `setsid` 로 따로 떠서 **GUI 를 닫아도 계속** 돌고, 다시 켜면 이어 보인다.
+   [중단] = 프로세스 그룹에 SIGTERM (8초 뒤 SIGKILL). 전원이 꺼지는 등으로 끊겨도 [이어서 실행] (= 같은 명령 다시; 도구가
+   끝난 단계를 건너뜀).
+6. **결과** — 판정(통과/확인 필요) · 실패 이유 · 배치 규칙, 카메라별 표(회전 · 위치 · 광축 1σ, 초점 1σ, 재투영,
+   held-out, vote)와 합격 여부(도구의 게이트와 같은 기준: RGB 회전 1σ ≤ 0.5°, 광축 1σ ≤ 60 mm, 열화상 투표 게이트).
+   [보고서 보기] = `report.md`.
+7. **차량에 적용…** → 14-4. **적용 기록 · 되돌리기…** 도 여기(도구 메뉴에도 있음).
+
+작업 기록: `~/.local/share/dm_clip_gui/calib/jobs.json`, 시도마다 명령 · stdout(JSON) · stderr · 종료 코드는
+`~/.local/share/dm_clip_gui/calib/jobs/<작업 id>/`. 작업 폴더에는 도구 자신의 `log.txt` · `events.jsonl`.
+종료 코드 0 완료, 2 거절(데이터 문제 — 이유가 한국어로; 디스크 부족 거절은 대기로), 1 오류.
+
+### 14-3. 공간 추정 (보수적)
+
+실측: 2026-09-24 야간 bag (1000 s · 182 GB · RGB 14 + 열화상 2, 창 25개) → 작업 폴더 **107 GB**, 결과 46 MB.
+GUI 는 bag 의 `metadata.yaml` 만 읽어(본문은 안 엶) 아래 둘 중 큰 값을 작업 폴더 추정으로 잡는다:
+
+- 시간 기준: 10 GB + 40 s 창 수 × (RGB 4.3 GB × 카메라 수/14 + 열화상 0.8 GB × 대수/2). 움직인 시간을 모르므로
+  **bag 길이 전체**(도구는 움직인 시간만), 창 수 상한 30개(도구 설정)
+- 크기 기준: 0.65 × (창에 들어갈 몫의 bag 바이트)  (실측 107/182 = 0.59)
+
+필요 여유 = 추정 × 1.5 + 20 GB (도구 자체 거절선 추정 × 1.3 + 20 GB 보다 항상 크다) + 결과 5 GB (같은 디스크면 합산).
+위 bag 이면 추정 137 GB → **필요 231 GB**. 이어서 실행할 때는 작업 폴더에 이미 쓴 만큼(도구 `events.jsonl` 의 단계별
+disk_gb) 뺀다. 시간 추정은 창 수로 (약 20분 + 창당 7.5분) ~ 그 두 배.
+
+### 14-4. 차량에 적용 (camera_info · TF) · 되돌리기
+
+차량 카메라 스택(FLIR_control, `sensors.yaml` 의 `flir_cameras`, 작업 디렉터리 `~/FLIR_control`)이 읽는 두 파일에 쓴다.
+경로는 런치 인자 `camera_info_yaml_path` · `extrinsics_yaml_path` (GUI 설정 > 런치 파일 기본값)를 작업 디렉터리 기준으로 푼 것:
+
+| 파일 (기본) | 키 | 누가 읽나 | 무엇을 씀 |
+|---|---|---|---|
+| `~/FLIR_control/calibration/flir_camera_info.yaml` | `camera_info_by_serial.<시리얼>` | 카메라 노드마다 기동할 때 (가시광 · 열화상 공통) | `distortion_model`(RGB `equidistant` D=[k1 k2 k3 k4], 열화상 `plumb_bob`), `d` · `k` · `r` · `p` |
+| `~/FLIR_control/calibration/flir_camera_extrinsics.yaml` | `extrinsics_by_serial.<시리얼>` | `flir_camera_extrinsics_tf_node` → `/tf_static` (런치 `publish_extrinsics_tf`) | `parent_frame: os_lidar`, `child_frame: <카메라>_optical_frame`, `translation_xyz_m`, `rotation_xyzw` |
+
+- **시리얼이 키** — 토픽 이름이 바뀌어도(2026-09-24 차량 이름 대응 변경) 다른 카메라에 붙지 않는다. 결과의 캘리브레이션 이름
+  (camera_front1 …)은 `config/camera_serial_map.yaml` 로 시리얼에 옮긴다. `child_frame` · `camera_name` 은 지금 인벤토리
+  (+ GUI 이름 설정)의 그 시리얼 이름 → 카메라 노드가 영상에 붙이는 `frame_id` 와 같다.
+- 확인이 필요한 경우: **시리얼을 모르는 카메라(camera_rear_left)** 는 시리얼 칸에 직접 넣고 체크 → 확인 대화상자.
+  표와 다른 시리얼, 인벤토리에 없는 시리얼, 판정 불합격 카메라도 직접 체크 + 확인. 결과의 토픽 이름에 시리얼이 들어 있는데
+  (camera_26076474) 다르거나, 두 카메라가 같은 시리얼이면 적용 불가.
+- **좌표 변환**: 도구 결과는 `x_cam = R·x_lidar + t` (lidar → camera, OpenCV 광학 좌표 = ROS `*_optical_frame`).
+  TF 의 parent → child 는 부모에서 본 자식 자세라 `R_tf = Rᵀ`, `t_tf = −Rᵀt` (= 결과의 `camera_position_in_os_lidar_m`).
+  `os_lidar`(x 가 차량 **뒤쪽**)는 ouster_ros 가 발행하는 프레임과 같은 이름이라 카메라가 라이다 TF 트리에 바로 붙는다.
+  시험이 16대 모두 결과 YAML 의 위치 · 쿼터니언과 1e-9 로 맞는지, 전방 카메라 광축이 os_lidar −x 인지 확인한다.
+- 순서: 쓰기 전 검증 → **백업 두 벌** (`파일.bak_YYYYmmdd_HHMMSS` 옆에, 그리고
+  `~/.local/share/dm_clip_gui/calib/applied/<시각>/backup/`) → 원자적 쓰기 → 카메라 노드와 **같은 규칙의 줄 파서**로 다시 읽어
+  값 비교 (노드의 YAML 읽기는 두 칸 들여쓰기 · 한 줄 목록 `[a, b]` 만 안다) → 실패하면 자동으로 백업 복원.
+  결과에 없는 기존 시리얼 항목(자리표시 등)은 그대로 둔다. 적용한 결과(extrinsic/ · intrinsic/ · 보고서)도 보관함에 복사 —
+  다음 warm-start 의 시작 값이 된다.
+- **반영하려면 FLIR 카메라 센서군을 다시 기동**한다 (camera_info 와 /tf_static 은 노드가 켜질 때 읽음).
+- **되돌리기**: [적용 기록 · 되돌리기…] 에서 고르면 그 적용 직전 파일로 복원. 적용 뒤에 파일이 또 바뀌었으면(다른 적용 · 손으로
+  고침) 알려 주고 확인을 받으며, 되돌리기 직전 파일도 `before_rollback/` 에 남긴다.
+- 주의: `flir_camera_undistort_viewer` 는 distortion_model 과 상관없이 `cv::initUndistortRectifyMap`(plumb_bob)을 쓴다 —
+  `equidistant` 카메라의 왜곡 보정 미리보기는 틀리게 보인다 (FLIR_control 쪽 수정 필요, 캘리브레이션 값 자체는 맞음).
+
+### 14-5. 시험
+
+```bash
+python3 -m pytest -q test/test_online_calib.py                          # 로직 (Qt · ROS 없음)
+QT_QPA_PLATFORM=offscreen python3 -m pytest -q test/test_calib_tab_gui.py   # 탭 (가짜 도구)
+```
+
+참조 데이터가 있으면 쓴다(읽기만): `/hdd/DM_calib/nt_regress/full/out`(실제 결과), `.../work/events.jsonl`(실제 진행 줄),
+`~/projects/DM/FLIR_control_master/calibration`(차량 파일 형식 — 임시 사본에만 씀).
+
+---
+
 ## 파일
 
 ```
@@ -1216,11 +1325,46 @@ clip_recorder/
 ├── scripts/sensor_launcher.py     센서군 런치 프로세스 + 기동 완료 판정
 ├── scripts/buffer_probe.py        버퍼 필요량 측정 툴 (ros2 run clip_recorder buffer_probe)
 ├── scripts/clip_trigger.py        키보드 트리거 (ros2 run clip_recorder clip_trigger)
+├── scripts/calib_tab.py           [온라인 캘리브레이션] 탭 (§14)
+├── scripts/online_calib.py        캘리브레이션 작업: 공간 추정 · 대기 · 백그라운드 실행 · 진행 해석 · 결과 요약 (§14)
+├── scripts/calib_apply.py         결과 → 차량 camera_info · TF (시리얼 키, 백업 · 검증 · 되돌리기) (§14)
+├── third_party/nontarget_cal/     타깃 없는 캘리브레이션 도구 사본 (VENDORED_FROM 에 출처 커밋, §14-1)
+├── tools/setup_online_calib.sh    차량 PC 에 도구 venv 설치 (§14-1)
+├── tools/sync_nontarget_cal.sh    원본 리포에서 도구 사본 다시 가져오기 (§14-1)
+├── test/                          온라인 캘리브레이션 시험 (§14-5)
 ├── config/params.yaml             파라미터 (주석 참고)
 ├── config/sensors.yaml            센서군 레지스트리 (센서 추가/교체 시 여기만 수정, §12)
+├── config/camera_serial_map.yaml  카메라 시리얼 ↔ 캘리브레이션 이름 (결과 적용 키, §14-4)
 ├── config/fastdds_shm.xml         Fast DDS SHM 프로파일 (대형 이미지 무손실 전송, §10)
 ├── launch/clip_recorder.launch.py
 ├── plugin.xml                     rqt 플러그인 등록 (Logging → Bag (header.stamp))
 ├── CMakeLists.txt / package.xml
 └── README.md
 ```
+
+## 온라인 캘리브레이션 3D 수렴 뷰어
+
+온라인 보정 탭과 독립 뷰어에서 실제 `nontarget_cal run`의 LO 지도/궤적, RGB·열화상 solver의
+채택된 반복 포즈·렌즈·재투영·비용, 영상 위 LiDAR 투영과 KLT 관측, 최종 게이트를 확인합니다.
+중간 1σ는 만들지 않고 검증에서 계산한 값만 표시합니다. 실패 후 재시작하면 최신 시도의 오류만 표시합니다.
+
+```bash
+python3 -m pip install --user -r scripts/calib_viz/requirements.txt
+# 도구는 기본 <workdir>/viz에 발행 (--viz-dir DIR / --no-viz 지원)
+python3 scripts/calib_viz_demo.py --stream /path/to/work/viz
+# 데모 전용 합성 수렴:
+python3 scripts/calib_viz_demo.py --replay /hdd/DM_calib/nt_regress/full/work --speed 60
+```
+
+리플레이만 **실제 최종 결과·영상·점군 위에 합성 수렴 과정을 표시**합니다.
+실제 지도와 리플레이 지도 모두 구간별 독립 좌표계를 명시하며 전체 주행의 전역 지도로 합치지 않습니다.
+종합 게이트, 카메라별 게이트, 참고용 RGB 영상 투표를 구분합니다.
+드래그/휠로 3D 시점을 바꾸고, 카메라 목록·영상 선택 메뉴·초기 추정 비교를 사용할 수 있습니다.
+`--max-fps 30 --max-points 30000`으로 표시 부하를 낮출 수 있습니다.
+구형 도구에 스트림이 없으면 실제 초기값/최종값만 표시하며 영상·지도는 대기 상태로 남습니다.
+
+[스트림 규약·QWidget 연결·검증 방법](docs/calib_viz_stream.md) ·
+[실제 LO](docs/img/calib_live_mid_lo.png) ·
+[실제 zero-shot 수렴](docs/img/calib_live_zero_rgb_converging.png) ·
+[실제 열화상](docs/img/calib_live_mid_thermal.png) ·
+[실제 최종 게이트](docs/img/calib_live_final.png) · [실행·동일성 검증](docs/calib_live_validation.md)

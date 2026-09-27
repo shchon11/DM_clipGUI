@@ -1,0 +1,40 @@
+# Camera topic-name mapping for recordings from 2026-09-24 ~20:00 onward
+# (first seen in Calibration/rec_20260924_204902, "온라인캘용 주행").
+#
+# The physical cameras did NOT move. Someone changed the name mapping on the vehicle,
+# so the same camera now publishes under a different topic. Keys are the NEW topic
+# namespaces, values are the names used everywhere else in this project (the
+# 2026-09-22/23 bags, the board calibration, and the online calibration results).
+#
+# How each entry was established (all on rec_20260924_204902, night drive):
+#   camera_info fingerprint - both bags carry placeholder intrinsics keyed by the
+#       physical camera, which splits the 14 into camera0 (the only real entry) plus
+#       two groups: A = 7 cameras with a 1045/960/600 placeholder, B = 6 with zeros.
+#   rotation   - relative rotation camera0(top) -> camera from a pooled essential matrix,
+#       matched against the board-calibrated rig; unique match to within 0.8-1.7 deg for
+#       the six tilted front cameras (all other candidates >= 16 deg away).
+#   baseline   - sign of the baseline direction from the essential matrix, for cameras
+#       whose rotations are indistinguishable (front2/5/8 all look straight ahead).
+#   content    - side/rear cameras: which side of the car the view shows, combined with
+#       the group constraint.
+cameras:
+  camera0:             {old: camera_top,        evidence: "camera_info identical to camera_top (only non-placeholder intrinsics)"}
+  camera_side_right_2: {old: camera_front1,     evidence: "group A; rotation match 1.70 deg (next best 21.1)"}
+  camera_front_left:   {old: camera_front2,     evidence: "group A; straight-ahead; only straight camera in group A"}
+  camera_front_right:  {old: camera_front3,     evidence: "group A; rotation match 1.23 deg (next best 16.2)"}
+  camera_side_left_1:  {old: camera_front4,     evidence: "group A; rotation match 0.77 deg (next best 19.3)"}
+  camera_26076474:     {old: camera_front5,     evidence: "group B; straight-ahead; camera_26075999 lies to its RIGHT (4/4 frames) as front8 does of front5"}
+  camera_25415255:     {old: camera_front6,     evidence: "group B; rotation match 0.78 deg (next best 20.5)"}
+  camera_26076002:     {old: camera_front7,     evidence: "group B; rotation match 1.29 deg (next best 19.9)"}
+  camera_26075999:     {old: camera_front8,     evidence: "group B; straight-ahead; lies to the RIGHT of camera_26076474 (front5)"}
+  camera_side_left_2:  {old: camera_front9,     evidence: "group A; rotation match 1.67 deg (next best 19.8)"}
+  camera_rear:         {old: camera_side_left,  evidence: "group A; left-facing view (forward scene appears at its right edge)"}
+  camera_side_right_1: {old: camera_rear_right, evidence: "group A; right-side view"}
+  camera1:             {old: camera_rear_left,  evidence: "group B; left/rear view (sees the building side_left sees behind it)"}
+  camera_26076471:     {old: camera_side_right, evidence: "group B; right-side view"}
+thermal:
+  thermal1: {old: thermal_left,  evidence: "thermal1 lies to the LEFT of thermal0 (12/12 frames, essential matrix)"}
+  thermal0: {old: thermal_right, evidence: "see thermal1"}
+notes:
+  - "camera0/camera1/thermal0/thermal1 and the serial-numbered names look like a regenerated inventory; the 7 named ones (front_left, side_left_1, ...) are the OLD 8-camera rig's names reused for different physical cameras. Do not trust the names; use this table."
+  - "The front5/front8 decision rests on a baseline-sign test with 4 frames; every other front camera is independently confirmed by rotation to <=1.7 deg."

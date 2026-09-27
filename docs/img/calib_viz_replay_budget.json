@@ -1,0 +1,20 @@
+{
+  "scope": "producer-only real-data traversal; recorded from tool output; temporary output removed",
+  "workdir": "/hdd/DM_calib/nt_regress/full/work",
+  "prepare_s": 0.088,
+  "runtime_s": 110.18,
+  "snapshots": 27,
+  "windows": 25,
+  "camera_counts": [
+    16
+  ],
+  "peak_rss_mib": 100.3,
+  "retained_asset_sets": 3,
+  "disk_mib": 9.2,
+  "final_all16_assets_verified": true,
+  "method": "ReplayProducer(workdir, temporary_directory, speed=1e9).prepare(); run(); verify every manifest window has map_progress > .99 and decode final image/points assets with StreamReader. RSS: resource.getrusage(RUSAGE_SELF).ru_maxrss / 1024.",
+  "env": {
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1"
+  }
+}

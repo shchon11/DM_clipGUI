@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=64,<80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nontarget_cal"
+version = "1.0.0"
+description = "Targetless camera/thermal <-> LiDAR calibration of the DM rig from ROS 2 driving bags"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24,<2.3",
+  "scipy>=1.10",
+  "opencv-python-headless>=4.8",
+  "PyYAML>=6.0",
+  "rosbags>=0.9.20",
+  "torch>=2.0",
+  "kiss-icp==1.3.0",
+  "numba>=0.59",
+]
+
+[project.scripts]
+nontarget_cal = "nontarget_cal.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["nontarget_cal*"]
+
+[tool.setuptools.package-data]
+nontarget_cal = ["data/*", "data/masks/*.png", "data/name_maps/*.yaml", "config/*.yaml"]

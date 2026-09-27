@@ -1,0 +1,21 @@
+resources:
+  max_procs: 1
+  solver_threads: 2
+  threads_per_proc: 2
+  kiss_threads: 2
+  lo_threads: 2
+  tie_threads: 2
+  gpu: 'off'
+rgb:
+  solve:
+    iters: 3
+    iters_first_pass: 4
+    max_tracks: 400
+validation:
+  edge_frames: 2
+outputs:
+  images:
+    parked: false
+    driving: false
+viz:
+  enabled: true

@@ -1,0 +1,32 @@
+resources:
+  max_procs: 2
+  solver_threads: 2
+  threads_per_proc: 2
+  kiss_threads: 2
+  lo_threads: 2
+  tie_threads: 2
+  gpu: 'off'
+preflight:
+  thermal:
+    min_turning_windows: 2
+lo:
+  refine:
+    iters: 1
+rgb:
+  solve:
+    iters: 6
+    iters_first_pass: 8
+thermal:
+  solve_defaults:
+    iters: 5
+    rounds: 1
+  lens:
+    rounds: 1
+validation:
+  edge_frames: 3
+outputs:
+  images:
+    parked: false
+    driving: false
+viz:
+  enabled: true

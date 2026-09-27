@@ -1,0 +1,10 @@
+{
+  "job_mode": "job",
+  "cameras": 16,
+  "camera_passes": 16,
+  "informational_badges": 14,
+  "pose_source": "final-result",
+  "fps": 21.502608672098543,
+  "fps_cap": 20,
+  "gl_valid": true
+}

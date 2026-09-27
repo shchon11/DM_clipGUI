@@ -1,0 +1,43 @@
+{
+  "source": "/hdd/DM_calib/nt_regress/full/work/extract/S01/lidar",
+  "sweeps": 20,
+  "threads": 1,
+  "runs": [
+    {
+      "enabled": false,
+      "wall_including_close_s": 8.942812535911798,
+      "sweeps": 20,
+      "wall_s": 8.748831272125244,
+      "path_m": 9.751020747908495,
+      "mean_speed_mps": 5.1321161831097335
+    },
+    {
+      "enabled": true,
+      "wall_including_close_s": 7.091591848991811,
+      "sweeps": 20,
+      "wall_s": 7.085077285766602,
+      "path_m": 9.751020747908495,
+      "mean_speed_mps": 5.1321161831097335,
+      "events": 6
+    },
+    {
+      "enabled": true,
+      "wall_including_close_s": 7.340598104055971,
+      "sweeps": 20,
+      "wall_s": 7.330026865005493,
+      "path_m": 9.751020747908495,
+      "mean_speed_mps": 5.1321161831097335,
+      "events": 7
+    },
+    {
+      "enabled": false,
+      "wall_including_close_s": 5.7686380778905,
+      "sweeps": 20,
+      "wall_s": 5.7629499435424805,
+      "path_m": 9.751020747908495,
+      "mean_speed_mps": 5.1321161831097335
+    }
+  ],
+  "all_numerical_arrays_bit_identical": true,
+  "observed_on_vs_off_percent": -1.8982537350362594
+}

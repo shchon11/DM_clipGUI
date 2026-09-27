@@ -1,0 +1,26 @@
+{
+  "camera_count": 16,
+  "projected_points_by_camera": {
+    "camera_front1": 1465,
+    "camera_front2": 1466,
+    "camera_front3": 1439,
+    "camera_front4": 1477,
+    "camera_front5": 1464,
+    "camera_front6": 1461,
+    "camera_front7": 1565,
+    "camera_front8": 1466,
+    "camera_front9": 1586,
+    "camera_top": 1514,
+    "camera_side_left": 1578,
+    "camera_side_right": 1626,
+    "camera_rear_left": 1300,
+    "camera_rear_right": 1321,
+    "thermal_left": 582,
+    "thermal_right": 590
+  },
+  "decoded_frames_at_once": 1,
+  "map_points": 28401,
+  "controls": "16 camera selections, sensor/selector sync, pause/resume, hidden I/O pause, shutdown PASS",
+  "renderer": "llvmpipe (LLVM 15.0.7, 256 bits)",
+  "gl_valid": true
+}

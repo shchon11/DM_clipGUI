@@ -1,0 +1,40 @@
+# Camera serial <-> name map for the DM rig (14 RGB FLIR Blackfly S + 2 FLIR A70).
+# "dm_name" is the canonical name used by the calibration work (board and online) and by
+# the 2026-09-22/23 bags. "topic_20260924" is what the same physical camera publishes as
+# in recordings from 2026-09-24 ~20:00 on (after the vehicle's name mapping was changed).
+#
+# confidence:
+#   certain   - the serial is in the topic name, or intrinsics values match to 10 digits
+#   set       - the serial is certainly one of the 7 "group A" serials (see below), and the
+#               one-to-one assignment inside that group comes from the name<->serial table in
+#               FLIR_control_master/src/flir_spinnaker_camera/config/multicam_cameras.yaml,
+#               assuming the vehicle used that same table (its names match it exactly)
+#   unknown   - no serial evidence available in the bag or in any local repo
+#
+# Group A: flir_camera_info.yaml is keyed by serial ("camera_info_by_serial"). The 8 serials of
+# the old 8-camera rig carry a 1045/960/600 placeholder (25415248 carries a real calibration).
+# In BOTH the 09-23/24 daytime bag (old names) and the 09-24 night bag (new names), exactly the
+# same 7 physical cameras publish that placeholder, which proves the SET membership by serial.
+cameras:
+  - {serial: "25415248", dm_name: camera_top,        topic_20260924: camera0,             confidence: certain, evidence: "only serial with real intrinsics (fx 1045.6207934842, cx 956.9038787531, cy 611.5438313647); identical camera_info on camera0 (night) and camera_top (day)"}
+  - {serial: "26076472", dm_name: camera_front1,     topic_20260924: camera_side_right_2, confidence: set}
+  - {serial: "26076477", dm_name: camera_front2,     topic_20260924: camera_front_left,   confidence: set}
+  - {serial: "26076473", dm_name: camera_front3,     topic_20260924: camera_front_right,  confidence: set}
+  - {serial: "25415250", dm_name: camera_front4,     topic_20260924: camera_side_left_1,  confidence: set}
+  - {serial: "26076474", dm_name: camera_front5,     topic_20260924: camera_26076474,     confidence: certain, evidence: "serial in topic name"}
+  - {serial: "25415255", dm_name: camera_front6,     topic_20260924: camera_25415255,     confidence: certain, evidence: "serial in topic name"}
+  - {serial: "26076002", dm_name: camera_front7,     topic_20260924: camera_26076002,     confidence: certain, evidence: "serial in topic name"}
+  - {serial: "26075999", dm_name: camera_front8,     topic_20260924: camera_26075999,     confidence: certain, evidence: "serial in topic name"}
+  - {serial: "25415249", dm_name: camera_front9,     topic_20260924: camera_side_left_2,  confidence: set}
+  - {serial: "26076003", dm_name: camera_side_left,  topic_20260924: camera_rear,         confidence: set}
+  - {serial: "26076471", dm_name: camera_side_right, topic_20260924: camera_26076471,     confidence: certain, evidence: "serial in topic name"}
+  - {serial: null,       dm_name: camera_rear_left,  topic_20260924: camera1,             confidence: unknown, evidence: "not in the old 8-camera table, not serial-named. The only other Blackfly serial seen in local repos is 25415251 (FLIR_control copy, named camera2) - unverified candidate. Check on the vehicle."}
+  - {serial: "25415254", dm_name: camera_rear_right, topic_20260924: camera_side_right_1, confidence: set}
+thermal:
+  - {serial: "89905157", dm_name: thermal_left,  topic_20260924: thermal1, confidence: set, evidence: "thermal1 is LEFT of thermal0 by essential matrix (12/12 frames); serial from FLIR_control_master multicam_thermal_cameras.yaml"}
+  - {serial: "89905156", dm_name: thermal_right, topic_20260924: thermal0, confidence: set}
+note: >
+  The physical-to-dm_name assignment (which camera is front1, which is side_left, ...) was
+  established independently of serials, from image geometry - see camera_name_map_20260924.yaml.
+  Serials only add the hardware identity. Recommend keying all calibration files by serial so a
+  future rename cannot silently attach one camera's calibration to another.

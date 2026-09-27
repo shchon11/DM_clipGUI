@@ -1,0 +1,561 @@
+{
+  "source_commit": "7fbc5ff32494f40d40d4b58069e31367c09d0d90",
+  "window": {
+    "bag": "rec_20260924_204902",
+    "name": "S01",
+    "seconds": [
+      120,
+      160
+    ]
+  },
+  "original_script_equivalence": {
+    "refine": {
+      "refine_max_abs_diff": 6.945555242054979e-13,
+      "pass": true
+    },
+    "ba": {
+      "ba_max_abs_dT": 0.0,
+      "ba_max_abs_dintr": 0.0,
+      "n_obs_old": 800876,
+      "n_obs_new": 800876,
+      "vs_stored_perseg_max_abs_dT": 0.0,
+      "pass": true
+    },
+    "tracks": {
+      "tracks_identical": true,
+      "tracks_identical_to_stored": true,
+      "pass": true
+    }
+  },
+  "tracks_opencv_4": {
+    "tracks": {
+      "tracks_identical": true,
+      "tracks_identical_to_stored": true,
+      "pass": true
+    }
+  },
+  "viz_on_off": {
+    "rgb_final_abba": {
+      "inputs": {
+        "window": "S01",
+        "t0_s": 120,
+        "t1_s": 160,
+        "historical_lo": "/hdd/DM_calib/lidar_odo",
+        "historical_rgb": "/hdd/DM_calib/online/night",
+        "thermal_sift": "/hdd/DM_calib/nt_regress/full/work"
+      },
+      "threads": 4,
+      "rgb_thermal_iters": 5,
+      "viewer_running": false,
+      "pairs": [
+        {
+          "case": "rgb",
+          "repeat": 0,
+          "off": {
+            "case": "rgb",
+            "enabled": false,
+            "wall_s": 222.38739647599868,
+            "cpu_s": 256.227662565,
+            "numerical_sha256": "5a144d4532ca77579d28ec82ba03c25df4192f3190ece2fd09e97f2401d9170e",
+            "events": 0,
+            "preview_mode": "round_robin",
+            "image_publication": {
+              "distinct_images": 0,
+              "global_min_gap_s": null,
+              "per_camera": {}
+            },
+            "image_snapshots": 0,
+            "npz_snapshots": 0,
+            "source_sha256": {
+              "nontarget_cal/viz.py": "35854b9255c2d607a080332d3a0766f6d71c3242e42fd3f0c45ce9367dbd31f1",
+              "nontarget_cal/viz_preview.py": "db25025bd271222b67c04acf51848e798c8c15ac4184043d75502483872fc55d",
+              "nontarget_cal/config/default.yaml": "e37e538155ce4e490aba45ca3fbdbef73ac3aad9a79404c3b2accda4653bab96",
+              "nontarget_cal/lo/refine.py": "ff7b24b732c465bf7f69d560ffbc46c637bb776858218013434244bf3ebd6c22",
+              "nontarget_cal/lo/maps.py": "1d0daddce5bed0ce51a12a2f27600d1badc87c52c74abf2d8cef0a86cfb3c27d",
+              "nontarget_cal/rgb/solve.py": "d33f61e48266e1b19106d9b03af3abd782cd21fe6260ff4bdc75cddfb3bd8c56",
+              "nontarget_cal/rgb/rigba.py": "02d4d94022fa6dc58b89b20d8ecae9f800ebd4ae2f8abfaa145c237cf890550c",
+              "nontarget_cal/rgb/crosstime.py": "dec80636ec6093c1cc2bf283aaa9d0afa9fb452140011c0cc2ef45cd553bca45",
+              "nontarget_cal/thermal/solve.py": "a075bc156e1e4298d456d3bfd421c9d465eaa726ad5210b3b6d3a99a1f109774",
+              "nontarget_cal/thermal/tba.py": "8fe9f5839d0351fbed444182b5b4b807ef71c5ffeb64242a8b3fa934aee2abb6"
+            },
+            "source_stable": true
+          },
+          "on": {
+            "case": "rgb",
+            "enabled": true,
+            "wall_s": 238.85762635502033,
+            "cpu_s": 185.451382201,
+            "numerical_sha256": "5a144d4532ca77579d28ec82ba03c25df4192f3190ece2fd09e97f2401d9170e",
+            "events": 28,
+            "preview_mode": "round_robin",
+            "image_publication": {
+              "distinct_images": 22,
+              "global_min_gap_s": 1.001199722290039,
+              "per_camera": {
+                "camera_front1": {
+                  "count": 2,
+                  "min_gap_s": 57.6685471534729
+                },
+                "camera_front2": {
+                  "count": 2,
+                  "min_gap_s": 92.19634079933167
+                },
+                "camera_front3": {
+                  "count": 2,
+                  "min_gap_s": 91.99975252151489
+                },
+                "camera_front4": {
+                  "count": 2,
+                  "min_gap_s": 92.01775908470154
+                },
+                "camera_front5": {
+                  "count": 2,
+                  "min_gap_s": 161.44220161437988
+                },
+                "camera_front6": {
+                  "count": 2,
+                  "min_gap_s": 161.22739458084106
+                },
+                "camera_front7": {
+                  "count": 2,
+                  "min_gap_s": 161.28354907035828
+                },
+                "camera_front8": {
+                  "count": 2,
+                  "min_gap_s": 213.87905406951904
+                },
+                "camera_front9": {
+                  "count": 1,
+                  "min_gap_s": null
+                },
+                "camera_top": {
+                  "count": 1,
+                  "min_gap_s": null
+                },
+                "camera_side_left": {
+                  "count": 1,
+                  "min_gap_s": null
+                },
+                "camera_side_right": {
+                  "count": 1,
+                  "min_gap_s": null
+                },
+                "camera_rear_left": {
+                  "count": 1,
+                  "min_gap_s": null
+                },
+                "camera_rear_right": {
+                  "count": 1,
+                  "min_gap_s": null
+                }
+              }
+            },
+            "image_snapshots": 14,
+            "npz_snapshots": 14,
+            "source_sha256": {
+              "nontarget_cal/viz.py": "35854b9255c2d607a080332d3a0766f6d71c3242e42fd3f0c45ce9367dbd31f1",
+              "nontarget_cal/viz_preview.py": "db25025bd271222b67c04acf51848e798c8c15ac4184043d75502483872fc55d",
+              "nontarget_cal/config/default.yaml": "e37e538155ce4e490aba45ca3fbdbef73ac3aad9a79404c3b2accda4653bab96",
+              "nontarget_cal/lo/refine.py": "ff7b24b732c465bf7f69d560ffbc46c637bb776858218013434244bf3ebd6c22",
+              "nontarget_cal/lo/maps.py": "1d0daddce5bed0ce51a12a2f27600d1badc87c52c74abf2d8cef0a86cfb3c27d",
+              "nontarget_cal/rgb/solve.py": "d33f61e48266e1b19106d9b03af3abd782cd21fe6260ff4bdc75cddfb3bd8c56",
+              "nontarget_cal/rgb/rigba.py": "02d4d94022fa6dc58b89b20d8ecae9f800ebd4ae2f8abfaa145c237cf890550c",
+              "nontarget_cal/rgb/crosstime.py": "dec80636ec6093c1cc2bf283aaa9d0afa9fb452140011c0cc2ef45cd553bca45",
+              "nontarget_cal/thermal/solve.py": "a075bc156e1e4298d456d3bfd421c9d465eaa726ad5210b3b6d3a99a1f109774",
+              "nontarget_cal/thermal/tba.py": "8fe9f5839d0351fbed444182b5b4b807ef71c5ffeb64242a8b3fa934aee2abb6"
+            },
+            "source_stable": true
+          },
+          "byte_identical": true,
+          "same_source": true,
+          "overhead_pct": 7.406098609908951
+        },
+        {
+          "case": "rgb",
+          "repeat": 1,
+          "off": {
+            "case": "rgb",
+            "enabled": false,
+            "wall_s": 113.43142149900086,
+            "cpu_s": 207.924883641,
+            "numerical_sha256": "5a144d4532ca77579d28ec82ba03c25df4192f3190ece2fd09e97f2401d9170e",
+            "events": 0,
+            "preview_mode": "round_robin",
+            "image_publication": {
+              "distinct_images": 0,
+              "global_min_gap_s": null,
+              "per_camera": {}
+            },
+            "image_snapshots": 0,
+            "npz_snapshots": 0,
+            "source_sha256": {
+              "nontarget_cal/viz.py": "35854b9255c2d607a080332d3a0766f6d71c3242e42fd3f0c45ce9367dbd31f1",
+              "nontarget_cal/viz_preview.py": "db25025bd271222b67c04acf51848e798c8c15ac4184043d75502483872fc55d",
+              "nontarget_cal/config/default.yaml": "e37e538155ce4e490aba45ca3fbdbef73ac3aad9a79404c3b2accda4653bab96",
+              "nontarget_cal/lo/refine.py": "ff7b24b732c465bf7f69d560ffbc46c637bb776858218013434244bf3ebd6c22",
+              "nontarget_cal/lo/maps.py": "1d0daddce5bed0ce51a12a2f27600d1badc87c52c74abf2d8cef0a86cfb3c27d",
+              "nontarget_cal/rgb/solve.py": "d33f61e48266e1b19106d9b03af3abd782cd21fe6260ff4bdc75cddfb3bd8c56",
+              "nontarget_cal/rgb/rigba.py": "02d4d94022fa6dc58b89b20d8ecae9f800ebd4ae2f8abfaa145c237cf890550c",
+              "nontarget_cal/rgb/crosstime.py": "dec80636ec6093c1cc2bf283aaa9d0afa9fb452140011c0cc2ef45cd553bca45",
+              "nontarget_cal/thermal/solve.py": "a075bc156e1e4298d456d3bfd421c9d465eaa726ad5210b3b6d3a99a1f109774",
+              "nontarget_cal/thermal/tba.py": "8fe9f5839d0351fbed444182b5b4b807ef71c5ffeb64242a8b3fa934aee2abb6"
+            },
+            "source_stable": true
+          },
+          "on": {
+            "case": "rgb",
+            "enabled": true,
+            "wall_s": 151.95891668112017,
+            "cpu_s": 208.93183575999998,
+            "numerical_sha256": "5a144d4532ca77579d28ec82ba03c25df4192f3190ece2fd09e97f2401d9170e",
+            "events": 27,
+            "preview_mode": "round_robin",
+            "image_publication": {
+              "distinct_images": 27,
+              "global_min_gap_s": 1.0009753704071045,
+              "per_camera": {
+                "camera_front1": {
+                  "count": 2,
+                  "min_gap_s": 51.23502993583679
+                },
+                "camera_front3": {
+                  "count": 2,
+                  "min_gap_s": 62.64554572105408
+                },
+                "camera_front4": {
+                  "count": 2,
+                  "min_gap_s": 63.104976177215576
+                },
+                "camera_front5": {
+                  "count": 2,
+                  "min_gap_s": 63.33022975921631
+                },
+                "camera_front6": {
+                  "count": 2,
+                  "min_gap_s": 62.406211376190186
+                },
+                "camera_front7": {
+                  "count": 2,
+                  "min_gap_s": 62.11218619346619
+                },
+                "camera_front8": {
+                  "count": 2,
+                  "min_gap_s": 74.98376154899597
+                },
+                "camera_front9": {
+                  "count": 2,
+                  "min_gap_s": 74.43764901161194
+                },
+                "camera_top": {
+                  "count": 2,
+                  "min_gap_s": 43.01820516586304
+                },
+                "camera_side_left": {
+                  "count": 2,
+                  "min_gap_s": 42.82149624824524
+                },
+                "camera_side_right": {
+                  "count": 2,
+                  "min_gap_s": 42.847787380218506
+                },
+                "camera_rear_left": {
+                  "count": 2,
+                  "min_gap_s": 42.76474618911743
+                },
+                "camera_rear_right": {
+                  "count": 2,
+                  "min_gap_s": 57.673529624938965
+                },
+                "camera_front2": {
+                  "count": 1,
+                  "min_gap_s": null
+                }
+              }
+            },
+            "image_snapshots": 27,
+            "npz_snapshots": 27,
+            "source_sha256": {
+              "nontarget_cal/viz.py": "35854b9255c2d607a080332d3a0766f6d71c3242e42fd3f0c45ce9367dbd31f1",
+              "nontarget_cal/viz_preview.py": "db25025bd271222b67c04acf51848e798c8c15ac4184043d75502483872fc55d",
+              "nontarget_cal/config/default.yaml": "e37e538155ce4e490aba45ca3fbdbef73ac3aad9a79404c3b2accda4653bab96",
+              "nontarget_cal/lo/refine.py": "ff7b24b732c465bf7f69d560ffbc46c637bb776858218013434244bf3ebd6c22",
+              "nontarget_cal/lo/maps.py": "1d0daddce5bed0ce51a12a2f27600d1badc87c52c74abf2d8cef0a86cfb3c27d",
+              "nontarget_cal/rgb/solve.py": "d33f61e48266e1b19106d9b03af3abd782cd21fe6260ff4bdc75cddfb3bd8c56",
+              "nontarget_cal/rgb/rigba.py": "02d4d94022fa6dc58b89b20d8ecae9f800ebd4ae2f8abfaa145c237cf890550c",
+              "nontarget_cal/rgb/crosstime.py": "dec80636ec6093c1cc2bf283aaa9d0afa9fb452140011c0cc2ef45cd553bca45",
+              "nontarget_cal/thermal/solve.py": "a075bc156e1e4298d456d3bfd421c9d465eaa726ad5210b3b6d3a99a1f109774",
+              "nontarget_cal/thermal/tba.py": "8fe9f5839d0351fbed444182b5b4b807ef71c5ffeb64242a8b3fa934aee2abb6"
+            },
+            "source_stable": true
+          },
+          "byte_identical": true,
+          "same_source": true,
+          "overhead_pct": 33.965452141017806
+        }
+      ]
+    },
+    "thermal": {
+      "case": "thermal",
+      "repeat": 0,
+      "off": {
+        "case": "thermal",
+        "enabled": false,
+        "wall_s": 50.89086893084459,
+        "cpu_s": 33.984808606,
+        "numerical_sha256": "d178a04e0f4bc5893f55a63d2223118277f73cb89d2a38d8a9a6bd9211a8f901",
+        "events": 0,
+        "image_snapshots": 0,
+        "npz_snapshots": 0,
+        "source_sha256": {
+          "nontarget_cal/viz.py": "996352c64e2b67199f0b186e60acbf22fb38b18001e69280cf9a6ac6c31890ac",
+          "nontarget_cal/lo/refine.py": "ff7b24b732c465bf7f69d560ffbc46c637bb776858218013434244bf3ebd6c22",
+          "nontarget_cal/lo/maps.py": "1d0daddce5bed0ce51a12a2f27600d1badc87c52c74abf2d8cef0a86cfb3c27d",
+          "nontarget_cal/rgb/solve.py": "d33f61e48266e1b19106d9b03af3abd782cd21fe6260ff4bdc75cddfb3bd8c56",
+          "nontarget_cal/rgb/rigba.py": "02d4d94022fa6dc58b89b20d8ecae9f800ebd4ae2f8abfaa145c237cf890550c",
+          "nontarget_cal/rgb/crosstime.py": "dec80636ec6093c1cc2bf283aaa9d0afa9fb452140011c0cc2ef45cd553bca45",
+          "nontarget_cal/thermal/solve.py": "a075bc156e1e4298d456d3bfd421c9d465eaa726ad5210b3b6d3a99a1f109774",
+          "nontarget_cal/thermal/tba.py": "8fe9f5839d0351fbed444182b5b4b807ef71c5ffeb64242a8b3fa934aee2abb6"
+        },
+        "source_stable": true
+      },
+      "on": {
+        "case": "thermal",
+        "enabled": true,
+        "wall_s": 55.966404034988955,
+        "cpu_s": 32.651511123999995,
+        "numerical_sha256": "d178a04e0f4bc5893f55a63d2223118277f73cb89d2a38d8a9a6bd9211a8f901",
+        "events": 9,
+        "image_snapshots": 5,
+        "npz_snapshots": 5,
+        "source_sha256": {
+          "nontarget_cal/viz.py": "996352c64e2b67199f0b186e60acbf22fb38b18001e69280cf9a6ac6c31890ac",
+          "nontarget_cal/lo/refine.py": "ff7b24b732c465bf7f69d560ffbc46c637bb776858218013434244bf3ebd6c22",
+          "nontarget_cal/lo/maps.py": "1d0daddce5bed0ce51a12a2f27600d1badc87c52c74abf2d8cef0a86cfb3c27d",
+          "nontarget_cal/rgb/solve.py": "d33f61e48266e1b19106d9b03af3abd782cd21fe6260ff4bdc75cddfb3bd8c56",
+          "nontarget_cal/rgb/rigba.py": "02d4d94022fa6dc58b89b20d8ecae9f800ebd4ae2f8abfaa145c237cf890550c",
+          "nontarget_cal/rgb/crosstime.py": "dec80636ec6093c1cc2bf283aaa9d0afa9fb452140011c0cc2ef45cd553bca45",
+          "nontarget_cal/thermal/solve.py": "a075bc156e1e4298d456d3bfd421c9d465eaa726ad5210b3b6d3a99a1f109774",
+          "nontarget_cal/thermal/tba.py": "8fe9f5839d0351fbed444182b5b4b807ef71c5ffeb64242a8b3fa934aee2abb6"
+        },
+        "source_stable": true
+      },
+      "byte_identical": true,
+      "same_source": true,
+      "overhead_pct": 9.973370883176491
+    },
+    "refine": {
+      "case": "refine",
+      "repeat": 0,
+      "off": {
+        "case": "refine",
+        "enabled": false,
+        "wall_s": 71.11336491582915,
+        "cpu_s": 154.618173627,
+        "numerical_sha256": "47fdfa461c3659b788d827ff0444bafd1cbc2018e5b6735a1b9bfab541623376",
+        "events": 0,
+        "preview_mode": "round_robin",
+        "image_publication": {
+          "distinct_images": 0,
+          "global_min_gap_s": null,
+          "per_camera": {}
+        },
+        "image_snapshots": 0,
+        "npz_snapshots": 0,
+        "source_sha256": {
+          "nontarget_cal/viz.py": "35854b9255c2d607a080332d3a0766f6d71c3242e42fd3f0c45ce9367dbd31f1",
+          "nontarget_cal/viz_preview.py": "db25025bd271222b67c04acf51848e798c8c15ac4184043d75502483872fc55d",
+          "nontarget_cal/config/default.yaml": "e37e538155ce4e490aba45ca3fbdbef73ac3aad9a79404c3b2accda4653bab96",
+          "nontarget_cal/lo/refine.py": "ff7b24b732c465bf7f69d560ffbc46c637bb776858218013434244bf3ebd6c22",
+          "nontarget_cal/lo/maps.py": "1d0daddce5bed0ce51a12a2f27600d1badc87c52c74abf2d8cef0a86cfb3c27d",
+          "nontarget_cal/rgb/solve.py": "d33f61e48266e1b19106d9b03af3abd782cd21fe6260ff4bdc75cddfb3bd8c56",
+          "nontarget_cal/rgb/rigba.py": "02d4d94022fa6dc58b89b20d8ecae9f800ebd4ae2f8abfaa145c237cf890550c",
+          "nontarget_cal/rgb/crosstime.py": "dec80636ec6093c1cc2bf283aaa9d0afa9fb452140011c0cc2ef45cd553bca45",
+          "nontarget_cal/thermal/solve.py": "a075bc156e1e4298d456d3bfd421c9d465eaa726ad5210b3b6d3a99a1f109774",
+          "nontarget_cal/thermal/tba.py": "8fe9f5839d0351fbed444182b5b4b807ef71c5ffeb64242a8b3fa934aee2abb6"
+        },
+        "source_stable": true
+      },
+      "on": {
+        "case": "refine",
+        "enabled": true,
+        "wall_s": 85.33449638891034,
+        "cpu_s": 175.062010019,
+        "numerical_sha256": "47fdfa461c3659b788d827ff0444bafd1cbc2018e5b6735a1b9bfab541623376",
+        "events": 1,
+        "preview_mode": "round_robin",
+        "image_publication": {
+          "distinct_images": 0,
+          "global_min_gap_s": null,
+          "per_camera": {}
+        },
+        "image_snapshots": 0,
+        "npz_snapshots": 1,
+        "source_sha256": {
+          "nontarget_cal/viz.py": "35854b9255c2d607a080332d3a0766f6d71c3242e42fd3f0c45ce9367dbd31f1",
+          "nontarget_cal/viz_preview.py": "db25025bd271222b67c04acf51848e798c8c15ac4184043d75502483872fc55d",
+          "nontarget_cal/config/default.yaml": "e37e538155ce4e490aba45ca3fbdbef73ac3aad9a79404c3b2accda4653bab96",
+          "nontarget_cal/lo/refine.py": "ff7b24b732c465bf7f69d560ffbc46c637bb776858218013434244bf3ebd6c22",
+          "nontarget_cal/lo/maps.py": "1d0daddce5bed0ce51a12a2f27600d1badc87c52c74abf2d8cef0a86cfb3c27d",
+          "nontarget_cal/rgb/solve.py": "d33f61e48266e1b19106d9b03af3abd782cd21fe6260ff4bdc75cddfb3bd8c56",
+          "nontarget_cal/rgb/rigba.py": "02d4d94022fa6dc58b89b20d8ecae9f800ebd4ae2f8abfaa145c237cf890550c",
+          "nontarget_cal/rgb/crosstime.py": "dec80636ec6093c1cc2bf283aaa9d0afa9fb452140011c0cc2ef45cd553bca45",
+          "nontarget_cal/thermal/solve.py": "a075bc156e1e4298d456d3bfd421c9d465eaa726ad5210b3b6d3a99a1f109774",
+          "nontarget_cal/thermal/tba.py": "8fe9f5839d0351fbed444182b5b4b807ef71c5ffeb64242a8b3fa934aee2abb6"
+        },
+        "source_stable": true
+      },
+      "byte_identical": true,
+      "same_source": true,
+      "overhead_pct": 19.997832320146202
+    }
+  },
+  "sift_golden": {
+    "measurement": {
+      "case": "sift",
+      "enabled": false,
+      "wall_s": 1359.4772401959635,
+      "cpu_s": 1170.407294042,
+      "numerical_sha256": "cd2766854a90e0239cb151bcc44333d3a3ea106f7af077ef8d0837ccb5588524",
+      "events": 0,
+      "image_snapshots": 0,
+      "npz_snapshots": 0,
+      "source_sha256": {
+        "nontarget_cal/viz.py": "996352c64e2b67199f0b186e60acbf22fb38b18001e69280cf9a6ac6c31890ac",
+        "nontarget_cal/lo/refine.py": "ff7b24b732c465bf7f69d560ffbc46c637bb776858218013434244bf3ebd6c22",
+        "nontarget_cal/lo/maps.py": "1d0daddce5bed0ce51a12a2f27600d1badc87c52c74abf2d8cef0a86cfb3c27d",
+        "nontarget_cal/rgb/solve.py": "d33f61e48266e1b19106d9b03af3abd782cd21fe6260ff4bdc75cddfb3bd8c56",
+        "nontarget_cal/rgb/rigba.py": "02d4d94022fa6dc58b89b20d8ecae9f800ebd4ae2f8abfaa145c237cf890550c",
+        "nontarget_cal/rgb/crosstime.py": "dec80636ec6093c1cc2bf283aaa9d0afa9fb452140011c0cc2ef45cd553bca45",
+        "nontarget_cal/thermal/solve.py": "a075bc156e1e4298d456d3bfd421c9d465eaa726ad5210b3b6d3a99a1f109774",
+        "nontarget_cal/thermal/tba.py": "8fe9f5839d0351fbed444182b5b4b807ef71c5ffeb64242a8b3fa934aee2abb6"
+      },
+      "source_stable": false
+    },
+    "comparison": {
+      "reference": "/hdd/DM_calib/nt_regress/crosstime/cache_snap/S01.npz",
+      "byte_identical": true
+    },
+    "crosstime_source_unchanged": true,
+    "scope": "One fresh SIFT computation versus historical la/lb/dist/dts/imp; no second viz-on computation"
+  },
+  "performance": {
+    "default_round_robin_uninstrumented_abba": {
+      "order": [
+        "off",
+        "on",
+        "on",
+        "off"
+      ],
+      "off_mean_s": 167.90940898749977,
+      "on_mean_s": 195.40827151807025,
+      "wall_delta_pct": 16.377201668679376,
+      "all_bit_identical": true,
+      "source_stable": true,
+      "global_image_gaps_ge_1s": true,
+      "caveat": "Other users jobs remained active; host load average varied above 16 logical cores. This is an observed shared-host wall-time difference, not isolated causal overhead."
+    },
+    "default_round_robin_instrumented_on_only": {
+      "case": "rgb",
+      "enabled": true,
+      "wall_s": 326.682440827135,
+      "cpu_s": 206.715744828,
+      "numerical_sha256": "5a144d4532ca77579d28ec82ba03c25df4192f3190ece2fd09e97f2401d9170e",
+      "events": 14,
+      "preview_mode": "round_robin",
+      "image_publication": {
+        "distinct_images": 14,
+        "global_min_gap_s": 1.0010535717010498,
+        "per_camera": {
+          "camera_front1": {
+            "count": 2,
+            "min_gap_s": 157.46943473815918
+          },
+          "camera_front5": {
+            "count": 2,
+            "min_gap_s": 201.31479573249817
+          },
+          "camera_front6": {
+            "count": 2,
+            "min_gap_s": 123.36194682121277
+          },
+          "camera_front9": {
+            "count": 1,
+            "min_gap_s": null
+          },
+          "camera_top": {
+            "count": 1,
+            "min_gap_s": null
+          },
+          "camera_side_right": {
+            "count": 1,
+            "min_gap_s": null
+          },
+          "camera_rear_left": {
+            "count": 1,
+            "min_gap_s": null
+          },
+          "camera_front2": {
+            "count": 1,
+            "min_gap_s": null
+          },
+          "camera_front4": {
+            "count": 1,
+            "min_gap_s": null
+          },
+          "camera_front7": {
+            "count": 1,
+            "min_gap_s": null
+          },
+          "camera_front8": {
+            "count": 1,
+            "min_gap_s": null
+          }
+        }
+      },
+      "image_snapshots": 11,
+      "npz_snapshots": 11,
+      "source_sha256": {
+        "nontarget_cal/viz.py": "35854b9255c2d607a080332d3a0766f6d71c3242e42fd3f0c45ce9367dbd31f1",
+        "nontarget_cal/viz_preview.py": "db25025bd271222b67c04acf51848e798c8c15ac4184043d75502483872fc55d",
+        "nontarget_cal/config/default.yaml": "e37e538155ce4e490aba45ca3fbdbef73ac3aad9a79404c3b2accda4653bab96",
+        "nontarget_cal/lo/refine.py": "ff7b24b732c465bf7f69d560ffbc46c637bb776858218013434244bf3ebd6c22",
+        "nontarget_cal/lo/maps.py": "1d0daddce5bed0ce51a12a2f27600d1badc87c52c74abf2d8cef0a86cfb3c27d",
+        "nontarget_cal/rgb/solve.py": "d33f61e48266e1b19106d9b03af3abd782cd21fe6260ff4bdc75cddfb3bd8c56",
+        "nontarget_cal/rgb/rigba.py": "02d4d94022fa6dc58b89b20d8ecae9f800ebd4ae2f8abfaa145c237cf890550c",
+        "nontarget_cal/rgb/crosstime.py": "dec80636ec6093c1cc2bf283aaa9d0afa9fb452140011c0cc2ef45cd553bca45",
+        "nontarget_cal/thermal/solve.py": "a075bc156e1e4298d456d3bfd421c9d465eaa726ad5210b3b6d3a99a1f109774",
+        "nontarget_cal/thermal/tba.py": "8fe9f5839d0351fbed444182b5b4b807ef71c5ffeb64242a8b3fa934aee2abb6"
+      },
+      "source_stable": true,
+      "byte_identical_to_round_robin_off": true,
+      "timing_scope": "instrumented default round-robin on-only; do not pool with uninstrumented ABBA cohort",
+      "observer_profile": {
+        "solver_observer": {
+          "calls": 28,
+          "cpu_s": 0.5632641359999706,
+          "wall_s": 0.5888138995505869,
+          "max_wall_s": 0.06595121300779283
+        },
+        "io_processing": {
+          "calls": 14,
+          "cpu_s": 1.027998664,
+          "wall_s": 44.79938805080019,
+          "max_wall_s": 12.247244347818196
+        }
+      },
+      "observed_cpu_fraction_of_worker_cpu_pct": 0.7697830667538157,
+      "observer_profile_note": "thread CPU counts observed callback and I/O processing work, excluding waits; I/O wall time includes waits and overlaps the solve. This is not causal end-to-end wall overhead."
+    },
+    "runtime_target": "<2% runtime overhead was not established. Shared-host ABBA observed +16.377%; instrumentation measured 0.7698% of worker CPU in synchronous observer and asynchronous I/O work. CPU share is not causal wall overhead."
+  },
+  "all_numeric_checks_pass": true,
+  "strict_global_and_per_camera_image_gap_ge_1s": true,
+  "minimum_observed_distinct_image_gap_s": 1.0009753704071045,
+  "execution_notes": [
+    "No writes to original datasets or nt_regress/full; scratch workspaces link individual inputs.",
+    "Earlier contended runs and the GUI-overlapped abandoned timing cohort are retained separately and excluded from final ABBA.",
+    "The original remaining-case driver intentionally stopped after a skipped duplicate SIFT-on child (77); successful SIFT-off artifacts are retained and refinement was launched separately.",
+    "All numerical processes were sequential in this lane. GPU disabled; numerical threads <=4. No source edits after freeze.",
+    "Original raw reference outputs are under /tmp/nontarget_viz_equivalence/original; logs/results copied to persistent scratch."
+  ]
+}

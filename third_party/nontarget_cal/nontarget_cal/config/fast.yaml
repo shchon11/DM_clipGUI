@@ -1,0 +1,14 @@
+# Fast preset: `nontarget_cal run ... --config @pkg/config/fast.yaml` (or copy the keys into your own
+# override). Trades some data for time; accuracy measured on the 2026-09-24 regression bag in README
+# section 6. Everything not listed stays as in default.yaml.
+rgb:
+  tracks:
+    device: auto        # Lucas-Kanade on the GPU (CUDA, else OpenCL) when available
+    frame_step: 2       # track the 30 Hz cameras at 15 Hz
+    min_len: 3          # (frames of the 15 Hz stream)
+  solve:
+    min_len: 6          # = 12 frames at 30 Hz
+    step: 2             # observations every 0.13 s (30 Hz: every 3rd = 0.10 s)
+    step_big: 2         # (30 Hz: every 4th = 0.13 s)
+windows:
+  max_windows: 16       # the 16 windows with the most rotation (default 30)

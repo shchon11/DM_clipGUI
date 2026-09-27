@@ -1,0 +1,29 @@
+{
+  "case": "rgb",
+  "enabled": false,
+  "wall_s": 222.38739647599868,
+  "cpu_s": 256.227662565,
+  "numerical_sha256": "5a144d4532ca77579d28ec82ba03c25df4192f3190ece2fd09e97f2401d9170e",
+  "events": 0,
+  "preview_mode": "round_robin",
+  "image_publication": {
+    "distinct_images": 0,
+    "global_min_gap_s": null,
+    "per_camera": {}
+  },
+  "image_snapshots": 0,
+  "npz_snapshots": 0,
+  "source_sha256": {
+    "nontarget_cal/viz.py": "35854b9255c2d607a080332d3a0766f6d71c3242e42fd3f0c45ce9367dbd31f1",
+    "nontarget_cal/viz_preview.py": "db25025bd271222b67c04acf51848e798c8c15ac4184043d75502483872fc55d",
+    "nontarget_cal/config/default.yaml": "e37e538155ce4e490aba45ca3fbdbef73ac3aad9a79404c3b2accda4653bab96",
+    "nontarget_cal/lo/refine.py": "ff7b24b732c465bf7f69d560ffbc46c637bb776858218013434244bf3ebd6c22",
+    "nontarget_cal/lo/maps.py": "1d0daddce5bed0ce51a12a2f27600d1badc87c52c74abf2d8cef0a86cfb3c27d",
+    "nontarget_cal/rgb/solve.py": "d33f61e48266e1b19106d9b03af3abd782cd21fe6260ff4bdc75cddfb3bd8c56",
+    "nontarget_cal/rgb/rigba.py": "02d4d94022fa6dc58b89b20d8ecae9f800ebd4ae2f8abfaa145c237cf890550c",
+    "nontarget_cal/rgb/crosstime.py": "dec80636ec6093c1cc2bf283aaa9d0afa9fb452140011c0cc2ef45cd553bca45",
+    "nontarget_cal/thermal/solve.py": "a075bc156e1e4298d456d3bfd421c9d465eaa726ad5210b3b6d3a99a1f109774",
+    "nontarget_cal/thermal/tba.py": "8fe9f5839d0351fbed444182b5b4b807ef71c5ffeb64242a8b3fa934aee2abb6"
+  },
+  "source_stable": true
+}

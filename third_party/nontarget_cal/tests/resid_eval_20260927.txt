@@ -1,0 +1,106 @@
+RGB BA residual study: what reduces the ~0.84 px track residual AND improves the calibration, 2026-09-27
+==========================================================================================================
+Bag rec_20260924_204902 (night), 25 windows, protocol of tests/time_offset_eval_20260927.txt: final from the validated
+zeroshot_pass2, halves A = windows[0::2] / B = windows[1::2] started from the variant's final, 1-sigma = |A-B|/sqrt(2)
+(per camera, group medians), held-out = each half's calibration held on the other half with WHOLE tracks and no
+variant option (a common yardstick), plane = median |landmark - LiDAR plane| of the final, shift = final vs the
+validated final (/hdd/DM_calib/nt_regress/full/work/rgb/final = full/out) in units of the validated empirical 1-sigma
+(floors 5 mm / 0.02 deg), > 3 sigma flagged. Work: /hdd/DM_calib/nt_regress/resid_study. Scripts: tests/resid_run_eval.sh,
+tests/resid_compare.py (--bins), tests/resid_quick.sh, tests/resid_closure.py, tests/resid_retrack.py.
+
+1. Variants (all config-gated; code in rgb/data.py, rgb/framecorr.py, rgb/obsweight.py, rgb/tracks_anchor.py)
+   segN   rgb.solve.seg_span_s = N s: after the usual track selection (min_len, max 40 obs per track), every KLT track
+          is cut into round(duration / N) equal-time pieces, each its own landmark. A landmark then only has to absorb
+          the KLT drift of ~N s; the first board-free pass (design angles) keeps whole tracks.
+   fc6    rgb.solve.frame_corr (rot + pos): 6-DoF correction of the LiDAR pose per synchronous camera frame (all 14
+          cameras exposed together), fitted between stage-B rounds 1-2 with the landmarks/calibration held; prior
+          0.2 deg / 20 mm, high-pass 1 s and zero mean per window (gauge vs the extrinsics), >= 3 cameras / 30 obs.
+   fcr    as fc6, rotation only (quick subset only).
+   agew   rgb.solve.obs_weight by age: empirical weights from the residual in |t - track centre| bins (per camera,
+          5 quantile bins, floor 0.25, mean 1).
+   kt     rgb.tracks.anchor: KLT with template-anchored re-measurement (key-frame template, re-anchor after 30 frames
+          or on failure) instead of pure frame-to-frame LK (quick subset only; needs re-tracking).
+   seg2fc seg2 + fc6.
+
+2. Quick subset (2 windows S03 + W05, start = validated final, tests/resid_quick.sh; reproj median, px)
+   q_base 0.795 | q_fc6 0.711 | q_fcr 0.725 | q_seg2 0.642 | q_kt 0.776 | q_agew 0.760
+   Anchored tracking (kt), forward-backward closure on W05 (tests/resid_closure.py, px vs track age in frames):
+     front5     f2f 0.08/0.15/0.21/0.25/0.27/0.53   anchored 0.14/0.30/0.46/0.60/0.71/0.70   (1-5/5-15/15-30/30-60/60-120/>120)
+     side_left  f2f 0.12/0.23/0.35/0.50/0.68/0.83   anchored 0.19/0.36/0.55/0.73/0.89/1.38
+     rear_left  f2f 0.03/0.11/0.18/0.31/0.58/3.66   anchored 0.11/0.22/0.36/0.66/1.40/7.93
+   -> the anchored tracker drifts MORE (template appearance change at night, fisheye scale change) and costs ~3x the
+      tracking CPU (20 jobs: 2546 cpu-s); residual gain only 0.795 -> 0.776. Dropped (anchor.enabled false).
+
+3. Full evaluation (25 windows). 1-sigma group medians: rot deg / pos mm / axis mm
+   group / metric           base            fc6             agew            seg1            seg2            seg3            seg2fc
+   front+top rot/pos/axis   0.035/13.8/7.6  0.045/14.0/7.6  0.040/13.6/8.3  0.039/5.9/2.2   0.029/7.7/2.4   0.034/9.8/4.1   0.027/7.8/2.8
+   front+top f 1-sigma px   0.72            0.73            0.68            0.23            0.35            0.48            0.33
+   side rot/pos/axis        0.042/8.3/3.7   0.034/7.9/3.6   0.042/8.1/3.9   0.030/8.7/6.4   0.045/7.1/4.2   0.043/6.5/3.3   0.038/6.3/2.1
+   rear rot/pos/axis        0.251/31.5/15.6 0.268/32.1/15.9 0.268/28.8/16.7 0.054/13.3/9.2  0.082/6.3/2.5   0.100/7.1/4.9   0.082/5.9/2.4
+   rear f 1-sigma px        0.98            0.99            1.08            0.61            0.62            0.93            0.70
+   track reproj (final) px  0.843           0.764           0.812           0.574           0.671           0.750           0.592
+   held-out (whole tracks)  0.849           0.848           0.849           0.849           0.848           0.848           0.848
+   |plane| median mm        26.4            26.5            26.8            21.6            25.9            27.4            25.9
+     rear |plane| mm        35.1            35.1            36.2            21.4            24.0            25.6            23.6
+   n_obs / n_lm (M)         10.79/0.49      10.70/0.49      10.74/0.49      9.71/1.11       11.06/0.89      11.53/0.75      11.03/0.89
+   max shift vs validated   -               0.49 sig        0.31 sig        1.79 sig        1.15 sig        1.28 sig        1.14 sig
+     (camera; median mm)    -               side_r; 2.1     front4; 1.0     front9; 5.6     rear_l; 2.7     rear_l; 1.9     rear_l; 3.2
+   wall final s / RSS GB    1416*/8.2       2186/8.3        2699/8.7        1165*/8.7       2575/9.2        3161/8.7        2049/8.6
+   (* = box otherwise idle; the others ran next to other jobs of a shared box and are not comparable. Same-load
+    quick subset: base 324 s, seg2 350 s (+8 %), fc6 322 s, agew 267 s.)
+
+   Residual vs vehicle speed (m/s 0-3/3-6/6-9/9-12/>12) and vs |t - centre of the WHOLE KLT track| (s 0-0.2/0.2-0.5/
+   0.5-1/1-2/>2; for segN the centre of the original track, not of the piece):
+     base  speed 0.660/0.940/0.939/0.944/0.952   age 0.681/0.720/0.828/0.961/1.132  (rear 0.833/0.859/0.940/1.097/1.331)
+     fc6   speed 0.617/0.845/0.831/0.812/0.851   age 0.596/0.637/0.750/0.890/1.062  (rear 0.769/0.796/0.875/1.025/1.247)
+     agew  speed 0.633/0.907/0.904/0.909/0.901   age 0.579/0.642/0.809/1.001/1.204  (rear 0.684/0.720/0.836/1.071/1.421)
+     seg1  speed 0.464/0.602/0.645/0.687/0.684   age 0.543/0.551/0.581/0.594/0.617  (rear 0.536/0.546/0.555/0.572/0.614)
+     seg2  speed 0.535/0.710/0.760/0.815/0.809   age 0.618/0.644/0.688/0.695/0.690  (rear 0.681/0.672/0.676/0.698/0.724)
+     seg3  speed 0.584/0.806/0.856/0.916/0.928   age 0.653/0.689/0.775/0.797/0.813  (rear 0.804/0.805/0.806/0.814/0.856)
+     seg2fc speed 0.487/0.622/0.662/0.701/0.719  age 0.534/0.563/0.611/0.620/0.616  (rear 0.611/0.603/0.608/0.628/0.646)
+   Per-frame correction (fc6) removes a residual share at every speed but leaves the growth with track age; splitting
+   removes the growth with age (seg2: flat 0.62 -> 0.69 px instead of 0.68 -> 1.13 px); the speed dependence
+   (trajectory) remains.
+
+4. Reading
+   - fc6: the per-frame trajectory error is real (residual 0.843 -> 0.764 px, the 0.36 px quadrature share of the
+     residual-source analysis) but it is common to all cameras of a frame, zero-mean per window, and already averaged
+     out by the extrinsics: half-split 1-sigma, held-out and plane distance are unchanged. Lower residual, no
+     calibration gain -> off.
+   - agew: down-weighting old observations helps neither 1-sigma nor held-out -> off.
+   - kt: section 2 -> off.
+   - segN: the KLT drift is not white noise: a whole track's drift (0.3-0.5 px over 2-4 s front, several px rear) is
+     absorbed by ONE landmark, so it biases the extrinsics in a direction set by the windows' motion, i.e. differently
+     for halves A and B. Cutting tracks into ~2 s pieces keeps each landmark's drift sub-pixel while keeping enough
+     baseline (at >= 3 m/s, >= 6 m) for depth. Result: half-split 1-sigma falls sharply where the drift is worst
+     (rear position 31.5 -> 6.3 mm, rear axis 15.6 -> 2.5 mm, rear rotation 0.25 -> 0.08 deg, rear f 0.98 -> 0.62 px;
+     front+top axis 7.6 -> 2.4 mm, position 13.8 -> 7.7 mm), the landmarks sit closer to the LiDAR planes
+     (rear 35 -> 24 mm), held-out on whole tracks is unchanged (0.848 vs 0.849: the calibration explains unsplit
+     tracks as well as before) and no camera moves more than 1.15 sigma from the validated result (median 2.7 mm;
+     the largest shift, rear_left 22 mm, is inside the validated rear 1-sigma of 31-39 mm). Side stays within noise
+     (2 cameras, one split: rot 0.042 -> 0.045 deg, axis 3.7 -> 4.2 mm, position 8.3 -> 7.1 mm).
+   - seg1 vs seg2 vs seg3: 1 s pieces are best for the front cluster (axis 2.2 mm, f 0.23 px) but worse for the side
+     axis (6.4 mm) and rear (13.3 / 9.2 mm) - the shorter baseline weakens depth for the lateral cameras - and moves
+     the result more (max 1.79 sigma, median 5.6 mm); 3 s leaves half the drift (rear axis 4.9 mm). 2 s is the best
+     balance: best or near-best in every group, no bias.
+   - seg2fc: frame corrections on top of seg2 lower the residual further (0.671 -> 0.592 px; corrections 33/17/8 mdeg
+     rms about LiDAR x/y/z, 2.3-3.2 mm) but the calibration hardly moves (vs seg2 final: max 1.03 sigma, median 2.0 mm)
+     and 1-sigma is the same within the one-split noise: front+top axis 2.4 -> 2.8 mm, rear 6.3/2.5 -> 5.9/2.4 mm, side
+     axis 4.2 -> 2.1 mm (both side cameras 3.7/4.7 -> 1.7/2.4 mm, but fc6 alone moved them 1.5/5.9 -> 3.7/3.5 mm, i.e.
+     inconsistently). Not enough evidence for the extra per-frame state; stays off (a candidate to re-test on a
+     second bag, especially for the side cameras).
+   - Caveat: 1-sigma comes from ONE half split per variant (per camera a single |A-B| sample); group medians over
+     10 / 2 / 2 cameras. Side (2 cameras) differences of +-1-2 mm are noise.
+
+5. Pipeline path (rgb.solve.seg_span_s: 2.0 applies to zero-shot pass 2 and the final, not pass 1)
+   zero-shot pass 2 with seg2 from the validated pass 1 (5 windows): reproj 0.899 -> 0.713 px, extrinsics within
+   2-14 mm / 0.01-0.09 deg of the validated pass 2 (wall 492 vs 372 s, loaded box). Final (25 windows) from it: reproj 0.6705 px, plane 25.9 mm, every camera within
+   0.0-1.4 mm / 0.000-0.005 deg of seg2_final (max 0.27 of seg2's 1-sigma; vs the validated result max 1.17 sigma,
+   rear_left 22.9 mm / rear_right 16.9 mm, all others <= 4.1 mm / 0.03 deg). The pass-2 start does not matter.
+   Wall 38 min / RSS 9.4 GB (shared box, next to another agent's pipeline run).
+
+6. Decision
+   rgb.solve.seg_span_s: 2.0 is the new default (README section 10); the validation held-out is measured on whole
+   tracks without the study options (pipeline._val_rgb_tasks) so it stays comparable. frame_corr, obs_weight and
+   tracks.anchor stay off. The accuracy gain is from ONE bag and one half split per variant: re-check the side/rear
+   1-sigma on the next bag (tests/resid_run_eval.sh, set seg_span_s in the fragment).

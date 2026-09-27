@@ -1,0 +1,18 @@
+{
+  "score": 94,
+  "verdict": "pass",
+  "category_match": true,
+  "differences": [],
+  "suggestions": [],
+  "reasoning": "Embedded actual-job viewer is the primary panel; result/log tabs are reachable. All 16 final camera gates are teal with 14 subtle RGB information badges. Replay screens clearly label synthetic convergence, window-local maps and camera imagery. Reference was the previous committed dashboard and task requirements; no external design reference supplied.",
+  "next_actions": [],
+  "threshold": 90,
+  "passed": true,
+  "images": [
+    "calib_tab_embedded.png",
+    "calib_viz_01_006.png",
+    "calib_viz_02_055.png",
+    "calib_viz_03_100.png",
+    "calib_viz_thermal.png"
+  ]
+}

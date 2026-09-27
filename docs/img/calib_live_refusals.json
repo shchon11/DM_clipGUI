@@ -1,0 +1,22 @@
+{
+  "swapped": {
+    "expected": "ambiguous_camera_names",
+    "actual": "ambiguous_camera_names",
+    "pass": true
+  },
+  "geometry": {
+    "expected": "check_done",
+    "actual": "check_done",
+    "pass": true
+  },
+  "rotation": {
+    "expected": "not_enough_rotation",
+    "actual": "not_enough_rotation",
+    "pass": true
+  },
+  "disk": {
+    "expected": "insufficient_disk",
+    "actual": "insufficient_disk",
+    "pass": true
+  }
+}
