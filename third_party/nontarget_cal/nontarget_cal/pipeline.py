@@ -21,6 +21,89 @@ from .events import Events, dir_size_gb
 from .workspace import Workspace, read_json, write_json
 
 
+def cgroup_mem():
+    """(limit, in use) in GB of the tightest cgroup-v2 memory limit this process runs under (a container,
+    or a systemd slice with MemoryMax), else None. In use = memory.current minus the page cache (which the
+    kernel reclaims before it OOM-kills; shared memory counts as used)."""
+    try:
+        rel = next(line.split(":", 2)[2].strip() for line in open("/proc/self/cgroup") if line.startswith("0::"))
+    except (OSError, StopIteration):
+        return None
+    parts = [x for x in rel.split("/") if x]
+    best = None
+    for i in range(len(parts), -1, -1):
+        d = Path("/sys/fs/cgroup").joinpath(*parts[:i])
+        try:
+            v = (d / "memory.max").read_text().strip()
+            if v == "max":
+                continue
+            lim = int(v) / 1e9
+            if best is not None and lim >= best[0]:
+                continue
+            st = dict(line.split() for line in open(d / "memory.stat"))
+            used = (int((d / "memory.current").read_text()) - int(st.get("file", 0)) + int(st.get("shmem", 0))) / 1e9
+            best = (lim, max(0.0, used))
+        except (OSError, ValueError):
+            continue
+    return best
+
+
+def _phys_gb() -> float:
+    try:
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemTotal:"):
+                return int(line.split()[1]) / 1e6
+    except OSError:
+        pass
+    return 32.0
+
+
+def mem_total_gb() -> float:
+    """Physical RAM, or the cgroup memory limit when that is smaller."""
+    total = _phys_gb()
+    cg = cgroup_mem()
+    return min(total, cg[0]) if cg else total
+
+
+def mem_available_gb() -> float:
+    """RAM the OS reports available, or what is left under the cgroup memory limit when that is less."""
+    avail = 1e9
+    try:
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemAvailable:"):
+                avail = int(line.split()[1]) / 1e6
+                break
+    except OSError:
+        pass
+    cg = cgroup_mem()
+    return min(avail, cg[0] - cg[1]) if cg else avail
+
+
+def worker_plan(cfg) -> dict:
+    """Worker processes for this machine. resources.max_procs: a number, or auto = logical CPUs /
+    cpus_per_worker, capped by max_procs_cap and by RAM (budget = RAM - mem_headroom_gb, about 2.5 GB per
+    worker slot on average); the environment variable NONTARGET_MAX_PROCS overrides (e.g. 4 on a shared
+    box). Heavy tasks are additionally admitted only while their memory estimates fit the budget."""
+    r = cfg["resources"]
+    head = float(r.get("mem_headroom_gb", 6.0))
+    total = mem_total_gb()
+    cg = cgroup_mem()
+    if cg and cg[0] < 0.99 * _phys_gb():
+        # under a cgroup memory limit the OS and the GUI are outside it: a small margin only
+        head = min(head, float(r.get("cgroup_headroom_gb", 1.0)))
+    budget = max(4.0, total - head)
+    v = os.environ.get("NONTARGET_MAX_PROCS") or r.get("max_procs", "auto")
+    if str(v).lower() == "auto":
+        ncpu = os.cpu_count() or 8
+        n = int(ncpu // float(r.get("cpus_per_worker", 2.5)))
+        n = min(n, int(r.get("max_procs_cap", 12)), int(budget // 2.5))
+        n = max(2, n)
+    else:
+        n = max(1, int(v))
+    return {"max_procs": n, "mem_total_gb": round(total, 1), "mem_budget_gb": round(budget, 1),
+            "mem_headroom_gb": head, "cpu_count": os.cpu_count()}
+
+
 def _key(*parts) -> str:
     return hashlib.sha1(json.dumps(parts, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
@@ -34,6 +117,8 @@ class Pipeline:
         self.sensors = [s.strip() for s in args.sensors.split(",") if s.strip()]
         self.bags = {f"b{i}": str(Path(b).resolve()) for i, b in enumerate(args.bags)}
         self.out = Path(args.out) if getattr(args, "out", None) else None
+        self.workers = worker_plan(cfg)
+        cfg["resources"]["max_procs"] = self.workers["max_procs"]
         snap = self.ws.root / "config_snapshot.json"
         snap.write_text(json.dumps(cfg, indent=1, default=str))
         self.snap = snap
@@ -44,11 +129,60 @@ class Pipeline:
         # one budget of worker processes for the whole run: the RGB and thermal chains (and the RGB
         # tracker during the LiDAR odometry) run in parallel threads and share it
         self._sem = threading.BoundedSemaphore(self.cfg["resources"]["max_procs"])
+        # set when the extraction stage is over; until then the LiDAR odometry and the trackers start a
+        # window as soon as that window is extracted (run() streams extract -> LO / tracks)
+        self._extract_over = threading.Event()
+        self._extract_over.set()
+        self._demand = {}              # runner thread -> (priority, has a startable task, its memory GB)
+        self._last_grant = {}          # runner thread -> time of its last worker slot
+        self._glock = threading.Lock()
+        self._mem_running = 0.0        # sum of the memory estimates of the running workers (GB)
 
     # ================================================================== task runner
+    def _fits(self, mem: float) -> bool:
+        """RAM admission: the running workers' estimates + this one stay within the budget (RAM - headroom),
+        and the RAM the OS reports free now keeps the headroom (other programs on the machine). One
+        worker always runs."""
+        if self._mem_running <= 0:
+            return True
+        if self._mem_running + mem > self.workers["mem_budget_gb"]:
+            return False
+        return mem_available_gb() - mem >= self.workers["mem_headroom_gb"]
+
+    def _grant(self, me, priority: int, want: bool, mem: float = 1.0) -> bool:
+        """One worker slot for runner `me`: among the runners with a startable task that fits in RAM, only
+        the one of the highest priority (the least recently served among equals) gets it, so no runner
+        re-takes the slot it just freed while another one waits."""
+        with self._glock:
+            self._demand[me] = (priority, want, mem)
+            if not want:
+                return False
+            best = max(((p, -self._last_grant.get(k, 0.0), k) for k, (p, w, m) in self._demand.items()
+                        if w and self._fits(m)), default=None)
+            if best is None or best[2] != me or not self._sem.acquire(blocking=False):
+                return False
+            self._last_grant[me] = time.monotonic()
+            self._mem_running += mem
+            return True
+
+    def task_mem_gb(self, name: str, args: dict) -> float:
+        """Peak private memory of a worker (GB; measured on the 25-window 2026-09-24 regression, see
+        resources.task_mem_gb): a constant, or a + b x windows for the solves."""
+        t = self.cfg["resources"].get("task_mem_gb", {})
+        e = t.get(name, t.get("default", 2.0))
+        if isinstance(e, (list, tuple)):
+            e = e[0] + e[1] * len(args.get("segs") or args.get("wins") or [])
+        if name == "rgb_tracks" and args.get("cams"):
+            e *= len(args["cams"])
+        return float(e)
+
     def run_tasks(self, stage: str, tasks, nproc: int | None = None, threads: int | None = None,
-                  allow_fail: bool = False):
-        """tasks: [(key, task_name, args)] -> {key: result dict}. Runs `python -m nontarget_cal.worker`."""
+                  allow_fail: bool = False, ready=None, priority: int = 1, nice: int = 0):
+        """tasks: [(key, task_name, args)] -> {key: result dict}. Runs `python -m nontarget_cal.worker`.
+        ready(args) -> bool: a task is started only once its inputs exist (streaming from the extraction
+        or the LiDAR odometry); tasks are otherwise started in list order. priority: while a runner of
+        higher priority has a startable task, this one does not take a free worker slot (extraction 3,
+        LiDAR odometry 2, which every solve waits for, the rest 1 - trackers and solves share the slots)."""
         nproc = min(nproc or self.cfg["resources"]["max_procs"], self.cfg["resources"]["max_procs"])
         threads = threads or self.cfg["resources"]["threads_per_proc"]
         tdir = self.ws.root / "tasks" / stage
@@ -57,7 +191,9 @@ class Pipeline:
         env = dict(os.environ, OMP_NUM_THREADS=str(threads), OPENBLAS_NUM_THREADS=str(threads),
                    MKL_NUM_THREADS=str(threads), OPENCV_NUM_THREADS=str(threads), PYTHONUNBUFFERED="1",
                    NONTARGET_LO_THREADS=str(self.cfg["resources"].get("lo_threads", threads)),
-                   NONTARGET_TIE_THREADS=str(self.cfg["resources"].get("tie_threads", 3)))
+                   NONTARGET_TIE_THREADS=str(self.cfg["resources"].get("tie_threads", 3)),
+                   NONTARGET_LO_KERNEL=str(self.cfg["resources"].get("lo_kernel") or "numpy"),
+                   NONTARGET_TIE_CACHE_GB=str(self.cfg["resources"].get("tie_cache_gb", 3)))
         if self.cfg["resources"].get("gpu") == "off":
             env["CUDA_VISIBLE_DEVICES"] = ""
         results, pending, running = {}, list(tasks), {}
@@ -71,9 +207,17 @@ class Pipeline:
                 done += 1
         if done:
             self.ev.progress(stage, done, total, "cached")
+        import threading
+        me = threading.get_ident()
         while pending or running:
-            while pending and len(running) < nproc and self._sem.acquire(blocking=False):
-                key, name, args = pending.pop(0)
+            while True:
+                nxt = next((t for t in pending if ready is None or ready(t[2])), None) if len(running) < nproc else None
+                # demand: this runner could start a task now (it has one and is below its own nproc)
+                mem = self.task_mem_gb(nxt[1], nxt[2]) if nxt is not None else 0.0
+                if not self._grant(me, priority, nxt is not None, mem):
+                    break
+                pending.remove(nxt)
+                key, name, args = nxt
                 spec = {"task": name, "workdir": str(self.ws.root), "config": str(self.snap), "args": args,
                         "result": str(tdir / f"{key}.result.json"), "log": str(ldir / f"{key}.log")}
                 if self.viz is not None:
@@ -84,15 +228,20 @@ class Pipeline:
                 rf = tdir / f"{key}.result.json"
                 if rf.exists():
                     rf.unlink()
-                p = subprocess.Popen([sys.executable, "-m", "nontarget_cal.worker", str(sf)], env=env,
+                # nice > 0: the OS gives these workers' CPU to the others first (the trackers yield to
+                # the LiDAR odometry, which gates both solve chains); no effect on any result
+                pre = (lambda n=int(nice): os.nice(n)) if nice > 0 else None
+                p = subprocess.Popen([sys.executable, "-m", "nontarget_cal.worker", str(sf)], env=env, preexec_fn=pre,
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                running[key] = (p, name, time.time())
+                running[key] = (p, name, time.time(), mem)
             time.sleep(1.0)
             for key in list(running):
-                p, name, t0 = running[key]
+                p, name, t0, mem_ = running[key]
                 if p.poll() is None:
                     continue
                 del running[key]
+                with self._glock:
+                    self._mem_running -= mem_
                 self._sem.release()
                 rf = tdir / f"{key}.result.json"
                 r = read_json(rf) if rf.exists() else {"ok": False, "error": f"worker exited with {p.returncode}"}
@@ -106,6 +255,8 @@ class Pipeline:
                     self.ev.log(f"task {stage}/{key} FAILED: {r.get('error')}\n{tail}")
                     self.ev.emit("task_failed", stage=stage, task=key, error=r.get("error"), log=str(lf))
                 self.ev.progress(stage, done, total, f"{key} {'ok' if r.get('ok') else 'FAILED'} ({time.time() - t0:.0f} s)")
+        with self._glock:
+            self._demand.pop(me, None)
         failed = [k for k, r in results.items() if not r.get("ok")]
         if failed and not allow_fail:
             raise RuntimeError(f"{stage}: {len(failed)} task(s) failed: {failed[:5]} (logs in {ldir})")
@@ -186,6 +337,14 @@ class Pipeline:
 
     # ================================================================== 3: windows + extraction
     def stage_extract(self):
+        self.stage_windows()
+        self._stage_extract()
+
+    def extracted(self, win: str) -> bool:
+        """Window `win` is extracted (or the extraction is over: a task then fails on missing data)."""
+        return (self.ws.seg_dir(win) / "source.json").exists() or self._extract_over.is_set()
+
+    def stage_windows(self):
         from .extract import bag_zero_ns
         from .windows import plan_windows
         names = self.names()
@@ -212,7 +371,10 @@ class Pipeline:
                                                     for w in plan["windows"]))
             self.ws.mark("windows", key)
             self.ws.invalidate("extract", "lo", "rgb", "thermal", "validation", "outputs")
+
+    def _stage_extract(self):
         plan = self.plan()
+        names = self.names()
         key = _key(plan, names)
         if self.ws.done("extract", key):
             self.ev.emit("stage_skip", stage="extract")
@@ -228,7 +390,7 @@ class Pipeline:
                 tasks.append((w["name"], "extract_window", {"bag_path": self.bags[b], "bag_id": b, "win": w,
                               "names": {k: names[b][k] for k in ("rgb", "thermal")}, "zero_ns": zeros[b],
                               "rgb": "rgb" in self.sensors, "thermal": bool(w.get("thermal_extract"))}))
-            self.run_tasks("extract", tasks, nproc=2, threads=2)
+            self.run_tasks("extract", tasks, nproc=2, threads=2, priority=3)
             info["thermal_disk_gb"] = round(dir_size_gb(self.ws.root / "thermal16"), 2)
         self.ws.mark("extract", key)
 
@@ -242,7 +404,10 @@ class Pipeline:
             return self.kept()
         with self.ev.stage("lo", disk_path=self.ws.root / "lo") as info:
             res = self.run_tasks("lo", [(w, "lo_chain", {"win": w}) for w in wins],
-                                 threads=self.cfg["resources"]["kiss_threads"], allow_fail=True)
+                                 threads=self.cfg["resources"]["kiss_threads"], allow_fail=True,
+                                 ready=lambda a: self.extracted(a["win"]), priority=2)
+            if getattr(self, "_extract_err", None) is not None:
+                raise self._extract_err
             c = self.cfg["lo"]["check"]
             q = {"windows": {}, "kept": [], "dropped": []}
             for w in wins:
@@ -284,12 +449,22 @@ class Pipeline:
     def _rgb_opts(self, nwin, first=False):
         s = self.cfg["rgb"]["solve"]
         big = nwin > s["big_windows"]
-        return {"free": s["free"], "ties": s["ties"], "tie_sigma": s["tie_sigma"], "pos_prior": s["pos_prior"],
+        tm = s.get("time", {}) or {}
+        free = list(s["free"])
+        if tm.get("enabled") and not first:          # not in the first board-free pass (design angles)
+            free += ["dt"] + (["rs"] if tm.get("rolling_shutter") else [])
+        return {"free": free, "dt_prior": float(tm.get("dt_prior_ms", 50.0)) * 1e-3,
+                "rs_prior": float(tm.get("rs_prior_ms", 10.0)) * 1e-3, "img_h": float(self.cfg["cameras"]["rgb_size"][1]),
+                "ties": s["ties"], "tie_sigma": s["tie_sigma"], "pos_prior": s["pos_prior"],
                 "f_prior": s["f_prior"], "pp_prior": s["pp_prior"], "k_prior": s["k_prior"], "huber": s["huber"],
                 "iters": s["iters_first_pass"] if first else s["iters"], "min_len": s["min_len"],
                 "min_parallax": s["min_parallax"], "max_dist": s["max_dist"],
                 "max_tracks": s["max_tracks_big"] if big else s["max_tracks"], "step": s["step_big"] if big else s["step"],
-                "init": "nominal" if first else "from"}
+                "init": "nominal" if first else "from", "step_tol": s.get("step_tol"),
+                # residual-study options (README section 10); the first board-free pass keeps whole tracks
+                "seg_span_s": None if first else s.get("seg_span_s"),
+                "frame_corr": dict(s["frame_corr"]) if (s.get("frame_corr") or {}).get("enabled") else None,
+                "obs_weight": dict(s["obs_weight"]) if (s.get("obs_weight") or {}).get("enabled") else None}
 
     def _win_seconds(self, wins):
         pl = {w["name"]: w for w in self.plan()["windows"]}
@@ -373,8 +548,14 @@ class Pipeline:
             fo = self._rgb_opts(len(final_wins))
             if ct.get("enabled"):
                 fo["cross"] = str(self.ws.root / "rgb" / "crosstime" / "merges.npz")
-            self.run_tasks("rgb_final", [("final", "rgb_solve", {"name": "final", "segs": final_wins, "cams": cams,
-                           "start": start, "opts": fo})], nproc=1)
+            # the validation halves start from the same start as the final (validation.rgb_halves_start:
+            # start): they run next to it instead of after it
+            halves = self._rgb_half_tasks(final_wins, start, None) if self._halves_next_to_final() else []
+            with self._parallel() as par:
+                if halves:
+                    par(lambda: self.run_tasks("validation", halves, nproc=2, threads=self.cfg["resources"]["solver_threads"]))
+                self.run_tasks("rgb_final", [("final", "rgb_solve", {"name": "final", "segs": final_wins, "cams": cams,
+                               "start": start, "opts": fo})], nproc=1)
             fin = read_json(self.ws.root / "rgb" / "final" / "result.json")
             summ.update({"final": str(self.ws.root / "rgb" / "final" / "result.json"), "windows": final_wins,
                          "bags": use_bags, "start": start, "reproj_median_px": fin["reproj_median_px"], "n_obs": fin["n_obs"]})
@@ -391,13 +572,28 @@ class Pipeline:
         wins = wins if wins is not None else [w["name"] for w in plan["windows"]]
         cams = list(self.cfg["cameras"]["rgb"])
         bag_of = {w["name"]: w["bag_id"] for w in plan["windows"]}
+        if all(self.ws.tracks(w, c).exists() for w in wins for c in cams):
+            return
         with self.ev.stage("rgb_tracks", disk_path=self.ws.root / "tracks"):
             masks = Path(self.cfg["paths"]["masks_dir"])
+            if any(not (masks / f"{c}.png").exists() for c in cams):
+                self._extract_over.wait()          # a mask built from the data needs every window
             self._ensure_masks(cams, wins, bag_of)
-            tasks = [(f"{w}__{c}", "rgb_tracks", {"win": w, "cam": c, "bag_id": bag_of[w],
-                                                  "mask": str(self.ws.root / "masks" / f"{c}.png") if not (masks / f"{c}.png").exists() else str(masks / f"{c}.png")})
-                     for w in wins for c in cams]
-            self.run_tasks("rgb_tracks", tasks, threads=2)
+            mk = {c: str(self.ws.root / "masks" / f"{c}.png") if not (masks / f"{c}.png").exists() else str(masks / f"{c}.png")
+                  for c in cams}
+            k = max(1, int(self.cfg["resources"].get("track_cams_per_task", 1)))
+            todo = {w: [c for c in cams if not self.ws.tracks(w, c).exists()] for w in wins}
+            if k == 1:
+                tasks = [(f"{w}__{c}", "rgb_tracks", {"win": w, "cam": c, "bag_id": bag_of[w], "mask": mk[c]})
+                         for w in wins for c in cams]
+            else:
+                # several cameras of a window per worker, tracked in threads (same tracks; more cores per worker)
+                tasks = [(f"{w}__{'+'.join(g)}", "rgb_tracks", {"win": w, "cam": None, "bag_id": bag_of[w], "mask": None,
+                          "cams": g, "masks": [mk[c] for c in g]})
+                         for w in wins for g in (todo[w][i:i + k] for i in range(0, len(todo[w]), k))]
+            self.run_tasks("rgb_tracks", tasks, threads=self.cfg["resources"].get("track_threads", 2),
+                           nice=int(self.cfg["resources"].get("tracks_nice", 0)),
+                           ready=lambda a: self.extracted(a["win"]))
 
     def _ensure_masks(self, cams, wins, bag_of):
         """Ego-body masks: packaged ones for this vehicle; for a camera without one, build it from the
@@ -423,7 +619,7 @@ class Pipeline:
         o = {k: d[k] for k in ("tie_sigma", "min_len", "step", "max_tracks", "max_obs", "min_parallax", "max_dist",
                                "huber", "iters", "pos_prior", "f_prior", "pp_prior", "k_prior")}
         o.update({"free": p["free"], "ties": p.get("ties", False), "time": t["time_model"], "dt_mode": "seg",
-                  "rounds": p.get("rounds", d["rounds"])})
+                  "rounds": p.get("rounds", d["rounds"]), "step_tol": d.get("step_tol")})
         if part == "lens":
             o["min_dist"] = p["min_dist"]
         if p.get("edges"):
@@ -472,15 +668,16 @@ class Pipeline:
             cached_result(self, "thermal")
             return read_json(self.ws.root / "thermal" / "summary.json")
         summ = {"windows": wins}
-        with self.ev.stage("thermal_tracks", disk_path=self.ws.root / "thermal" / "tracks"):
-            self.run_tasks("thermal_tracks", [(f"{w}__{c}", "thermal_tracks", {"win": w, "cam": c}) for w in wins for c in cams],
-                           threads=1)
+        if not all(self.ws.thermal_tracks(w, c).exists() for w in wins for c in cams):
+            with self.ev.stage("thermal_tracks", disk_path=self.ws.root / "thermal" / "tracks"):
+                self.run_tasks("thermal_tracks", [(f"{w}__{c}", "thermal_tracks", {"win": w, "cam": c}) for w in wins for c in cams],
+                               threads=1)
         with self.ev.stage("thermal_solve", disk_path=self.ws.root / "thermal") as info:
             start, from_design = self._thermal_start(cams, rgb_res)
             sp = str(self.ws.root / "thermal" / "start.json")
             write_json(sp, start)
             self.run_tasks("thermal_lens", [("lens", "thermal_solve", {"name": "lens", "segs": wins, "start": {"path": sp},
-                           "opts": self._thermal_opts("lens"), "rgb_result": rgb_res})], nproc=1)
+                           "opts": dict(self._thermal_opts("lens"), lidar_report=False), "rgb_result": rgb_res})], nproc=1)
             lens = str(self.ws.root / "thermal" / "lens" / "result.json")
             self._check_thermal_dt(lens)
             self.run_tasks("thermal_edges", [(w, "thermal_edges", {"win": w, "calib": lens}) for w in wins], threads=1)
@@ -488,7 +685,13 @@ class Pipeline:
                            "opts": dict(self._thermal_opts("pos"), edges=True, edge_weight=1.0, edge_sigma=1.0,
                                         edge_maxdepth=40.0, edge_mindepth=1.5), "rgb_result": rgb_res})], nproc=1)
             pos = str(self.ws.root / "thermal" / "pos_e" / "result.json")
-            self.run_tasks("thermal_links", [("links", "thermal_links", {"name": "links", "segs": wins, "calib": pos})], nproc=1)
+            # one task per window (independent; merged in window order = the single-task result)
+            links = self.ws.root / "thermal" / "links" / "links.npz"
+            if not links.exists():
+                self.run_tasks("thermal_links", [(f"links_{w}", "thermal_links", {"name": f"links_{w}", "segs": [w],
+                               "calib": pos, "part": True}) for w in wins], threads=2)
+                from .thermal.stereo import merge_links
+                merge_links([links.parent / "parts" / f"links_{w}.npz" for w in wins], links)
             fo = self._thermal_opts("final")
             if self.cfg["thermal"]["final"].get("stereo"):
                 fo["stereo"] = "links"
@@ -512,6 +715,27 @@ class Pipeline:
         self.ws.mark("thermal", key)
         self.ws.invalidate("validation", "outputs")
         return summ
+
+    def stage_thermal_tracks_early(self):
+        """Thermal KLT needs a window's thermal frames and its LiDAR odometry (static-track test), not the
+        other windows': every thermal candidate window is tracked as soon as its LO is done, next to the
+        LO of the others (stage_thermal then finds the tracks cached). A window whose LO failed fails
+        here too and is left to stage_thermal (which does not use it)."""
+        if self.ws.done("thermal"):
+            return
+        # the windows thermal_windows() can pick: LO rotation >= thermal_min_rotation_deg (0.8 x that when
+        # windows are short). The plan's INS yaw rotation stands in for the LO's 3-D rotation, which is
+        # 10-40 % larger (2026-09-24 bag); a window missed here is tracked by stage_thermal
+        thr = 0.7 * self.cfg["windows"]["thermal_min_rotation_deg"]
+        wins = [w["name"] for w in self.plan()["windows"] if w.get("thermal_extract") and w["rotation_deg"] >= thr]
+        cams = list(self.cfg["cameras"]["thermal"])
+        if all(self.ws.thermal_tracks(w, c).exists() for w in wins for c in cams):
+            return
+        lo_over = getattr(self, "_lo_over", None)
+        with self.ev.stage("thermal_tracks", disk_path=self.ws.root / "thermal" / "tracks"):
+            self.run_tasks("thermal_tracks", [(f"{w}__{c}", "thermal_tracks", {"win": w, "cam": c}) for w in wins for c in cams],
+                           threads=1, allow_fail=True, priority=1, nice=int(self.cfg["resources"].get("tracks_nice", 0)),
+                           ready=lambda a: self.ws.lo("ref", a["win"]).exists() or (lo_over is not None and lo_over.is_set()))
 
     def _check_thermal_dt(self, path, tol_s=0.03):
         """Every window's time offset must agree with the median to tol_s (per-window scatter is ~2 ms):
@@ -625,18 +849,33 @@ class Pipeline:
         parked = [p["name"] for p in plan["parked"] if (self.ws.seg_dir(p["name"]) / "source.json").exists()]
         tasks, ho = [], []
         if len(A) and len(B):
-            for h, ws_ in (("A", A), ("B", B)):
-                tasks.append((f"rgb_half{h}", "rgb_solve", {"name": f"half{h}", "segs": ws_, "cams": cams,
-                              "start": {"kind": "result", "path": fin}, "opts": self._rgb_opts(len(ws_))}))
-            # held-out: the calibration of one half held on the other half's windows
+            tasks += self._rgb_half_tasks(wins, rs.get("start"), fin)
+            # held-out: the calibration of one half held on the other half's windows, measured on WHOLE tracks
+            # without the residual-study options (a yardstick that does not change with them)
             for h, other, segs in (("A", "B", B), ("B", "A", A)):
                 ho.append((f"rgb_heldout_{h}on{other}", "rgb_solve", {"name": f"heldout_{h}on{other}", "segs": segs, "cams": cams,
-                           "start": {"kind": "result", "path": fin}, "opts": dict(self._rgb_opts(len(segs)), ties=False),
+                           "start": {"kind": "result", "path": fin},
+                           "opts": dict(self._rgb_opts(len(segs)), ties=False, seg_span_s=None, frame_corr=None, obs_weight=None),
                            "held": str(self.ws.root / "rgb" / f"half{h}" / "result.json")}))
         edge_wins = wins[:: max(1, len(wins) // 6)][:6]
         tasks.append(("rgb_edges", "rgb_edges", {"calib": fin, "wins": edge_wins, "parked": parked, "cams": cams,
                       "out": str(self.ws.root / "validation" / "rgb_edges.json"), "vote": self.cfg["validation"]["vote"]}))
         return tasks, ho
+
+    def _halves_next_to_final(self) -> bool:
+        v = self.cfg["validation"]
+        return bool(v["halves"]) and v.get("rgb_halves_start", "final") == "start"
+
+    def _rgb_half_tasks(self, wins, start, fin):
+        """The two disjoint halves (every other window). Start: the final result (validated order, after the
+        final), or with validation.rgb_halves_start = start the final's own start (run next to the final)."""
+        A, B = wins[0::2], wins[1::2]
+        if not (len(A) and len(B)):
+            return []
+        cams = list(self.cfg["cameras"]["rgb"])
+        st = start if (self._halves_next_to_final() and start) else {"kind": "result", "path": fin}
+        return [(f"rgb_half{h}", "rgb_solve", {"name": f"half{h}", "segs": ws_, "cams": cams, "start": st,
+                 "opts": self._rgb_opts(len(ws_))}) for h, ws_ in (("A", A), ("B", B))]
 
     def _val_thermal_tasks(self):
         ts = read_json(self.ws.root / "thermal" / "summary.json")
@@ -650,7 +889,7 @@ class Pipeline:
         if len(TA) and len(TB):
             tasks += self._thermal_half_tasks(ts["lens"], rgb_res)
             for h, other, segs in (("A", "B", TB), ("B", "A", TA)):
-                o = dict(self._thermal_opts("final"), free=["dt"], edges=False, ties=False)
+                o = dict(self._thermal_opts("final"), free=["dt"], edges=False, ties=False, lidar_report=False)
                 ho.append((f"thermal_heldout_{h}on{other}", "thermal_solve", {"name": f"heldout_{h}on{other}", "segs": segs,
                            "start": {"path": str(self.ws.root / "thermal" / f"half{h}" / "result.json")}, "opts": o,
                            "rgb_result": rgb_res, "held": True}))
@@ -811,15 +1050,19 @@ class Pipeline:
         from .viz_pipeline import start, validation
         start(self)
         self.ev.emit("run_start", version=__version__, bags=self.bags, sensors=self.sensors, mode=self.a.mode,
-                     workdir=str(self.ws.root), out=str(self.out), run_id=self.viz_run_id)
+                     workdir=str(self.ws.root), out=str(self.out), run_id=self.viz_run_id, workers=self.workers)
+        self.ev.log(f"workers: {self.workers}")
         write_json(self.ws.root / "run.json", {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(self.a).items()})
         self.stage_check(force=self.a.force)
-        self.stage_extract()
-        # Three threads share the worker-process budget: the RGB tracker needs only the images, so it
-        # runs next to the LiDAR odometry; the RGB chain (solves + validation solves) and the thermal
-        # chain each start as soon as the LiDAR odometry is done.
+        self.stage_windows()
+        # Threads share the worker-process budget. The extraction streams: a window's LiDAR odometry and
+        # RGB tracks start as soon as that window is extracted (the RGB tracker needs only the images),
+        # its thermal tracks as soon as its LiDAR odometry is done; the RGB chain (solves + validation
+        # solves) and the thermal chain each start when the LiDAR odometry of all windows is done.
         import threading
         lo_done, lo_ok = threading.Event(), []
+        self._lo_over = lo_done
+        self._extract_over.clear()
 
         def after_lo(fn):
             def w():
@@ -827,11 +1070,22 @@ class Pipeline:
                 if lo_ok:
                     fn()
             return w
+
+        def extract():
+            try:
+                self._stage_extract()
+            except BaseException as ex:  # noqa
+                self._extract_err = ex
+                raise
+            finally:
+                self._extract_over.set()
         with self._parallel() as par:
+            par(extract)
             if "rgb" in self.sensors:
                 par(lambda: (self.stage_rgb_tracks(), after_lo(lambda: (self.stage_rgb(), self.run_val_rgb()))()))
             if "thermal" in self.sensors:
-                par(after_lo(lambda: (self.stage_thermal(), self.run_val_thermal())))
+                par(lambda: (self.stage_thermal_tracks_early(),
+                             after_lo(lambda: (self.stage_thermal(), self.run_val_thermal()))()))
             try:
                 self.stage_lo()
                 from .viz_pipeline import axes

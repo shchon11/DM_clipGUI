@@ -1,22 +1,32 @@
 """Rig bundle adjustment with the trajectory FIXED from LiDAR odometry.
 
 Unknowns
-  per camera c (NP = 13):  w (3)   rotation perturbation of R_LC (left, LiDAR axes)
+  per camera c (NP = 13, NPT = 15 with the time model):  w (3)   rotation perturbation of R_LC (left, LiDAR axes)
                            c (3)   camera centre in the LiDAR frame, metres
                            logF    common scale of (fx, fy)  -> aspect ratio kept
                            cx, cy  principal point, px
                            k1 k2 k3  Kannala-Brandt (OpenCV fisheye) radial terms (k4 = 0)
                            logA    fy/fx aspect change (normally held: square pixels)
+                           dt      time offset of the camera's frames, s (optional, see below)
+                           rs      row readout time (rolling shutter), s over the image height (optional)
   per landmark: X (3), world frame of its segment (the LO world)
 
 Observation  uv = KB( R_LC^T ( R_WL(t)^T (X - p_WL(t)) - c ) )
              with T_WL(t) from the refined LiDAR odometry at the image mid-exposure time.
 
+Optional time model (Obs.tm set; off = the validated numbers, bit for bit): the capture time of an
+observation in image row v is  t = t_frame + dt_c + rs_c * (v / H - 1/2).  The pose table holds T_WL at
+t_frame + dt0 (dt0 = the linearisation point, one per pose = per camera frame); around it the LiDAR
+pose is first order in d = dt_c - dt0 + rs_c (v/H - 1/2) with the trajectory's body angular rate w_L and
+world velocity v_W:  XL = (I - d [w_L]x) R_WL^T (X - p_WL) - d R_WL^T v_W.  The caller re-evaluates the
+pose table at the new dt between solves (solve.retime), so only the change within one solve and the
+rolling-shutter row offsets are first order.
+
 Optional LiDAR tie: landmark-to-plane residuals n.(X - q) / sigma against thin planar
 patches of the LiDAR map of the same segment (built from the same odometry).
 
 Solver: Levenberg-Marquardt, landmarks eliminated by the Schur complement (3x3 blocks),
-reduced camera system dense (C*NP). Huber on pixels, Cauchy on planes.
+reduced camera system dense (C*NP, C*NPT with the time model). Huber on pixels, Cauchy on planes.
 Conventions: T_a_b maps b -> a; L = os_lidar; C = OpenCV optical (x right, y down, z fwd).
 """
 from __future__ import annotations
@@ -27,8 +37,9 @@ import numpy as np
 import torch
 
 DT = torch.float64
-NP = 13
-PNAMES = ["wx", "wy", "wz", "cx_L", "cy_L", "cz_L", "logF", "cx", "cy", "k1", "k2", "k3", "logA"]
+NP = 13            # parameters per camera without the time model (the validated layout, bit for bit)
+NPT = 15           # with the time model (dt, rs appended)
+PNAMES = ["wx", "wy", "wz", "cx_L", "cy_L", "cz_L", "logF", "cx", "cy", "k1", "k2", "k3", "logA", "dt", "rs"]
 
 
 def skew(v: torch.Tensor) -> torch.Tensor:
@@ -107,6 +118,21 @@ class Cameras:
         self.logA = torch.zeros(len(names), dtype=DT)
         self.cx, self.cy = I[:, 2].clone(), I[:, 3].clone()
         self.k = I[:, 4:7].clone()
+        self.np_ = NP                                      # NPT once the time model is enabled
+        self.dt = torch.zeros(len(names), dtype=DT)       # s (time model; 0 when unused)
+        self.rs = torch.zeros(len(names), dtype=DT)
+        self.theta0 = self.vector().clone()
+
+    def enable_time(self) -> None:
+        """Append dt, rs to the parameter vector (NPT layout)."""
+        self.np_ = NPT
+        self.theta0 = self.vector().clone()
+
+    def set_time(self, dt, rs=None) -> None:
+        """Initial time offsets (C,) s; the prior centre (theta0) moves with them."""
+        self.dt = torch.as_tensor(np.asarray(dt, np.float64), dtype=DT).clone()
+        if rs is not None:
+            self.rs = torch.as_tensor(np.asarray(rs, np.float64), dtype=DT).clone()
         self.theta0 = self.vector().clone()
 
     @property
@@ -115,12 +141,15 @@ class Cameras:
 
     def vector(self) -> torch.Tensor:
         """Parameter values in the NP layout (rotation part = 0: perturbations are relative)."""
-        v = torch.zeros(self.C, NP, dtype=DT)
+        v = torch.zeros(self.C, self.np_, dtype=DT)
         v[:, 3:6] = self.c
         v[:, 6] = self.logF
         v[:, 7], v[:, 8] = self.cx, self.cy
         v[:, 9:12] = self.k
         v[:, 12] = self.logA
+        if self.np_ > NP:
+            v[:, 13] = self.dt
+            v[:, 14] = self.rs
         return v
 
     def intr(self):
@@ -130,8 +159,9 @@ class Cameras:
     def copy(self) -> "Cameras":
         o = Cameras.__new__(Cameras)
         o.names = list(self.names)
-        for k in ("R", "c", "fx0", "fy0", "logF", "logA", "cx", "cy", "k", "theta0"):
+        for k in ("R", "c", "fx0", "fy0", "logF", "logA", "cx", "cy", "k", "dt", "rs", "theta0"):
             setattr(o, k, getattr(self, k).clone())
+        o.np_ = self.np_
         return o
 
     def apply(self, d: torch.Tensor) -> None:
@@ -142,6 +172,9 @@ class Cameras:
         self.cy = self.cy + d[:, 8]
         self.k = self.k + d[:, 9:12]
         self.logA = self.logA + d[:, 12]
+        if d.shape[1] > NP:
+            self.dt = self.dt + d[:, 13]
+            self.rs = self.rs + d[:, 14]
 
     def T_L_C(self) -> np.ndarray:
         T = np.tile(np.eye(4), (self.C, 1, 1))
@@ -156,15 +189,20 @@ class Cameras:
 
 class Obs:
     """Observations: cam (N), lm (N), uv (N,2) and a pose index pidx (N) into a shared table
-    of LiDAR poses PR (K,3,3), Pp (K,3) (one per camera frame): RWL/pWL are gathered lazily."""
+    of LiDAR poses PR (K,3,3), Pp (K,3) (one per camera frame): RWL/pWL are gathered lazily.
+    tm (optional, time model): dict of pose-level tensors W (K,3) body angular rate rad/s, V (K,3) world
+    velocity m/s, T0 (K,) the dt the pose table was evaluated at, and the image height H."""
 
-    def __init__(self, cam, lm, uv, pidx, PR, Pp):
+    def __init__(self, cam, lm, uv, pidx, PR, Pp, tm=None):
         self.cam = torch.as_tensor(cam, dtype=torch.long)
         self.lm = torch.as_tensor(lm, dtype=torch.long)
         self.uv = torch.as_tensor(uv, dtype=DT)
         self.pidx = torch.as_tensor(pidx, dtype=torch.long)
         self.PR = torch.as_tensor(PR, dtype=DT)
         self.Pp = torch.as_tensor(Pp, dtype=DT)
+        self.tm = tm
+        self.poses = None       # pose-table bookkeeping of the caller (solve.retime); shared by subsets
+        self.wt = None          # optional per-observation weight (N,) (1/variance, relative; solve obs_weight)
 
     @property
     def RWL(self):
@@ -179,17 +217,33 @@ class Obs:
 
     def subset(self, m) -> "Obs":
         m = torch.as_tensor(m)
-        return Obs(self.cam[m], self.lm[m], self.uv[m], self.pidx[m], self.PR, self.Pp)
+        o = Obs(self.cam[m], self.lm[m], self.uv[m], self.pidx[m], self.PR, self.Pp, self.tm)
+        o.poses = self.poses
+        o.wt = None if self.wt is None else self.wt[m]
+        return o
 
     def chunk(self, sl) -> "Obs":
-        return Obs(self.cam[sl], self.lm[sl], self.uv[sl], self.pidx[sl], self.PR, self.Pp)
+        o = Obs(self.cam[sl], self.lm[sl], self.uv[sl], self.pidx[sl], self.PR, self.Pp, self.tm)
+        o.wt = None if self.wt is None else self.wt[sl]
+        return o
+
+    def time_delta(self, cams):
+        """(d (N,) s from the pose table's time, row factor v/H - 1/2 (N,)); time model only."""
+        rowf = self.uv[:, 1] / self.tm["H"] - 0.5
+        return cams.dt[self.cam] - self.tm["T0"][self.pidx] + cams.rs[self.cam] * rowf, rowf
 
 
 def project(cams: Cameras, obs: Obs, X: torch.Tensor, jac: bool = True, chunk=None):
     """Residuals (N,2) and, if jac, J_c (N,2,NP), J_l (N,2,3)."""
     ci, li = obs.cam, obs.lm
     Xw = X[li]
-    XL = torch.einsum("nji,nj->ni", obs.RWL, Xw - obs.pWL)
+    RWL = obs.RWL
+    XL = torch.einsum("nji,nj->ni", RWL, Xw - obs.pWL)
+    if obs.tm is not None:
+        d, rowf = obs.time_delta(cams)
+        w = obs.tm["W"][obs.pidx]
+        gL = torch.cross(XL, w, dim=1) - torch.einsum("nji,nj->ni", RWL, obs.tm["V"][obs.pidx])   # dXL/dd
+        XL = XL + d[:, None] * gL
     y = XL - cams.c[ci]
     RLC = cams.R[ci]
     Xc = torch.einsum("nji,nj->ni", RLC, y)
@@ -199,12 +253,19 @@ def project(cams: Cameras, obs: Obs, X: torch.Tensor, jac: bool = True, chunk=No
         return uv - obs.uv, Xc
     uv, JX, Ji = kb_project(Xc, fx, fy, cx, cy, k1, k2, k3)
     RLCt = RLC.transpose(1, 2)
-    dXc_dX = RLCt @ obs.RWL.transpose(1, 2)
+    if obs.tm is None:
+        dXc_dX = RLCt @ RWL.transpose(1, 2)
+    else:
+        dXc_dX = RLCt @ (RWL.transpose(1, 2) - d[:, None, None] * (skew(w) @ RWL.transpose(1, 2)))
     Jl = JX @ dXc_dX
-    Jc = torch.zeros(len(ci), 2, NP, dtype=DT)
+    Jc = torch.zeros(len(ci), 2, cams.np_, dtype=DT)
     Jc[:, :, 0:3] = JX @ (RLCt @ skew(y))
     Jc[:, :, 3:6] = -(JX @ RLCt)
     Jc[:, :, 6:13] = Ji
+    if obs.tm is not None and cams.np_ > NP:
+        g = torch.einsum("nij,nj->ni", JX, torch.einsum("nji,nj->ni", RLC, gL))     # d uv / d t
+        Jc[:, :, 13] = g
+        Jc[:, :, 14] = g * rowf[:, None]
     return uv - obs.uv, Jc, Jl, Xc
 
 
@@ -227,8 +288,26 @@ def huber_w(e, d):
     return torch.where(a <= d, torch.ones_like(a), d / a)
 
 
+KERNEL = ["torch"]    # "torch" (the validated batched tensors) or "numba" (fused per-observation kernels, fastba.py)
+
+
+def _fast(X, obs=None, cams=None, weights=True):
+    """The fused kernels (fastba.py) implement the validated 13-parameter model on the pose table
+    (frame_corr lives in the pose table, so it is covered). The time model (Obs.tm, NPT layout) and,
+    for the cost / normal equations, observation weights (Obs.wt) run the torch path."""
+    if KERNEL[0] != "numba" or X.is_cuda:
+        return False
+    if obs is not None and (obs.tm is not None or (weights and obs.wt is not None)):
+        return False
+    return cams is None or cams.np_ == NP
+
+
 def project_all(cams, obs, X, chunk=1_000_000):
     """Residuals and camera-frame points for all observations, chunked (no Jacobians)."""
+    if _fast(X, obs, cams, weights=False):
+        from . import fastba
+        r, _, Xc = fastba.residuals(cams, fastba.ObsIndex(obs, 0, order=False), X)
+        return torch.from_numpy(r), torch.from_numpy(Xc)
     R, Q = [], []
     for s0 in range(0, len(obs), chunk):
         r, xc = project(cams, obs.chunk(slice(s0, s0 + chunk)), X, jac=False)
@@ -242,14 +321,22 @@ LIN_PRIOR = []      # list of (cam, axis(3), target, sigma): prior on axis . c_c
 _LAST_E = [None]      # residual norms of the last cost evaluation (reused for the progress log)
 
 
-def cost_terms(cams, obs, X, ties, prior_sig, huber):
-    r, Xc = project_all(cams, obs, X)
-    e = r.norm(dim=1)
-    _LAST_E[0] = e
-    rho = torch.where(e <= huber, 0.5 * e * e, huber * (e - 0.5 * huber))
-    bad = Xc[:, 2] <= 0.05
-    rho = torch.where(bad, torch.full_like(rho, 1e4), rho)
-    c = rho.sum()
+def cost_terms(cams, obs, X, ties, prior_sig, huber, ox=None):
+    if ox is not None:
+        from . import fastba
+        c, e = fastba.robust_cost(cams, ox, X, huber)
+        _LAST_E[0] = e
+        c = torch.tensor(c, dtype=DT)
+    else:
+        r, Xc = project_all(cams, obs, X)
+        e = r.norm(dim=1)
+        _LAST_E[0] = e
+        if obs.wt is not None:
+            e = e * obs.wt.sqrt()                  # whitened residual (Huber on the weighted norm)
+        rho = torch.where(e <= huber, 0.5 * e * e, huber * (e - 0.5 * huber))
+        bad = Xc[:, 2] <= 0.05
+        rho = torch.where(bad, torch.full_like(rho, 1e4), rho)
+        c = rho.sum()
     if ties is not None and len(ties):
         d = torch.einsum("ni,ni->n", ties.n, X[ties.lm] - ties.q) / ties.sigma
         s = ties.scale / ties.sigma
@@ -261,21 +348,31 @@ def cost_terms(cams, obs, X, ties, prior_sig, huber):
     return float(c)
 
 
-def accumulate(cams, obs, X, ties, prior_sig, free, huber, pair, P, chunk=200_000):
+def accumulate(cams, obs, X, ties, prior_sig, free, huber, pair, P, chunk=200_000, ox=None):
     """Normal-equation blocks, chunked over observations: U (C,NP,NP), bc (C,NP),
-    V (M,3,3), bl (M,3), Wp (P,NP,3). Robust (Huber) weights; priors added to U, bc."""
-    C, M = cams.C, len(X)
-    U = torch.zeros(C, NP, NP, dtype=DT)
-    bc = torch.zeros(C, NP, dtype=DT)
-    V = torch.zeros(M, 3, 3, dtype=DT)
-    bl = torch.zeros(M, 3, dtype=DT)
-    Wp = torch.zeros(P, NP, 3, dtype=DT)
-    for s0 in range(0, len(obs), chunk):
+    V (M,3,3), bl (M,3), Wp (P,NP,3). Robust (Huber) weights; priors added to U, bc.
+    ox: fastba.ObsIndex -> the observation sums by the fused kernel (same formulas; 13-parameter
+    layout without observation weights only, see _fast)."""
+    C, M, NP = cams.C, len(X), cams.np_
+    if ox is not None:
+        from . import fastba
+        U, bc, V, bl, Wp = fastba.accumulate(cams, ox, X, ox.pair, P, huber)
+        chunk = None
+    else:
+        U = torch.zeros(C, NP, NP, dtype=DT)
+        bc = torch.zeros(C, NP, dtype=DT)
+        V = torch.zeros(M, 3, 3, dtype=DT)
+        bl = torch.zeros(M, 3, dtype=DT)
+        Wp = torch.zeros(P, NP, 3, dtype=DT)
+    for s0 in (range(0, len(obs), chunk) if chunk else ()):
         sl = slice(s0, min(len(obs), s0 + chunk))
         o = obs.chunk(sl)
         r, Jc, Jl, Xc = project(cams, o, X)
         e = r.norm(dim=1)
-        w = huber_w(e, huber)
+        if o.wt is None:
+            w = huber_w(e, huber)
+        else:
+            w = o.wt * huber_w(e * o.wt.sqrt(), huber)
         w = torch.where(Xc[:, 2] <= 0.05, torch.zeros_like(w), w)
         wJc = Jc * w[:, None, None]
         wJl = Jl * w[:, None, None]
@@ -320,7 +417,7 @@ def inv3(A: torch.Tensor) -> torch.Tensor:
 
 def reduced(U, V, Wp, p_lm, p_cam, xp, xq, lam=0.0):
     """Schur complement S (C*NP square) with LM damping lam on both blocks; also Vi, Y."""
-    C = U.shape[0]
+    C, NP = U.shape[0], U.shape[1]
     Ud = U + lam * torch.diag_embed(torch.diagonal(U, dim1=1, dim2=2).clamp_min(1e-9))
     Vd = V + lam * torch.diag_embed(torch.diagonal(V, dim1=1, dim2=2).clamp_min(1e-9)) \
         + 1e-9 * torch.eye(3, dtype=DT)
@@ -363,17 +460,44 @@ def structure(obs, C, M):
     return pair, len(ukey), p_lm, p_cam, xp, xq
 
 
+STEP_TOL_DEFAULT = {"rot": 2e-6, "pos": 1e-5, "f": 1e-6, "pp": 1e-3, "k": 1e-6, "dt": 1e-6}
+
+
+def small_step(dc: torch.Tensor, step_tol: dict | None) -> bool:
+    """True when an accepted LM step moved every camera parameter by less than step_tol: rotation (rad),
+    position (m), log focal, principal point (px), distortion. The LM then only creeps: with the
+    ~0.6 per-iteration contraction seen in the logs, the rest of the way is < 2x the last step
+    (< 0.02 mm, < 0.0002 deg, < 0.002 px). None = the validated rule only (relative cost change)."""
+    if not step_tol:
+        return False
+    a = dc.abs()
+    return (float(a[:, 0:3].max()) < step_tol["rot"] and float(a[:, 3:6].max()) < step_tol["pos"]
+            and float(a[:, 6].max()) < step_tol["f"] and float(a[:, 12].max()) < step_tol["f"]
+            and float(a[:, 7:9].max()) < step_tol["pp"] and float(a[:, 9:12].max()) < step_tol["k"]
+            # time model (NPT layout): dt, rs in s
+            and (a.shape[1] <= NP or float(a[:, 13:].max()) < step_tol.get("dt", 1e-6)))
+
+
 def solve(cams: Cameras, obs: Obs, X: torch.Tensor, free: torch.Tensor, prior_sig: torch.Tensor,
           ties: Ties | None = None, iters: int = 30, huber: float = 1.5, lam0: float = 1e-3,
-          verbose: bool = True, tol: float = 1e-7, want_cov: bool = True, on_iteration=None):
+          verbose: bool = True, tol: float = 1e-7, want_cov: bool = True, on_iteration=None,
+          step_tol: dict | None = None):
     """LM. free (C,NP) bool; prior_sig (C,NP) (inf = no prior; applies to free params only).
-    Rotation priors are not supported (keep them inf). Returns cams, X, info dict.
+    Rotation priors are not supported (keep them inf). step_tol: also stop once an accepted step is
+    below these (see small_step). Returns cams, X, info dict.
     on_iteration observes the initial and accepted states; its failures disable only the observer."""
-    C, M = cams.C, len(X)
+    C, M, NP = cams.C, len(X), cams.np_
     pair, P, p_lm, p_cam, xp, xq = structure(obs, C, M)
+    ox = None
+    if _fast(X, obs, cams):
+        from . import fastba
+        ox = fastba.ObsIndex(obs, M)
+        ox.pair = np.ascontiguousarray(pair.numpy())
     fidx = torch.nonzero(free.flatten()).flatten()
+    if not len(fidx):
+        step_tol = None       # landmarks only (held-out): the camera step says nothing about them
     lam = lam0
-    cost = cost_terms(cams, obs, X, ties, prior_sig, huber)
+    cost = cost_terms(cams, obs, X, ties, prior_sig, huber, ox)
     e_acc = _LAST_E[0]
     hist = [cost]
 
@@ -389,8 +513,9 @@ def solve(cams: Cameras, obs: Obs, X: torch.Tensor, free: torch.Tensor, prior_si
     observe(0, False)
     rel = 1.0
     dc = torch.zeros(C, NP, dtype=DT)
+    converged = False
     for it in range(iters):
-        U, bc, V, bl, Wp = accumulate(cams, obs, X, ties, prior_sig, free, huber, pair, P)
+        U, bc, V, bl, Wp = accumulate(cams, obs, X, ties, prior_sig, free, huber, pair, P, ox=ox)
         while True:
             S, Vi, Y = reduced(U, V, Wp, p_lm, p_cam, xp, xq, lam)
             rhs = bc - torch.zeros(C, NP, dtype=DT).index_add_(0, p_cam, torch.einsum("pij,pj->pi", Y, bl[p_lm]))
@@ -408,7 +533,7 @@ def solve(cams: Cameras, obs: Obs, X: torch.Tensor, free: torch.Tensor, prior_si
             nc = cams.copy()
             nc.apply(dc)
             nX = X + dl
-            new = cost_terms(nc, obs, nX, ties, prior_sig, huber)
+            new = cost_terms(nc, obs, nX, ties, prior_sig, huber, ox)
             if new < cost:
                 cams, X = nc, nX
                 e_acc = _LAST_E[0]
@@ -416,6 +541,7 @@ def solve(cams: Cameras, obs: Obs, X: torch.Tensor, free: torch.Tensor, prior_si
                 cost = new
                 lam = max(lam / 3, 1e-7)
                 observe(it + 1, True)
+                converged = small_step(dc, step_tol)
                 break
             lam *= 4
             if lam > 1e8:
@@ -427,13 +553,14 @@ def solve(cams: Cameras, obs: Obs, X: torch.Tensor, free: torch.Tensor, prior_si
             print(f"    LM {it:2d}: cost {cost:.1f} lam {lam:.1e} | reproj median {e.median():.3f} px "
                   f"rms(<5px) {e[e < 5].pow(2).mean().sqrt():.3f} | step max rot "
                   f"{np.degrees(float(dc[:, :3].abs().max())):.4f} deg pos {1e3 * dc[:, 3:6].abs().max():.1f} mm "
-                  f"logF {dc[:, 6].abs().max():.2e}", flush=True)
-        if rel < tol or lam > 1e8:
+                  f"logF {dc[:, 6].abs().max():.2e}"
+                  + (f" dt {1e3 * float(dc[:, 13].abs().max()):.2f} ms" if NP > 13 else ""), flush=True)
+        if rel < tol or lam > 1e8 or converged:
             break
-    info = {"cost": cost, "hist": hist, "fidx": fidx, "cov_free": None}
+    info = {"cost": cost, "hist": hist, "fidx": fidx, "cov_free": None, "iters": it + 1 if iters else 0}
     if want_cov and len(fidx):
         try:
-            U, bc, V, bl, Wp = accumulate(cams, obs, X, ties, prior_sig, free, huber, pair, P)
+            U, bc, V, bl, Wp = accumulate(cams, obs, X, ties, prior_sig, free, huber, pair, P, ox=ox)
             S, _, _ = reduced(U, V, Wp, p_lm, p_cam, xp, xq, 0.0)
             info["cov_free"] = torch.linalg.inv(S[fidx][:, fidx])
         except Exception as ex:  # noqa

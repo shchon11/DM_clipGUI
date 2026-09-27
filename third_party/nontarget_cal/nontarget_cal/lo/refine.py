@@ -32,6 +32,8 @@ from .maps import _emit_map, _sample_clouds, _sample_trajectory
 OFFSETS = (1, 2, 3, 5, 8, 13, 20)
 QUERY_WORKERS = int(os.environ.get("NONTARGET_KDTREE_WORKERS", "1"))  # thread start-up dominated small queries at 4
 PAIR_THREADS = int(os.environ.get("NONTARGET_LO_THREADS", os.environ.get("OMP_NUM_THREADS", "3")))
+# "numpy" (the validated per-pair numpy code) or "numba" (lo/fastlo.py: same formulas, compiled, GIL-free)
+KERNEL = os.environ.get("NONTARGET_LO_KERNEL", "numpy")
 
 
 def skew(v):
@@ -59,6 +61,16 @@ class Sweep:
         _, first, self.u_inv = np.unique(self.t, return_index=True, return_inverse=True)
         self.u_i, self.u_a = self.i[first], self.a[first]
 
+    def compact(self):
+        """Memory (same values): the times are only needed for _uniq, the knot / time indices fit int32."""
+        self.t = None
+        self.i = self.i.astype(np.int32)
+        self.u_inv = self.u_inv.astype(np.int32)
+        p32 = self.p.astype(np.float32)          # the sweep coordinates are float32 data: exact
+        if np.array_equal(p32, self.p):
+            self.p = p32
+        return self
+
 
 def world(sw: Sweep, tr: LOTraj):
     i, a = sw.u_i, sw.u_a
@@ -66,7 +78,7 @@ def world(sw: Sweep, tr: LOTraj):
     dR = Rot.from_matrix(np.einsum("nji,njk->nik", R0, tr.T[i + 1, :3, :3])).as_rotvec()
     R = np.einsum("nij,njk->nik", R0, Rot.from_rotvec(dR * a[:, None]).as_matrix())
     c = tr.T[i, :3, 3] * (1 - a)[:, None] + tr.T[i + 1, :3, 3] * a[:, None]
-    return np.einsum("nij,nj->ni", R[sw.u_inv], sw.p) + c[sw.u_inv]
+    return np.einsum("nij,nj->ni", R[sw.u_inv], sw.p.astype(np.float64, copy=False)) + c[sw.u_inv]
 
 
 def refine(seg, init, out, iters: int = 6, src_voxel: float = 0.3, tgt_voxel: float = 0.1,
@@ -112,23 +124,54 @@ def refine(seg, init, out, iters: int = 6, src_voxel: float = 0.3, tgt_voxel: fl
             keep = np.sort(rng.choice(keep, a.max_src, replace=False))
         sw.p, sw.t, sw.i, sw.a = sw.p[keep], sw.t[keep], sw.i[keep], sw.a[keep]
         sw._uniq()
-        src.append(sw)
-    raw = prepped
-    del raw
+        src.append(sw.compact())
+    del prepped
+    for tg in tgt:
+        tg.compact()
     K = len(tr.tau)
     N = len(files)
     print(f"{a.seg.name}: {N} sweeps, {K} knots, src {np.mean([len(s.p) for s in src]):.0f} "
           f"tgt {np.mean([len(s.p) for s in tgt]):.0f} pts/sweep; load {time.time() - t_start:.1f} s", flush=True)
     pairs = [(i, i + o) for o in a.offsets for i in range(N - o)]
     pairs += [(j, i) for (i, j) in pairs]
+    fastlo = None
+    if KERNEL == "numba":
+        try:
+            from . import fastlo
+        except Exception as ex:  # noqa  (numba missing)
+            print(f"  numba unavailable ({ex}): numpy pair terms")
+    pool = None
+    if PAIR_THREADS > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        pool = ThreadPoolExecutor(PAIR_THREADS)
+    pmap = (lambda f, xs, **k: list(pool.map(f, xs, **k))) if pool else (lambda f, xs, **k: [f(x) for x in xs])
+    Wt = Ws = trees = None
     for it in range(a.iters):
         t_it = time.time()
-        Wt = [world(s, tr) for s in tgt]
-        Ws = [world(s, tr) for s in src]
-        trees = [cKDTree(w) for w in Wt]
+        Wt = Ws = trees = None                     # free the previous iteration's before building these
+        # per sweep and independent (numpy / cKDTree release the GIL): threads give the same arrays
+        Wt = pmap(lambda s: world(s, tr), tgt, chunksize=8)
+        Ws = pmap(lambda s: world(s, tr), src, chunksize=8)
+        trees = pmap(cKDTree, Wt, chunksize=8)
         H = np.zeros((6 * K, 6 * K))
         g = np.zeros(6 * K)
         cost, nres, allr = 0.0, 0, []
+        Tpos = np.ascontiguousarray(tr.T[:, :3, 3])
+
+        def pair_terms_fast(ij):
+            """pair_terms with everything after the k-NN query in one compiled loop (lo/fastlo.py)."""
+            i, j = ij
+            P = Ws[i]
+            d, nn = trees[j].query(P, k=8, distance_upper_bound=0.6, workers=QUERY_WORKERS)
+            st_, c_, r, keys, Hs, gs = fastlo.pair_core(P, d, nn, Wt[j], src[i].i, src[i].a, tgt[j].i, tgt[j].a,
+                                                        Tpos, K, a.scale, 8)
+            if not st_:
+                return None
+            out = []
+            for u, Hg, gg in zip(keys.tolist(), Hs, gs):
+                x0, t0_ = divmod(int(u), K)
+                out.append(((x0, x0 + 1, t0_, t0_ + 1), Hg, gg))
+            return c_, r, out
 
         def pair_terms(ij):
             """Residuals of one sweep pair -> (cost, r, [(knots, Hg, gg)]) or None. Pure function of the
@@ -187,13 +230,7 @@ def refine(seg, init, out, iters: int = 6, src_voxel: float = 0.3, tgt_voxel: fl
                 out.append(((x0, x0 + 1, t0_, t0_ + 1), Jm.T @ (Jm * wgt[m, None]), Jm.T @ (wgt[m] * r[m])))
             return c_, r, out
 
-        if PAIR_THREADS > 1:
-            from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(PAIR_THREADS) as ex:
-                results = ex.map(pair_terms, pairs, chunksize=16)
-                results = list(results)
-        else:
-            results = [pair_terms(ij) for ij in pairs]
+        results = pmap(pair_terms_fast if fastlo else pair_terms, pairs, chunksize=16)
         for res_ in results:
             if res_ is None:
                 continue
@@ -243,6 +280,8 @@ def refine(seg, init, out, iters: int = 6, src_voxel: float = 0.3, tgt_voxel: fl
         print(f"  it {it}: {nres} residuals, robust std {1e3 * mad:.2f} mm, cost {cost:.0f}, "
               f"step max rot {np.degrees(np.abs(dx[:, :3]).max()):.4f} deg trans {1e3 * np.abs(dx[:, 3:]).max():.1f} mm "
               f"({time.time() - t_it:.0f} s)", flush=True)
+    if pool:
+        pool.shutdown()
     tmp = a.out.with_name(a.out.stem + ".tmp.npz")
     tr.save(tmp, wall_s=time.time() - t_start)
     os.replace(tmp, a.out)

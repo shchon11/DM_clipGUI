@@ -6,3 +6,4 @@ PyYAML>=6.0               # 6.0.3
 rosbags>=0.9.20           # 0.11.0 (reads rosbag2 sqlite3 without ROS)
 kiss-icp==1.3.0           # LiDAR odometry stage 1 (the validated version; its deskew convention is relied on)
 torch>=2.0                # 2.10.0 (CPU is enough; CUDA build optional)
+numba>=0.59               # 0.61.2 (+ llvmlite 0.44.0): compiled BA / LO kernels; without it the torch/numpy code runs

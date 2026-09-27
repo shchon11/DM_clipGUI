@@ -185,14 +185,27 @@ class OrientedVote:
         return out
 
 
-def rgb_edge_eval(ws, cfg, res, wins, parked, cams, frames=12, vote=True, log=print, max_range=40.0):
+def rgb_edge_eval(ws, cfg, res, wins, parked, cams, frames=12, vote=True, log=print, max_range=40.0, threads=3):
+    """Cameras in parallel threads; each LiDAR sweep is read, edge-classified and deskewed once for all
+    cameras (the cameras of one window pick the same sweeps). Same numbers as one camera at a time."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
     from pathlib import Path
     W, H = cfg["cameras"]["rgb_size"]
     masks = Path(cfg["paths"]["masks_dir"])
-    out = {}
-    for c in cams:
-        if c not in res["cameras"]:
-            continue
+    cache, locks, glock = {}, {}, threading.Lock()
+
+    def sweep(seg, f, hdr, tr):
+        key = (seg, str(f), tr is not None)
+        with glock:
+            lk = locks.setdefault(key, threading.Lock())
+        with lk:
+            if key not in cache:
+                s = load_sweep(f, 2.0, 80.0)
+                cache[key] = (s, sweep_edges(s), deskew(s, hdr, tr) if tr is not None else xyz(s))
+            return cache[key]
+
+    def one(c):
         v = res["cameras"][c]
         T_CL, intr = np.array(v["T_cam_lidar"]), np.array(v.get("intr_kb", v.get("intr")))
         mk = cv2.imread(str(masks / f"{c}.png"), 0)
@@ -216,12 +229,11 @@ def rgb_edge_eval(ws, cfg, res, wins, parked, cams, frames=12, vote=True, log=pr
                 for f in pick:
                     t_img = int(f.stem)
                     k = int(np.argmin(np.abs(lh + 50_000_000 - t_img)))
-                    s = load_sweep(lf[k], 2.0, 80.0)
-                    edge = sweep_edges(s)
+                    s, edge, P = sweep(seg, lf[k], lh[k], tr)
                     if tr is None:
-                        XL = xyz(s)
+                        XL = P
                     else:
-                        Pw = deskew(s, lh[k], tr)
+                        Pw = P
                         T = tr.Tm([t_img])[0]
                         XL = (Pw - T[:3, 3]) @ T[:3, :3]
                     Xc = XL @ T_CL[:3, :3].T + T_CL[:3, 3]
@@ -248,6 +260,13 @@ def rgb_edge_eval(ws, cfg, res, wins, parked, cams, frames=12, vote=True, log=pr
                              "within_2px": float(np.mean(e <= 2)) if len(e) else None}
                 if vote:
                     per[kind]["vote"] = vt.summary(nmin=100 if kind == "parked" else 200)
+        return per
+
+    todo = [c for c in cams if c in res["cameras"]]
+    with ThreadPoolExecutor(max(1, int(threads))) as ex:
+        pers = list(ex.map(one, todo))
+    out = {}
+    for c, per in zip(todo, pers):
         out[c] = per
         log(f"{c}: " + ", ".join(f"{k} {v['median_px']:.2f} px (n {v['n']})" for k, v in per.items() if v.get("median_px") is not None))
     return out

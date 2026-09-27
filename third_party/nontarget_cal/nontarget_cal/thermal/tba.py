@@ -301,6 +301,9 @@ def huber_w(e, d):
     return torch.where(e <= d, torch.ones_like(e), d / e)
 
 
+KERNEL = ["torch"]    # "torch" (the validated batched tensors) or "numba" (fused kernels, fasttba.py)
+
+
 PRIOR_LIN = []      # (param index, axis vector over c_L (3) or None, target, sigma) - profiles
 
 
@@ -318,10 +321,15 @@ def prior_terms(cams, prior_sig, theta0=None):
 _LAST_E = [None]      # residual norms of the last cost evaluation (reused for the progress log)
 
 
-def cost(cams, trajs, obs, X, ties, prior_sig, huber, chunk=400_000):
+def cost(cams, trajs, obs, X, ties, prior_sig, huber, chunk=400_000, ox=None):
     c = 0.0
     es = []
-    for s0 in range(0, len(obs), chunk):
+    if ox is not None:
+        from . import fasttba
+        c, e = fasttba.robust_cost(cams, trajs, ox, X, huber)
+        es.append(e)
+        chunk = None
+    for s0 in (range(0, len(obs), chunk) if chunk else ()):
         o = obs.chunk(slice(s0, s0 + chunk))
         r, Xc = residuals(cams, trajs, o, X, jac=False)
         e = r.norm(dim=1)
@@ -334,12 +342,16 @@ def cost(cams, trajs, obs, X, ties, prior_sig, huber, chunk=400_000):
         s = ties.scale / ties.sigma
         c += float(0.5 * (s * s * torch.log1p((d / s) ** 2)).sum())
     if EDGE is not None and len(EDGE.sel):
-        c += EDGE.cost(cams, trajs)
+        c += EDGE.cost(cams, trajs, fast=ox is not None)
     _LAST_E[0] = torch.cat(es) if es else torch.zeros(0, dtype=DT)
     return c + prior_terms(cams, prior_sig)
 
 
 def all_residuals(cams, trajs, obs, X, chunk=400_000):
+    if KERNEL[0] == "numba":
+        from . import fasttba
+        r, _, xc = fasttba.residuals(cams, trajs, fasttba.ObsIndex(obs), X)
+        return torch.from_numpy(r), torch.from_numpy(xc)
     R, Q = [], []
     for s0 in range(0, len(obs), chunk):
         r, xc = residuals(cams, trajs, obs.chunk(slice(s0, s0 + chunk)), X, jac=False)
@@ -375,17 +387,22 @@ class Structure:
         self.xq = torch.cat(xq) if xq else torch.zeros(0, dtype=torch.long)
 
 
-def accumulate(cams, trajs, obs, X, ties, prior_sig, free, huber, st, chunk=250_000):
+def accumulate(cams, trajs, obs, X, ties, prior_sig, free, huber, st, chunk=250_000, ox=None):
     P, M = cams.P, len(X)
     U = torch.zeros(P, P, dtype=DT)
     bp = torch.zeros(P, dtype=DT)
-    V = torch.zeros(M, 3, 3, dtype=DT)
-    bl = torch.zeros(M, 3, dtype=DT)
-    Wp = torch.zeros(st.npair, NCP + 1, 3, dtype=DT)
     G = cams.C * cams.S
-    Ug = torch.zeros(G, NCP + 1, NCP + 1, dtype=DT)
-    bg = torch.zeros(G, NCP + 1, dtype=DT)
-    for s0 in range(0, len(obs), chunk):
+    if ox is not None:
+        from . import fasttba
+        Ug, bg, V, bl, Wp = fasttba.accumulate_obs(cams, trajs, ox, X, ox.pair, st.npair, huber)
+        chunk = None
+    else:
+        V = torch.zeros(M, 3, 3, dtype=DT)
+        bl = torch.zeros(M, 3, dtype=DT)
+        Wp = torch.zeros(st.npair, NCP + 1, 3, dtype=DT)
+        Ug = torch.zeros(G, NCP + 1, NCP + 1, dtype=DT)
+        bg = torch.zeros(G, NCP + 1, dtype=DT)
+    for s0 in (range(0, len(obs), chunk) if chunk else ()):
         sl = slice(s0, min(len(obs), s0 + chunk))
         o = obs.chunk(sl)
         r, Jp, Jl, Xc = residuals(cams, trajs, o, X)
@@ -400,7 +417,12 @@ def accumulate(cams, trajs, obs, X, ties, prior_sig, free, huber, st, chunk=250_
         V.index_add_(0, o.lm, wJl.transpose(1, 2) @ Jl)
         bl.index_add_(0, o.lm, torch.einsum("nki,nk->ni", wJl, r))
         Wp.index_add_(0, st.pair[sl], wJp.transpose(1, 2) @ Jl)
-    if EDGE is not None and len(EDGE.sel):
+    if EDGE is not None and len(EDGE.sel) and ox is not None:
+        from . import fasttba
+        _, Ue, be = fasttba.edge_terms(EDGE, cams, trajs, jac=True)
+        Ug += Ue
+        bg += be
+    elif EDGE is not None and len(EDGE.sel):
         cc = EDGE.cauchy / EDGE.sigma
         for r, J, ecam, edseg in EDGE.terms(cams, trajs):
             s = r / EDGE.sigma
@@ -460,14 +482,38 @@ def reduced(U, V, Wp, st, lam):
     return S, Vi, Y
 
 
+STEP_TOL_DEFAULT = {"rot": 2e-6, "pos": 1e-5, "f": 1e-6, "pp": 1e-3, "k": 1e-6, "dt": 1e-6}
+
+
+def small_step(dp, C, step_tol):
+    """True when an accepted step moved every parameter by less than step_tol (rotation rad, position m,
+    log focal / aspect, principal point px, k1 k2, row readout and time offsets s); see rgb/rigba.small_step."""
+    if not step_tol:
+        return False
+    a = dp[:C * NCP].view(C, NCP).abs()
+    d = dp[C * NCP:].abs()
+    return (float(a[:, 0:3].max()) < step_tol["rot"] and float(a[:, 3:6].max()) < step_tol["pos"]
+            and float(a[:, 6].max()) < step_tol["f"] and float(a[:, 12].max()) < step_tol["f"]
+            and float(a[:, 7:9].max()) < step_tol["pp"] and float(a[:, 9:11].max()) < step_tol["k"]
+            and float(a[:, 11].max()) < step_tol["dt"] and (not len(d) or float(d.max()) < step_tol["dt"]))
+
+
 def solve(cams, trajs, obs, X, free, prior_sig, ties=None, iters=30, huber=1.0, lam0=1e-3,
-          verbose=True, tol=1e-7, want_cov=False, log=print, on_iteration=None):
-    """LM with an optional best-effort observer of initial and accepted states only."""
+          verbose=True, tol=1e-7, want_cov=False, log=print, on_iteration=None, step_tol=None):
+    """LM with an optional best-effort observer of initial and accepted states only.
+    step_tol: also stop once an accepted step is below these (see small_step)."""
     M = len(X)
     st = Structure(obs, cams, M)
+    ox = None
+    if KERNEL[0] == "numba":
+        from . import fasttba
+        ox = fasttba.ObsIndex(obs, M)
+        ox.pair = np.ascontiguousarray(st.pair.numpy())
     fidx = torch.nonzero(free).flatten()
+    if not bool(free[:cams.C * NCP].any()):
+        step_tol = None       # held calibration (landmarks, time offsets): the validated rule only
     lam = lam0
-    cst = cost(cams, trajs, obs, X, ties, prior_sig, huber)
+    cst = cost(cams, trajs, obs, X, ties, prior_sig, huber, ox=ox)
     e_acc = _LAST_E[0]
     hist = [cst]
 
@@ -482,8 +528,9 @@ def solve(cams, trajs, obs, X, free, prior_sig, ties=None, iters=30, huber=1.0, 
 
     observe(0, False)
     rel = 1.0
+    converged = False
     for it in range(iters):
-        U, bp, V, bl, Wp = accumulate(cams, trajs, obs, X, ties, prior_sig, free, huber, st)
+        U, bp, V, bl, Wp = accumulate(cams, trajs, obs, X, ties, prior_sig, free, huber, st, ox=ox)
         while True:
             S, Vi, Y = reduced(U, V, Wp, st, lam)
             rhs = bp - torch.zeros(cams.P, dtype=DT).index_put_(
@@ -500,7 +547,7 @@ def solve(cams, trajs, obs, X, free, prior_sig, ties=None, iters=30, huber=1.0, 
             nc = cams.copy()
             nc.apply(dp)
             nX = X + dl
-            new = cost(nc, trajs, obs, nX, ties, prior_sig, huber)
+            new = cost(nc, trajs, obs, nX, ties, prior_sig, huber, ox=ox)
             if new < cst:
                 cams, X = nc, nX
                 e_acc = _LAST_E[0]
@@ -508,6 +555,7 @@ def solve(cams, trajs, obs, X, free, prior_sig, ties=None, iters=30, huber=1.0, 
                 cst = new
                 lam = max(lam / 3, 1e-7)
                 observe(it + 1, True)
+                converged = small_step(dp, cams.C, step_tol)
                 break
             lam *= 4
             if lam > 1e8:
@@ -521,11 +569,11 @@ def solve(cams, trajs, obs, X, free, prior_sig, ties=None, iters=30, huber=1.0, 
             log(f"    LM {it:2d}: cost {cst:.1f} lam {lam:.1e} | reproj median {e.median():.3f} px | step rot "
                 f"{np.degrees(float(dcam[:, :3].abs().max())):.4f} deg pos {1e3 * float(dcam[:, 3:6].abs().max()):.1f} mm "
                 f"logF {float(dcam[:, 6].abs().max()):.1e} dt {1e3 * float(dp[C * NCP:].abs().max()) if cams.S else 0:.2f} ms")
-        if rel < tol or lam > 1e8:
+        if rel < tol or lam > 1e8 or converged:
             break
-    info = {"cost": cst, "hist": hist, "fidx": fidx, "cov": None}
+    info = {"cost": cst, "hist": hist, "fidx": fidx, "cov": None, "iters": it + 1 if iters else 0}
     if want_cov and len(fidx):
-        U, bp, V, bl, Wp = accumulate(cams, trajs, obs, X, ties, prior_sig, free, huber, st)
+        U, bp, V, bl, Wp = accumulate(cams, trajs, obs, X, ties, prior_sig, free, huber, st, ox=ox)
         S, _, _ = reduced(U, V, Wp, st, 0.0)
         try:
             info["cov"] = torch.linalg.inv(S[fidx][:, fidx])
@@ -596,10 +644,12 @@ class EdgeTerm:
                 kind.append(z["kind"][m]); tf.append(z["frame_tf"][z["fi"][m]]); gfr.append(z["fi"][m] + ng)
                 EE, eo = z["E"], z["eoff"]
                 for k in range(len(z["frame_hdr"])):
-                    e = EE[eo[k]:eo[k + 1]].copy()
-                    self.E.append(e)
-                    self.trees.append(cKDTree(e[:, :2]) if len(e) else None)
+                    self.E.append(EE[eo[k]:eo[k + 1]].copy())
                 ng += len(z["frame_hdr"])
+        # one small tree per frame, built in threads (independent; the same trees)
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(4) as ex:
+            self.trees = list(ex.map(lambda e: cKDTree(e[:, :2]) if len(e) else None, self.E, chunksize=64))
         self.X = torch.as_tensor(np.concatenate(X), dtype=DT)
         self.cam = torch.as_tensor(np.concatenate(cam), dtype=torch.long)
         self.seg = torch.as_tensor(np.concatenate(seg), dtype=torch.long)
@@ -619,6 +669,9 @@ class EdgeTerm:
         return Obs(self.cam[idx], self.seg[idx], torch.arange(len(idx)), uv, self.tf[idx], self.dseg[idx])
 
     def predict(self, cams, trajs, idx=None, chunk=500_000):
+        if idx is None and KERNEL[0] == "numba":
+            from . import fasttba
+            return fasttba.predict(self, cams, trajs)
         idx = torch.arange(len(self.X)) if idx is None else idx
         out, zz = [], []
         for s0 in range(0, len(idx), chunk):
@@ -636,17 +689,20 @@ class EdgeTerm:
         uv, z = self.predict(cams, trajs)
         uvn = uv.numpy()
         ok = (z.numpy() > 0.5) & (uvn[:, 0] > 2) & (uvn[:, 0] < 638) & (uvn[:, 1] > 2) & (uvn[:, 1] < 478)
-        sel, q, n = [], [], []
         order = np.argsort(self.gfr, kind="stable")
         g_sorted = self.gfr[order]
         bounds = np.flatnonzero(np.r_[True, g_sorted[1:] != g_sorted[:-1], True])
-        for a_, b_ in zip(bounds[:-1], bounds[1:]):
+
+        def frame(ab):
+            """The associations of one frame (independent of the others; run in threads, collected in
+            frame order: the same arrays as the sequential loop)."""
+            a_, b_ = ab
             ii = order[a_:b_]
             ii = ii[ok[ii]]
             g = int(self.gfr[order[a_]])
             tree = self.trees[g]
             if tree is None or not len(ii):
-                continue
+                return None
             d, nn = tree.query(uvn[ii], k=6, distance_upper_bound=gate)
             E = self.E[g]
             best = np.full(len(ii), -1)
@@ -660,9 +716,13 @@ class EdgeTerm:
                 best[take] = nn[take, k]
             m = best >= 0
             if not m.any():
-                continue
+                return None
             e = E[best[m]]
-            sel.append(ii[m]); q.append(e[:, :2]); n.append(e[:, 2:4])
+            return ii[m], e[:, :2], e[:, 2:4]
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(4) as ex:
+            res = [r for r in ex.map(frame, zip(bounds[:-1], bounds[1:]), chunksize=64) if r is not None]
+        sel, q, n = [r[0] for r in res], [r[1] for r in res], [r[2] for r in res]
         self.sel = torch.as_tensor(np.concatenate(sel), dtype=torch.long)
         self.q = torch.as_tensor(np.concatenate(q), dtype=DT)
         nn_ = torch.as_tensor(np.concatenate(n), dtype=DT)
@@ -682,7 +742,10 @@ class EdgeTerm:
                 r2, _ = residuals(cams, trajs, o, self.X[ii], jac=False)
                 yield (n * r2).sum(1), None, o.cam, o.dseg
 
-    def cost(self, cams, trajs):
+    def cost(self, cams, trajs, fast=False):
+        if fast or KERNEL[0] == "numba":
+            from . import fasttba
+            return fasttba.edge_terms(self, cams, trajs, jac=False)[0]
         c = 0.0
         cc = self.cauchy / self.sigma
         for r, _, _, _ in self.terms(cams, trajs, jac=False):
@@ -691,7 +754,11 @@ class EdgeTerm:
         return c
 
     def stats(self, cams, trajs):
-        rs = torch.cat([r for r, _, _, _ in self.terms(cams, trajs, jac=False)]) if len(self.sel) else torch.zeros(0)
+        if KERNEL[0] == "numba" and len(self.sel):
+            from . import fasttba
+            rs = fasttba.edge_residuals(self, cams, trajs)
+        else:
+            rs = torch.cat([r for r, _, _, _ in self.terms(cams, trajs, jac=False)]) if len(self.sel) else torch.zeros(0)
         return {"n_assoc": int(len(self.sel)), "n_points": int(len(self.X)),
                 "median_abs_px": float(rs.abs().median()) if len(rs) else None,
                 "frac_lt1px": float((rs.abs() < 1).double().mean()) if len(rs) else None}

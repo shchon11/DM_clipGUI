@@ -11,7 +11,21 @@ paths:
   layout_rules: "@pkg/config/layout_rules.yaml"
 
 resources:
-  max_procs: 4               # parallel worker processes (never more than 4 on a shared box)
+  # Worker processes. auto = logical CPUs / cpus_per_worker, capped by max_procs_cap and by RAM (the budget is
+  # RAM - mem_headroom_gb; every task is also admitted only while the running tasks' memory estimates plus
+  # its own fit the budget and the free RAM keeps the headroom). The environment variable
+  # NONTARGET_MAX_PROCS overrides (the shared dev box: NONTARGET_MAX_PROCS=4). 20 logical CPUs, 32 GB -> 8.
+  max_procs: auto
+  max_procs_cap: 12
+  cpus_per_worker: 2.5
+  mem_headroom_gb: 6.0       # left to the OS, the GUI and the page cache
+  cgroup_headroom_gb: 1.0    # instead, when the run is under a smaller cgroup memory limit (container, slice)
+  # peak private memory per worker (GB), measured on the 25-window 2026-09-24 regression (RssAnon);
+  # [a, b] = a + b x windows of the solve
+  task_mem_gb: {default: 2.0, scan_bag: 1.0, extract_window: 1.0, extract_standstill: 1.0, lo_chain: 5.5,
+                vehicle_axes: 1.5, rgb_tracks: 0.8, thermal_tracks: 1.2, thermal_edges: 1.0, thermal_links: 2.0,
+                rgb_solve: [1.5, 0.3], thermal_solve: [1.5, 0.45], rgb_edges: 2.0, thermal_edge_eval: 7.0,
+                images: 2.0, crosstime_links: 6.0}
   threads_per_proc: 3        # OMP/OPENBLAS/OpenCV threads per worker
   solver_threads: 4          # torch threads for the bundle adjustments
   kiss_threads: 3
@@ -21,6 +35,18 @@ resources:
                              # results differ at 1e-11 mm. cpu = bit-identical to the validated scripts.
   lo_threads: 3              # threads inside one LiDAR-odometry refinement (deterministic for any value)
   tie_threads: 3             # windows associated in parallel with the LiDAR map (deterministic)
+  track_threads: 2           # OpenCV threads of one RGB tracker (the LK is parallel over points; same tracks)
+  tracks_nice: 5             # OS nice level of the RGB / thermal tracking workers: when the CPU is
+                             # oversubscribed the LiDAR odometry (which gates both solve chains) gets it first
+  track_cams_per_task: 2     # cameras of a window tracked in parallel threads of ONE worker (same tracks):
+                             # more cores per worker slot when max_procs is the limit
+  # Compiled (numba) kernels, same formulas as the validated numpy/torch code, sums in a different order
+  # (results differ at the floating-point level: LO 4e-10 mm, BA < 1e-9 mm). torch / numpy = the
+  # validated code bit for bit. Without numba installed the validated code runs.
+  ba_kernel: numba           # numba | torch: RGB + thermal bundle adjustments (accumulate / cost: ~10-25x)
+  lo_kernel: numba           # numba | numpy: LiDAR-odometry refinement pair terms (~2.5x per iteration)
+  tie_cache_gb: 3            # per solve process: cached LiDAR-map candidates of the landmark ties between
+                             # the solve rounds (identical ties, no map re-reads); 0 = off
 
 viz:
   enabled: true             # observation-only, best-effort live stream; --no-viz disables it
@@ -105,11 +131,19 @@ windows:
 
 extract:
   rgb_jpeg: raw                # the recorded JPEG bytes, unchanged
+  # after a camera's KLT tracks of a window exist, keep only every N-th of its RGB frames (the LiDAR-edge
+  # validation and the projection images read a few; nothing else reads images). ~40 GB less on a
+  # 15-min drive. 0 = keep all. Ignored when rgb.crosstime is enabled (the links read the frames).
+  keep_rgb_every: 10
   thermal_png_compression: 1
   thermal_lead_ms_name: 0      # thermal files are named by header.stamp (thermal_lo convention)
 
 lo:
-  kiss: {voxel: 0.5, rmin: 2.5, rmax: 100.0}
+  # KISS-ICP only starts the continuous-time refinement. voxel 1.0 m (KISS-ICP's own default for 100 m
+  # range) instead of lidar_odo's 0.5 m: KISS 2.1x faster; after the refinement the trajectory moves by
+  # 0.9 mm median / 2.6 mm max (absolute) and 0.07 mm median / 0.56 mm p99 in the 1 s relative motion
+  # (window S02 of the 2026-09-24 bag; the sweep-to-sweep consistency itself is ~15 mm). 0.5 = validated.
+  kiss: {voxel: 1.0, rmin: 2.5, rmax: 100.0}
   refine: {iters: 5, src_voxel: 0.3, tgt_voxel: 0.1, scale: 0.03, cv_sigma: 0.05, max_src: 3000,
            offsets: [1, 2, 3, 5, 8, 13, 20]}
   map: {voxel: 0.05, rmin: 2.5, rmax: 80.0}
@@ -121,7 +155,21 @@ lo:
     min_path_m: 20.0           # a window that hardly moves carries no lever-arm information
 
 rgb:
-  tracks: {grid: [16, 9], per_cell: 8, fb_max: 0.5, min_len: 5}
+  # device: cpu = the validated OpenCV CPU Lucas-Kanade (tracks bit-identical); cuda = the same algorithm as
+  # a Triton kernel on a CUDA GPU (rgb/cudalk.py: tracker CPU 48 -> 16 ms per 1920x1200 frame; float
+  # interpolation: points differ by 0.0002 px median / 0.04 px p99, 0.003 % of the LK status flags);
+  # opencl = OpenCV's OpenCL LK (on NVIDIA as much CPU as the CPU LK - the driver spins while waiting);
+  # auto = cuda, else opencl, else cpu. (The anchored tracker below always runs its own CPU LK.)
+  tracks:
+    grid: [16, 9]
+    per_cell: 8
+    fb_max: 0.5
+    min_len: 5
+    device: auto
+    # Template-anchored re-measurement of every track point (rgb/tracks_anchor.py). OFF: on the 2026-09-24 bag
+    # (2 windows) its forward-backward closure was WORSE than the frame-to-frame LK (front 0.60 vs 0.25 px after
+    # 1-2 s) and the BA residual fell only 0.795 -> 0.776 px, at ~3x the tracking wall time (README section 10).
+    anchor: {enabled: false, max_age: 30, anchor_fb_max: 0.3, max_jump: 2.0}
   solve:
     free: [rot, pos, f, k, pp]
     ties: true
@@ -133,6 +181,11 @@ rgb:
     huber: 1.5
     iters: 25
     iters_first_pass: 40
+    # also stop an LM once an accepted step moves every camera parameter by less than: rotation (rad),
+    # position (m), log focal, principal point (px), distortion. The LM otherwise crawls on for up to
+    # `iters` steps of < 0.0001 deg / 0.1 mm. On the 25-window regression: cameras move <= 0.14 mm,
+    # <= 0.0005 deg, <= 0.007 px (1-2 % of the 1-sigma repeatability). null = the validated rule only.
+    step_tol: {rot: 2.0e-6, pos: 1.0e-5, f: 1.0e-6, pp: 1.0e-3, k: 1.0e-6}
     min_len: 12
     min_parallax: 2.0
     max_dist: 60.0
@@ -147,6 +200,32 @@ rgb:
     # a third pass on the same data; reusing pass 2 saves one solve (~10 min for 4 windows) and moved the
     # cameras by 0.1-0.6 mm (front, top, side) and 3-6 mm (rear) on the 2026-09-24 bag (4 windows).
     reuse_pass2_as_final: false
+    # Per-camera time offset dt (and optionally a rolling-shutter row readout time rs) in the rig BA
+    # (rgb/rigba.py time model): capture time = header + exposure/2 + dt_c + rs_c (v/H - 1/2), the LO pose
+    # re-evaluated at the new time between solves. Not in the first zero-shot pass. See README section 9.
+    # 2026-09-24 bag (25 windows, tests/time_offset_eval_20260927.txt): common +0.5 ms, per camera +-0.3 ms, half-split
+    # A-B 0.3 ms median; track residual, held-out, 1-sigma unchanged -> no timing error; off (cost ~+5 % per solve).
+    time:
+      enabled: false
+      rolling_shutter: false     # Blackfly S (Sony Pregius) are global shutter
+      dt_prior_ms: 50.0          # weak prior around the start value
+      rs_prior_ms: 10.0
+    # Track time span (README section 10, tests/resid_eval_20260927.txt): every KLT track used in the RGB BA
+    # is cut into round(duration / seg_span_s) equal-time pieces, each its own landmark, so a landmark only has to
+    # absorb the KLT drift of ~seg_span_s instead of carrying a whole track's drift into the extrinsics as a bias.
+    # Not in the first zero-shot pass (design angles); the validation held-out uses whole tracks. null = the previous
+    # recipe. 2026-09-24 bag, 25 windows, half-split 1-sigma, previous -> 2 s: front+top axis 7.6 -> 2.4 mm,
+    # rear position 31.5 -> 6.3 mm, rear axis 15.6 -> 2.5 mm, rear rotation 0.25 -> 0.08 deg, side within noise;
+    # track residual 0.843 -> 0.671 px, held-out unchanged, max shift vs the validated result 1.15 sigma.
+    # 1 s: better front, worse side axis / rear (shorter baseline); 3 s: half the gain. Cost: +8 % BA time, +1 GB.
+    seg_span_s: 2.0
+    # Per-frame LiDAR-pose correction in the rig BA (rgb/framecorr.py): OFF. Track residual 0.843 -> 0.764 px
+    # (with seg_span_s 2: 0.671 -> 0.592 px) but half-split 1-sigma, held-out and plane distance unchanged within the
+    # one-split noise (the trajectory error averages out in the extrinsics). Re-test on another bag (side cameras).
+    frame_corr: {enabled: false, rot: true, pos: true, sigma_rot_deg: 0.2, sigma_pos_m: 0.02, highpass_s: 1.0,
+                 min_cams: 3, min_obs: 30}
+    # Empirical observation weights by |t - track centre| (rgb/obsweight.py): OFF (1-sigma unchanged).
+    obs_weight: {enabled: false, by: [age], nbins: 5, floor: 0.25}
   # Cross-camera / cross-TIME landmark links (rgb/crosstime.py) added to the final solve. OFF by default:
   # on the 2026-09-24 bag (25 windows) they tightened the front cluster (rotation 1-sigma 0.035 -> 0.015 deg,
   # along-axis 7.6 -> 2.9 mm) but did not help side/rear consistently (rear_right links: ~300) and raised the
@@ -187,7 +266,7 @@ rgb:
     max_cams_out: 2              # more cameras than this beyond k sigma -> the bag disagrees
 
 thermal:
-  tracks: {prep: lcn, grid: [12, 9], per_cell: 10, fb_max: 0.4, min_len: 5}
+  tracks: {prep: lcn, grid: [12, 9], per_cell: 10, fb_max: 0.4, min_len: 5, device: auto}   # device: as rgb.tracks (CUDA LK: tracking 25 -> 3 ms CPU per frame)
   time_model: smooth
   lens: {min_dist: 25.0, free: [rot, f, pp, k, rs, dt], rounds: 2}
   pos: {free: [rot, pos, dt], ties: true}
@@ -195,12 +274,18 @@ thermal:
   solve_defaults: {tie_sigma: 0.03, min_len: 12, step: 3, max_tracks: 4000, max_obs: 40, min_parallax: 1.5,
                    max_dist: 150.0, huber: 1.0, iters: 25, rounds: 3, pos_prior: 1.0, f_prior: 0.05,
                    pp_prior: 20.0, k_prior: 0.1, edge_weight: 1.0, edge_sigma: 1.0, edge_maxdepth: 40.0,
-                   edge_mindepth: 1.5}
+                   edge_mindepth: 1.5,
+                   # as rgb.solve.step_tol, plus time offsets / row readout (s); null = validated rule only
+                   step_tol: {rot: 2.0e-6, pos: 1.0e-5, f: 1.0e-6, pp: 1.0e-3, k: 1.0e-6, dt: 1.0e-6}}
   edges: {every: 6, hist_s: 1.6, maxp: 1500}
   stereo: {every: 6, gate: 6.0}
 
 validation:
   halves: true
+  # start of the two RGB half solves: "start" = the final solve's own start (zero-shot pass 2 / --init),
+  # run next to the final (~8 min less on 25 windows); "final" = from the final result, after it
+  # (validated order). Only the repeatability numbers of the validation depend on it.
+  rgb_halves_start: start
   heldout: true
   edge_frames: 12               # frames per camera and window for the LiDAR-edge metric
   vote: true

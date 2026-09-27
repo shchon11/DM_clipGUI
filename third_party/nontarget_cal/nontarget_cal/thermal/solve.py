@@ -27,7 +27,8 @@ DEFAULTS = dict(cams=list(CAMS), free=["rot", "pos", "f", "rs", "dt"], ties=Fals
                 edges=False, edge_weight=1.0, edge_sigma=1.0, edge_maxdepth=40.0, edge_mindepth=1.5,
                 time="smooth", dt_mode="seg", min_len=12, step=3, max_tracks=4000, max_obs=40,
                 min_parallax=1.5, max_dist=150.0, min_dist=0.0, huber=1.0, iters=25, rounds=3,
-                pos_prior=1.0, f_prior=0.05, pp_prior=20.0, k_prior=0.1, seed=0)
+                pos_prior=1.0, f_prior=0.05, pp_prior=20.0, k_prior=0.1, seed=0, step_tol=None,
+                lidar_report=True)
 
 
 def load_tracks(ws, plan, seg, cam, a, rng, span, tmodel):
@@ -154,7 +155,8 @@ def lidar_report(ts, cams_names):
     return rep
 
 
-def run_tba(ws, plan, segs, out, start: dict, rig=None, calib_in: bool = False, log=print, threads=None, **opts):
+def run_tba(ws, plan, segs, out, start: dict, rig=None, calib_in: bool = False, log=print, threads=None,
+            kernel=None, **opts):
     """One thermal solve. start: see init_cams. rig: optional (T_rig_lidar, {cam: T_cam_lidar of the RGB
     cameras}, R_L_V) for rig-frame reporting. calib_in: hold the calibration (held-out; with "dt" in
     free only the per-window time offsets are re-fitted)."""
@@ -162,6 +164,14 @@ def run_tba(ws, plan, segs, out, start: dict, rig=None, calib_in: bool = False, 
     a.out = Path(out)
     a.out.mkdir(parents=True, exist_ok=True)
     torch.set_num_threads(int(threads or os.environ.get("OMP_NUM_THREADS", "4")))
+    tba.KERNEL[0] = kernel or os.environ.get("NONTARGET_BA_KERNEL") or "torch"
+    if tba.KERNEL[0] == "numba":
+        try:
+            from . import fasttba
+            fasttba.set_threads(threads)
+        except Exception as ex:  # noqa  (numba missing / incompatible): the validated torch path
+            log(f"numba kernels unavailable ({ex}); using torch")
+            tba.KERNEL[0] = "torch"
     ZERO_NS = plan.t_ref
     LO_DIR = str(ws.root / "lo")
     tba.EDGE = None
@@ -175,7 +185,7 @@ def run_tba(ws, plan, segs, out, start: dict, rig=None, calib_in: bool = False, 
         logf.write(msg + "\n"); logf.flush()
 
     t_start = time.time()
-    log(f"=== run_tba segs={list(segs)} options={ {k: v for k, v in opts.items()} }")
+    log(f"=== run_tba segs={list(segs)} options={ {k: v for k, v in opts.items()} } kernel={tba.KERNEL[0]}")
     rng = np.random.default_rng(a.seed)
     segs, cams_n = list(segs), list(a.cams)
     trajs = Trajs(segs, LO_DIR, ZERO_NS)
@@ -242,7 +252,7 @@ def run_tba(ws, plan, segs, out, start: dict, rig=None, calib_in: bool = False, 
     for i in range(cams.C):
         freeA[i * NCP + 3:i * NCP + NCP] = False
     log("stage A (rotation, dt)" if freeA.any() else "landmarks only")
-    cams, X, _ = solve(cams, trajs, obs, X, freeA, prior, iters=8, huber=a.huber, log=log,
+    cams, X, _ = solve(cams, trajs, obs, X, freeA, prior, iters=8, huber=a.huber, log=log, step_tol=a.step_tol,
                        on_iteration=_viz_observer(ws, segs, a.out.name, "A", 8, a.huber,
                                                   thermal=True, held=calib_in))
     ties = None
@@ -250,17 +260,20 @@ def run_tba(ws, plan, segs, out, start: dict, rig=None, calib_in: bool = False, 
     for rnd in range(a.rounds):
         log(f"stage B round {rnd}")
         if a.ties:
+            t_ = time.time()
             (li, ln, lq), _ = tie_stats(ws, plan, cams, trajs, obs, X, lm_seg, segs, 0.3 if rnd == 0 else 0.15)
             ties = Ties(li, ln, lq, sigma=a.tie_sigma)
-            log(f"  ties: {len(ties)} landmarks on planes ({100 * len(ties) / M:.1f}%)")
+            log(f"  ties: {len(ties)} landmarks on planes ({100 * len(ties) / M:.1f}%) ({time.time() - t_:.0f} s)")
         if a.edges:
             n_as = tba.EDGE.associate(cams, trajs, gate=4.0 if rnd == 0 else 3.0)
             log(f"  edges: {n_as} associated; {tba.EDGE.stats(cams, trajs)}")
         last = rnd == a.rounds - 1
+        t_ = time.time()
         cams, X, info = solve(cams, trajs, obs, X, free, prior, ties=ties, iters=a.iters, huber=a.huber,
-                              want_cov=last and free.any(), log=log,
+                              want_cov=last and free.any(), log=log, step_tol=a.step_tol,
                               on_iteration=_viz_observer(ws, segs, a.out.name, f"B{rnd + 1}", a.iters, a.huber,
                                                          thermal=True, held=calib_in))
+        log(f"  LM: {info.get('iters')} iterations ({time.time() - t_:.0f} s)")
         r, Xc = all_residuals(cams, trajs, obs, X)
         e = r.norm(dim=1)
         if last:
@@ -272,11 +285,14 @@ def run_tba(ws, plan, segs, out, start: dict, rig=None, calib_in: bool = False, 
         X, lm_seg = X[kept], lm_seg[kept.numpy()]
         M = len(X)
         log(f"  outliers > {thr:.2f} px removed: {n0 - len(obs)} obs; {M} landmarks left")
-    # ---- LiDAR check
-    (li, ln, lq), ts = tie_stats(ws, plan, cams, trajs, obs, X, lm_seg, segs, 0.3, want_stats=True)
-    rep = lidar_report(ts, cams_n)
-    log("LiDAR check: n %d |plane| median %.3f m; %s" % (rep["n"], rep["plane_abs_median_m"], ", ".join(
-        f"{k} {100 * v['rel_depth_err_median']:+.2f}% (n {v['n']})" for k, v in rep["by_depth"].items())))
+    # ---- LiDAR check (a report only: landmark-to-plane association after the solve; nothing reads it for
+    # the intermediate solves, whose association with a cold map cache costs ~45 s)
+    rep = None
+    if a.lidar_report:
+        (li, ln, lq), ts = tie_stats(ws, plan, cams, trajs, obs, X, lm_seg, segs, 0.3, want_stats=True)
+        rep = lidar_report(ts, cams_n)
+        log("LiDAR check: n %d |plane| median %.3f m; %s" % (rep["n"], rep["plane_abs_median_m"], ", ".join(
+            f"{k} {100 * v['rel_depth_err_median']:+.2f}% (n {v['n']})" for k, v in rep["by_depth"].items())))
     # ---- report
     r, Xc = all_residuals(cams, trajs, obs, X)
     e = r.norm(dim=1)
@@ -357,14 +373,24 @@ def add_stereo(ws, plan, a, obs, M, lm_seg, lm_cam, lm_tid, segs, cams_n, log):
     """Cross-camera observations: link_stereo.py found, for landmarks (seg, cam, track id), their
     position in the OTHER camera's image at that camera's frame times."""
     z = np.load(a.stereo)
-    key = {(int(s), int(c), int(t)): i for i, (s, c, t) in enumerate(zip(lm_seg, lm_cam, lm_tid))}
-    seg_name_to_i = {s: i for i, s in enumerate(segs)}
-    cam_name_to_i = {c: i for i, c in enumerate(cams_n)}
-    si = np.array([seg_name_to_i.get(str(s), -1) for s in z["seg"]])
-    src = np.array([cam_name_to_i.get(str(c), -1) for c in z["src_cam"]])
-    dst = np.array([cam_name_to_i.get(str(c), -1) for c in z["dst_cam"]])
-    lmk = np.array([key.get((int(s), int(c), int(t)), -1) if s >= 0 and c >= 0 else -1
-                    for s, c, t in zip(si, src, z["track"])])
+    zseg, zsrc, zdst, ztrack = z["seg"], z["src_cam"], z["dst_cam"], z["track"]
+
+    def codes(col, names):
+        """name -> index (-1 unknown), vectorised over the unique names (same as a per-row dict lookup)."""
+        u, inv = np.unique(col, return_inverse=True)
+        m = {n: i for i, n in enumerate(names)}
+        return np.array([m.get(str(x), -1) for x in u], np.int64)[inv.ravel()] if len(u) else np.zeros(0, np.int64)
+    si, src, dst = codes(zseg, segs), codes(zsrc, cams_n), codes(zdst, cams_n)
+    # landmark of (segment, camera, track id): sorted composite keys + searchsorted (= the dict lookup)
+    B = np.int64(1) << 40
+    kl = (np.asarray(lm_seg, np.int64) * 8 + np.asarray(lm_cam, np.int64)) * B + np.asarray(lm_tid, np.int64)
+    kq = (si * 8 + src) * B + ztrack.astype(np.int64)
+    lmk = np.full(len(kq), -1, np.int64)
+    if len(kl):
+        order = np.argsort(kl, kind="stable")
+        j = np.clip(np.searchsorted(kl[order], kq), 0, len(kl) - 1)
+        hit = (si >= 0) & (src >= 0) & (kl[order][j] == kq)
+        lmk[hit] = order[j][hit]
     ok = (lmk >= 0) & (dst >= 0)
     ZERO_NS = plan.t_ref
     tf = np.zeros(ok.sum())

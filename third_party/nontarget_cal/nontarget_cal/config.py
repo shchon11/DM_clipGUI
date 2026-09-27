@@ -58,8 +58,11 @@ class Config(dict):
 
 def load_config(user: str | Path | None = None, overrides: dict | None = None) -> Config:
     base = yaml.safe_load((PKG / "config" / "default.yaml").read_text())
-    if user:
-        base = _merge(base, yaml.safe_load(Path(user).read_text()) or {})
+    for u in (str(user).split(",") if user else []):
+        # comma-separated overrides, applied in order; "fast" / "@pkg/config/fast.yaml" = the packaged preset
+        u = u.strip()
+        p = PKG / "config" / f"{u}.yaml" if u in ("fast",) else Path(_resolve(u))
+        base = _merge(base, yaml.safe_load(p.read_text()) or {})
     if overrides:
         base = _merge(base, overrides)
     cfg = Config(_resolve(base))

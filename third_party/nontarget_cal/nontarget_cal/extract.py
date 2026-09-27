@@ -10,7 +10,8 @@ writes (layout of /hdd/DM_calib/online/extract_win.py, so the numerics downstrea
   extract/<win>/cam/<camera>/<header + exposure/2 ns>.jpg   RGB, the recorded JPEG bytes unchanged
   extract/<win>/lidar/<header ns>.npy                        x y z intensity(=reflectivity) ring t
   extract/<win>/cam_index.npz, source.json
-  thermal16/<win>/<cam>/<header ns>.png                       raw 16-bit centi-kelvin (thermal_lo layout)
+  thermal16/<win>/<cam>.pack (+ .pack.idx.npy)                raw 16-bit centi-kelvin PNGs of every frame, back
+                                                              to back (thermal/frames.py; was <cam>/<header ns>.png)
   thermal16/<win>/index_<cam>.npz                             header_ns, sd, mad_prev, mean_K, ffc
 The window is written under <name>.partial and renamed when complete, so an interrupted extraction
 (crash, unplugged disk) leaves no half window behind.
@@ -133,8 +134,11 @@ def extract_window(bag: Bag, bag_id: str, win: dict, names: dict, cfg, ws, zero_
     (part / "lidar").mkdir(parents=True, exist_ok=True)
     for c in cams:
         (part / "cam" / c).mkdir(parents=True, exist_ok=True)
+    from .thermal.frames import PackWriter
+    tpacks = {}
     for c in tcams:
-        (tpart / c).mkdir(parents=True, exist_ok=True)
+        tpart.mkdir(parents=True, exist_ok=True)
+        tpacks[c] = PackWriter(tpart, c, int(cfg["extract"]["thermal_png_compression"]))
     idx, n_l = [], 0
     trec = {c: [] for c in tcams}
     prev = {c: None for c in tcams}
@@ -149,8 +153,7 @@ def extract_window(bag: Bag, bag_id: str, win: dict, names: dict, cfg, ws, zero_
         h = header_ns(m)
         if kind == "thermal":
             raw = np.frombuffer(bytes(m.data), np.uint16).reshape(m.height, m.width)
-            cv2.imwrite(str(tpart / c / f"{h}.png"), raw, [cv2.IMWRITE_PNG_COMPRESSION,
-                                                           int(cfg["extract"]["thermal_png_compression"])])
+            tpacks[c].add(h, raw)          # thermal16/<win>/<cam>.pack (thermal/frames.py)
             f = raw.astype(np.float32)
             mad = float(np.mean(np.abs(f - prev[c]))) if prev[c] is not None else np.nan
             prev[c] = f
@@ -168,6 +171,8 @@ def extract_window(bag: Bag, bag_id: str, win: dict, names: dict, cfg, ws, zero_
         eff = h + int(round(exp_us * 500.0))
         (part / "cam" / c / f"{eff}.jpg").write_bytes(bytes(m.data))
         idx.append((c, h, camts, exp_us, eff))
+    for w_ in tpacks.values():
+        w_.close()
     per = {c: sum(1 for r in idx if r[0] == c) for c in cams}
     if idx:
         np.savez(part / "cam_index.npz", channel=np.array([r[0] for r in idx]),

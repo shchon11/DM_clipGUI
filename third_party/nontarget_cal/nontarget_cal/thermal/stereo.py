@@ -70,11 +70,13 @@ def link_stereo(ws, plan, segs, res, out, every=6, gate=6.0, time_kind="smooth",
             tf = (tf_all[np.searchsorted(h_all, hdr)] - ZERO_NS) * 1e-9
             data[c] = dict(hdr=hdr, tf=tf, of=z["obs_frame"], ot=z["obs_track"], xy=z["obs_xy"].astype(np.float64))
         imgs = {}
+        from .frames import ThermalFrames
+        frames = {c: ThermalFrames(ws.thermal16(seg), c).load_all() for c in cams_n}
 
         def img(c, h):
             k = (c, int(h))
             if k not in imgs:
-                imgs[k] = prep_image(cv2.imread(str(ws.thermal16(seg) / c / f"{int(h)}.png"), cv2.IMREAD_UNCHANGED))
+                imgs[k] = prep_image(frames[c].read(h))
             return imgs[k]
 
         nlink = 0
@@ -140,10 +142,25 @@ def link_stereo(ws, plan, segs, res, out, every=6, gate=6.0, time_kind="smooth",
                 out["src_header_ns"].append(np.full(len(q), D["hdr"][fs], np.int64)); out["src_uv"].append(xy[sel[q]])
                 nlink += len(q)
         imgs.clear()          # per window (was per direction: every frame used both ways was prepared twice)
+        frames.clear()
         dd = np.concatenate(out["dst_uv"][-50:]) - np.concatenate(out["pred_uv"][-50:]) if out["dst_uv"] else np.zeros((0, 2))
         log(f"{seg}: {nlink} links, |LK - prediction| median {np.median(np.linalg.norm(dd, axis=1)) if len(dd) else np.nan:.2f} px "
               f"({time.time() - t0:.0f} s)")
     tmp = a.out.with_name(a.out.stem + ".tmp.npz")
-    np.savez(tmp, **{k: np.concatenate(v) for k, v in out.items()})
+    n = int(sum(len(v) for v in out["seg"]))
+    np.savez(tmp, n=n, **{k: np.concatenate(v) for k, v in out.items() if n})
     os.replace(tmp, a.out)
-    return {"links": int(sum(len(v) for v in out["seg"]))}
+    return {"links": n}
+
+
+def merge_links(parts, out):
+    """Concatenate per-window link files (link_stereo on one window each, run in parallel) in window
+    order: the same arrays as one link_stereo over all windows."""
+    zs = [np.load(p) for p in parts]
+    zs = [z for z in zs if int(z["n"])]
+    keys = ("seg", "src_cam", "track", "dst_cam", "dst_header_ns", "dst_uv", "pred_uv", "src_header_ns", "src_uv")
+    out = Path(out)
+    tmp = out.with_name(out.stem + ".tmp.npz")
+    np.savez(tmp, **{k: np.concatenate([z[k] for z in zs]) for k in keys})
+    os.replace(tmp, out)
+    return {"links": int(sum(len(z["seg"]) for z in zs))}

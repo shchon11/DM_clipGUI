@@ -24,6 +24,38 @@ def _log_to(path):
     return log, f
 
 
+class MemPeak:
+    """Peak private (anonymous) and file-backed resident memory of this process, sampled every 0.5 s from
+    /proc/self/status. ru_maxrss counts pages of memory-mapped files (the LiDAR maps are mapped and shared
+    between processes through the page cache), which the OS can drop; RssAnon is what must fit in RAM."""
+
+    def __init__(self):
+        import threading
+        self.anon = self.file = 0.0
+        self._stop = threading.Event()
+        self._t = threading.Thread(target=self._run, daemon=True)
+        self._t.start()
+
+    def sample(self):
+        try:
+            for line in open("/proc/self/status"):
+                if line.startswith("RssAnon:"):
+                    self.anon = max(self.anon, int(line.split()[1]) / 1e6)
+                elif line.startswith("RssFile:"):
+                    self.file = max(self.file, int(line.split()[1]) / 1e6)
+        except OSError:
+            pass
+
+    def _run(self):
+        while not self._stop.wait(0.5):
+            self.sample()
+
+    def stop(self):
+        self._stop.set()
+        self.sample()
+        return {"max_anon_gb": round(self.anon, 3), "max_file_gb": round(self.file, 3)}
+
+
 def main(task_file: str) -> int:
     spec = json.loads(Path(task_file).read_text())
     log, fh = _log_to(spec["log"])
@@ -36,6 +68,7 @@ def main(task_file: str) -> int:
     from .viz import configure
     viz = configure(ws.root, cfg, context=spec.get("viz_context"), log=log)
     t0 = time.time()
+    mem = MemPeak()
     try:
         from . import tasks
         fn = getattr(tasks, "t_" + spec["task"])
@@ -50,7 +83,7 @@ def main(task_file: str) -> int:
         import resource
         ru = resource.getrusage(resource.RUSAGE_SELF)
         write_json(Path(spec["result"]), {"ok": True, "wall_s": time.time() - t0, "cpu_s": ru.ru_utime + ru.ru_stime,
-                                          "max_rss_gb": ru.ru_maxrss / 1e6, "out": out})
+                                          "max_rss_gb": ru.ru_maxrss / 1e6, **mem.stop(), "out": out})
         return 0
     except Exception as ex:  # noqa
         log(traceback.format_exc())

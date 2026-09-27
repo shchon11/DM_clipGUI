@@ -1,0 +1,104 @@
+Per-camera time offsets in the RGB rig BA + where the remaining ~0.85 px track residual comes from, 2026-09-27
+==========================================================================================================
+Bag rec_20260924_204902 (night), the 25 windows / protocol of tests/crosstime_eval_20260926.txt: final from
+zeroshot_pass2, halves A = windows[0::2] / B = windows[1::2] started from the variant's final, 1-sigma = |A-B|/sqrt(2),
+held-out = each half's calibration (and time offsets) held on the other half. Work: /hdd/DM_calib/nt_regress/dt_study.
+Scripts: tests/time_run_eval.sh, tests/time_compare.py, tests/time_jaccheck.py, tests/resid_*.py.
+
+Facts of this bag (extract/b0_meta_*.npz): all 14 cameras have identical camera stamps (phase vs front5 0.0 +- 0.2 ms,
+period 33.33 ms), exposure 15.70 ms fixed for all, header = camera_timestamp - 15.63 ms (= exposure start).
+Cameras (Blackfly S, Sony Pregius) are global shutter; cameras and Ouster are PTP-synchronised. The tool uses
+t = header + exposure/2 (extract.py), LiDAR points at header + per-point t (deskew); no camera-LiDAR offset was
+estimated before (run_ba dt_ms = 0, not set by the pipeline).
+
+1. Model (rgb/rigba.py, rgb/solve.py; option rgb.solve.time, off by default)
+   t_obs = header + exposure/2 + dt_c + rs_c (v/H - 1/2); pose table re-evaluated at t + dt_c between solves
+   (solve.retime); within a solve the LiDAR pose is first order in the time change (LO body rate, velocity).
+   Analytic Jacobians vs central differences: max |ana - num| 2e-7 (|J| up to 2e3) for dt, rs, rotation, position,
+   focal, landmark; first-order vs exact pose at |d| <= 5.5 ms: 0.0001 px median, 0.019 px max. With the option off
+   the parameter layout stays 13 wide: result and state.npz bit-identical to 996d2f8 (2-window test).
+   Gauge: none needed - the trajectory is fixed, so every dt_c is observable against the LiDAR clock (weak prior 50 ms).
+   Sensitivity (2 windows, injected global offset, dt free): +16 ms -> recovered -16.8 +- 0.8 ms (residual 0.838 px;
+   held at the wrong offset: 1.131 px), -30 ms -> +29.1 ms (held: 1.398 px): a half-exposure (7.9 ms) error would be obvious.
+
+2. Estimated offsets (ms; formal sd 0.02-0.03 ms, optimistic)
+   camera          final   A      B      A-B
+   front1          +0.81  +0.65  +1.10  -0.45
+   front2          +0.65  +0.52  +0.84  -0.32
+   front3          +0.70  +0.49  +0.98  -0.49
+   front4          +0.68  +0.63  +0.76  -0.13
+   front5          +0.63  +0.53  +0.78  -0.26
+   front6          +0.51  +0.38  +0.67  -0.29
+   front7          +0.49  +0.31  +0.72  -0.41
+   front8          +0.52  +0.39  +0.68  -0.29
+   front9          +0.46  +0.33  +0.59  -0.26
+   top             +0.25  +0.07  +0.59  -0.52
+   side_left       +0.42  +0.33  +0.49  -0.16
+   side_right      +0.87  +0.78  +1.03  -0.25
+   rear_left       -0.33  -0.07  -0.70  +0.63
+   rear_right      +0.02  +0.33  -0.34  +0.67
+   common (mean) +0.48 ms; per-camera spread 0.31 ms (sd); |A-B| median 0.31, max 0.67 ms -> per-camera deltas are ~0
+   within the half-split noise; the common camera-LiDAR offset is +0.5 ms (A +0.40, B +0.72): the stamp + exposure/2
+   convention and the LiDAR per-point times agree to < 1 ms. (The +64.5 ms of the older board study does not apply here.)
+   Rolling shutter (rs free as well, "dtrs"): rs -4.3 ... +5.8 ms with inconsistent signs between halves, dt unchanged
+   within 0.5 ms, no residual change -> consistent with a global shutter; the rs option stays in the code, off.
+
+3. Before / after (medians over cameras; base = validated rgb/final)
+   group                    base          dt            dt+rs
+   front+top rot / axis     0.035 / 7.6   0.034 / 8.4   0.030 / 8.0    (deg / mm)
+   front+top pos / f        13.8 / 0.72   14.4 / 0.76   14.3 / 0.76    (mm / px)
+   side pos / axis           8.3 / 3.7     8.4 / 3.8     8.3 / 3.8
+   rear pos / axis          31.5 / 15.6   30.7 / 14.1   30.5 / 13.7
+   track reproj (final)     0.843         0.843         0.843
+   held-out                 0.849         0.848         0.848
+   |landmark-LiDAR plane|   26.4 mm       26.5 mm       26.5 mm
+   final vs base            -             max 0.25 sig  max 0.28 sig  (no camera > 3 sigma; median shift 1.0 / 1.2 mm)
+   Residual vs image-motion speed (px/frame; bins 0-1/1-2/2-4/4-8/8-16/16-32/>32):
+     base 0.560/0.874/0.863/0.862/0.890/1.033/1.261, dt 0.559/0.874/0.862/0.861/0.890/1.033/1.260 (identical);
+     the residual along the image motion is SMALLER than across it at every speed (e.g. 8-16 px/frame: 0.45 / 0.53 px)
+     and its signed mean is 0 (|mean| <= 0.03 px): no time signature. The residual the solve leaves asks for
+     |delta| <= 0.01 ms per camera.
+   Verdict: no time-offset error in this bag. Not made default (rgb.solve.time.enabled: false).
+   Runtime: ~+5 % per solve (2-window test 21 -> 22 s); the full-size runs here (2918 s) ran on a shared, loaded box
+   and are not comparable with the 1416 s of the unloaded baseline. Peak RSS 8.2 GB (final, 25 windows).
+
+4. Where the residual comes from (base final, 10.8 M observations; tests/resid_*.py)
+   a) LiDAR-odometry trajectory, per frame (resid_pose_fit.py): all 14 cameras are exposed at the same instant, so a
+      trajectory error is common to ~230 observations of ~12 cameras per frame. Fitting a 6-DoF LiDAR-pose correction
+      per synchronous frame (37,273 frames; landmarks and calibration held): median 0.843 -> 0.761 px, rms(<3 px)
+      1.170 -> 1.100; null (random groups of the same size) 0.843 -> 0.841. Corrections: rotation rms 45 / 23 / 15 mdeg
+      about LiDAR x / y / z (x = vehicle longitudinal: roll dominates), translation 2.5-3.1 mm rms, consecutive-frame
+      correlation 0.2-0.4 (part smooth, part frame-level). Quadrature share: sqrt(0.843^2 - 0.761^2) = 0.36 px.
+      IMU (/imu/data at 100 Hz, x-rate sign flipped vs LiDAR x: corr -0.95, y +0.99, z +1.00): the rotation between LO
+      knots that the 10 Hz SLERP misses is 12 / 12 / 4 mdeg rms and correlates with the image fit (+0.25 / +0.24 /
+      +0.18, slopes 0.4-0.9); high-passed full IMU-vs-LO deviation: corr +0.25-0.32 (x), +0.16 (y), +0.14-0.21 (z).
+      Residual vs vehicle speed: 0.66 px < 3 m/s, 0.94 px 3-12 m/s (flat in yaw rate 2-20 deg/s and in image motion
+      1-16 px/frame) -> road-induced body motion / vibration the LO misses, not blur or timing.
+   b) KLT feature drift and localisation (resid_pose_fit.py, resid_image.py): after the per-frame pose fit the residual
+      still grows with |t - track centre|: 0.59 (0-0.2 s) / 0.63 / 0.75 / 0.89 / 1.06 px (> 2 s; before the fit
+      0.68 ... 1.13 px, the same growth at every depth 0-6 / 6-12 / 12-25 / > 25 m, resid_vs_speed.py) -> not a
+      translation trajectory error (that falls with depth) and not common to the frame; along a track
+      the residual is smooth (lag-1 correlation over 133 ms: 0.77 u / 0.70 v). The tracker is frame-to-frame pyramidal
+      LK: forward-backward closure over whole tracks (3 windows, 300 long tracks per camera) 0.30 px after 30 frames,
+      0.42 after 60-120, 0.53 beyond (front+top); side 0.39 / 0.67 / 0.97; rear 0.34 / 1.06 / 5.0 px - the drift that
+      the rear cameras' larger residual (1.02-1.09 px) reflects. Corner strength (min eigenvalue quintiles):
+      1.00 / 0.91 / 0.85 / 0.78 / 0.67 px; brightness (21x21 mean gray 0-20 ... 140-255): 0.89 / 0.85 / 0.88 / 0.79 /
+      0.73 px (night noise / weak corners).
+   c) Lens model (resid_lens.py): the mean residual in 12x8 image cells is 0.02-0.04 px (rear 0.07; max 0.1-0.4 px in
+      corner cells) and explains 0.1 % of the residual variance; residual is not larger at the periphery (front
+      0-300 px radius 0.85-1.04, > 900 px 0.73-0.81). The KB model is adequate.
+   d) Time offset / rolling shutter: none (sections 2-3).
+   => The ~0.85 px is feature measurement error (KLT drift along a track + night localisation noise), plus ~0.36 px
+      (quadrature) of per-frame trajectory error, mostly roll at driving speed. Linked tracks (learned loose links,
+      resid_pose_fit.py on xl_loose_final): linked observations 0.880 -> 0.801 px after the per-frame pose fit, unlinked
+      0.905 -> 0.828: links carry the same error as unlinked tracks - each linked track brings its own KLT drift and
+      viewpoint-dependent feature centre, so a ~1 px inconsistency between two tracks of one point is expected; no
+      calibration model term (time, lens) removes it.
+   Not done: cross-time re-run on the dt model (dt ~ 0.5 ms common, per-camera ~0: the links would see the same
+   geometry; redirected to the residual analysis above).
+
+5. Next steps (not implemented)
+   - Features: re-anchor KLT to a key-frame template (or track against the first frame at fixed scale), cap the track
+     time span used in the BA (+-1 s: 0.68-0.72 px), weight by corner strength.
+   - Trajectory: per-frame (or 30 Hz spline) pose refinement in the RGB BA with a smoothness prior, or IMU-aided
+     continuous-time LO (the IMU roll rate sign is flipped relative to the LiDAR frame - fix before use).

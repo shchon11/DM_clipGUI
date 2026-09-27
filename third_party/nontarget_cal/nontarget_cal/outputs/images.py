@@ -190,19 +190,20 @@ def make_images(ws, cfg, rgb_result, thermal_result, parked, moving, outdir: Pat
                     rs, W, H = 0.0, Wr, Hr
                     tc = float(te)
                 else:
-                    fs = sorted((ws.thermal16(seg) / c).glob("*.png"))
-                    if not fs:
+                    from ..thermal.frames import ThermalFrames
+                    fr = ThermalFrames(ws.thermal16(seg), c)
+                    if not len(fr.headers):
                         continue
                     from ..thermal.timemodel import Plan, t_frame
                     plan = Plan(ws)
-                    hh = np.array([int(f.stem) for f in fs])
+                    hh = fr.headers
                     segs = res["segs"]
                     dts = cv_["dt_s"]
                     dt = dts[segs.index(seg)] if (isinstance(dts, list) and seg in segs and len(dts) == len(segs)) else cv_["dt_s_mean"]
                     tf = t_frame(ws, plan.bag(seg), c, hh, res.get("time_model", "smooth"))
                     k = int(np.argmin(np.abs(tf + dt * 1e9 - t0)))
                     tc = tf[k] + dt * 1e9
-                    img = thermal8(cv2.imread(str(fs[k]), cv2.IMREAD_UNCHANGED))
+                    img = thermal8(fr.read(hh[k]))
                     rs, W, H = float(cv_["rs_s"]), Wt, Ht
                 kk = int(np.argmin(np.abs(hdr + int(5e7) - tc)))
                 Pw_all = []

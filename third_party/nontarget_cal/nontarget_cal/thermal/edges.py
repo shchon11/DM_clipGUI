@@ -6,6 +6,7 @@ docstring (reproduced in `process`) for the method. Output: <workdir>/thermal/ed
 """
 from __future__ import annotations
 
+import math
 import os
 import time
 
@@ -170,29 +171,16 @@ def process(ws, plan, seg, calib, every=6, hist=1.6, maxp=1500, cams=CAMS, time_
     hdr = np.array([int(f.stem) for f in files], np.int64)
     ok = (hdr >= a_ - 100_000_000) & (hdr + 100_000_000 <= b_)
     files, hdr = [f for f, k in zip(files, ok) if k], hdr[ok]
-    # ---- 1. depth edges of every 2nd sweep, in the LO world
-    sw = {}
-    for i in range(0, len(files), 2):
-        s = np.load(files[i])
-        xyz, tt, _ = organise(s)
-        P, rc, kind, jump, rfg = depth_edges(xyz)
-        if not len(P):
-            continue
-        sup = support_count(rc, kind)
-        m = sup >= 1
-        P, rc, kind, rfg = P[m], rc[m], kind[m], rfg[m]
-        tp = hdr[i] + np.rint(np.nan_to_num(tt[rc[:, 0], rc[:, 1]]) * 1e9).astype(np.int64)
-        tp = np.clip(tp, a_, b_)
-        q = np.rint(tp / 20_000).astype(np.int64)
-        uq, inv = np.unique(q, return_inverse=True)
-        R, p = tr.R(uq * 20_000), tr.p(uq * 20_000)
-        Pw = np.einsum("nij,nj->ni", R[inv], P) + p[inv]
-        sw[int(hdr[i])] = (Pw.astype(np.float32), kind.astype(np.int8), rfg.astype(np.float32))
+    # ---- 1. depth edges of every 2nd sweep, in the LO world (computed with the LO of the window, cached)
+    sw = sweep_edges(ws, seg, tr, files, hdr)
     log(f"{seg}: {len(sw)} sweeps of edges, {sum(len(v[0]) for v in sw.values())} points, {time.time() - t0:.0f} s", flush=True)
     swh = np.array(sorted(sw))
-    mp = np.load(ws.lo("map", seg))
+    from ..fastops import load_npz_mmap
+    mp = load_npz_mmap(ws.lo("map", seg))          # only the slices of each frame's history are read
     MP, mst, mhdr = mp["P"], mp["start"], mp["hdr"]
+    from .frames import ThermalFrames
     for ci, cam in enumerate(cams):
+        frames = ThermalFrames(ws.thermal16(seg), cam)
         cc = calib["cameras"][cam]
         T_cl = np.array(cc["T_cam_lidar"])
         K = cc["intr"]
@@ -222,14 +210,7 @@ def process(ws, plan, seg, calib, every=6, hist=1.6, maxp=1500, cams=CAMS, time_
             uv = proj(Pc, K)
             # z-buffer of the accumulated map
             ks = np.flatnonzero((mhdr >= tcap - hist * 1e9) & (mhdr <= tcap + 1e8))
-            M = MP[mst[ks[0]]:mst[ks[-1] + 1]].astype(np.float64)
-            Mc = ((M - pw) @ Rw) @ T_cl[:3, :3].T + T_cl[:3, 3]
-            im = (Mc[:, 2] > 0.8) & (np.abs(Mc[:, 0]) < 0.7 * Mc[:, 2]) & (np.abs(Mc[:, 1]) < 0.55 * Mc[:, 2])
-            Mc = Mc[im]
-            uvm = proj(Mc, K)
-            zb = np.full((H // 8 + 1, W // 8 + 1), np.inf)
-            ia = (uvm[:, 0] >= 0) & (uvm[:, 0] < W) & (uvm[:, 1] >= 0) & (uvm[:, 1] < H)
-            np.minimum.at(zb, ((uvm[ia, 1] // 8).astype(int), (uvm[ia, 0] // 8).astype(int)), Mc[ia, 2])
+            zb = zbuffer(MP, int(mst[ks[0]]), int(mst[ks[-1] + 1]), pw, Rw, T_cl, K)
             ie = (uv[:, 0] >= 4) & (uv[:, 0] < W - 4) & (uv[:, 1] >= 4) & (uv[:, 1] < H - 4)
             cu = np.clip((uv[:, 0] // 8).astype(int), 0, W // 8); cv_ = np.clip((uv[:, 1] // 8).astype(int), 0, H // 8)
             vis = ie & (Pc[:, 2] <= 1.05 * zb[cv_, cu] + 0.2)
@@ -243,7 +224,7 @@ def process(ws, plan, seg, calib, every=6, hist=1.6, maxp=1500, cams=CAMS, time_
                 rest = np.flatnonzero(~near)
                 keep = np.r_[np.flatnonzero(near), np.random.default_rng(int(f)).permutation(rest)[:max(0, maxp - near.sum())]]
                 Pw, kd, Pc = Pw[keep], kd[keep], Pc[keep]
-            raw = cv2.imread(str(ws.thermal16(seg) / cam / f"{h_all[f]}.png"), cv2.IMREAD_UNCHANGED).astype(np.float32)
+            raw = frames.read(h_all[f]).astype(np.float32)
             lo, hi = np.percentile(raw, [1.0, 99.5])
             img8 = np.clip((raw - lo) / max(hi - lo, 1.0) * 255, 0, 255).astype(np.uint8)
             ex, _, _ = thermal_edges(img8)
@@ -267,3 +248,109 @@ def process(ws, plan, seg, calib, every=6, hist=1.6, maxp=1500, cams=CAMS, time_
               f"{time.time() - t0:.0f} s")
 
 
+
+
+def sweep_edges(ws, seg, tr, files, hdr):
+    """{sweep header: (world edge points f4, kind i1, foreground range f4)} of every 2nd sweep, the part of the
+    edge term that does not depend on the thermal calibration. Cached as lo/tedge_<win>.npz, written right
+    after the window's LiDAR odometry (t_lo_chain; the sweeps are then in memory) - same arrays."""
+    cache = ws.lo("tedge", seg)
+    if cache.exists():
+        z = np.load(cache)
+        st, P, kind, rfg = z["start"], z["P"], z["kind"], z["rfg"]      # each member read once
+        return {int(h): (P[st[i]:st[i + 1]], kind[st[i]:st[i + 1]], rfg[st[i]:st[i + 1]])
+                for i, h in enumerate(z["hdr"])}
+    a_, b_ = tr.span()
+    from ..lo.lotraj import read_sweep
+    sw = {}
+    for i in range(0, len(files), 2):
+        s = read_sweep(files[i])
+        xyz, tt, _ = organise(s)
+        P, rc, kind, jump, rfg = depth_edges(xyz)
+        if not len(P):
+            continue
+        sup = support_count(rc, kind)
+        m = sup >= 1
+        P, rc, kind, rfg = P[m], rc[m], kind[m], rfg[m]
+        tp = hdr[i] + np.rint(np.nan_to_num(tt[rc[:, 0], rc[:, 1]]) * 1e9).astype(np.int64)
+        tp = np.clip(tp, a_, b_)
+        q = np.rint(tp / 20_000).astype(np.int64)
+        uq, inv = np.unique(q, return_inverse=True)
+        R, p = tr.R(uq * 20_000), tr.p(uq * 20_000)
+        Pw = np.einsum("nij,nj->ni", R[inv], P) + p[inv]
+        sw[int(hdr[i])] = (Pw.astype(np.float32), kind.astype(np.int8), rfg.astype(np.float32))
+    return sw
+
+
+def save_sweep_edges(ws, seg):
+    """Compute and cache sweep_edges for a window (called at the end of its LO chain)."""
+    from ..workspace import atomic_savez
+    tr = LOTraj.load(ws.lo("ref", seg))
+    a_, b_ = tr.span()
+    files = sorted((ws.seg_dir(seg) / "lidar").glob("*.npy"))
+    hdr = np.array([int(f.stem) for f in files], np.int64)
+    ok = (hdr >= a_ - 100_000_000) & (hdr + 100_000_000 <= b_)
+    files, hdr = [f for f, k in zip(files, ok) if k], hdr[ok]
+    sw = sweep_edges(ws, seg, tr, files, hdr)
+    ks = sorted(sw)
+    st = np.cumsum([0] + [len(sw[k][0]) for k in ks])
+    cat = lambda j, dt, sh: np.concatenate([sw[k][j] for k in ks]) if ks else np.zeros(sh, dt)  # noqa: E731
+    atomic_savez(ws.lo("tedge", seg), hdr=np.array(ks, np.int64), start=st, P=cat(0, np.float32, (0, 3)),
+                 kind=cat(1, np.int8, 0), rfg=cat(2, np.float32, 0))
+    return len(ks)
+
+
+def _zbuffer_np(MP, a, b, pw, Rw, T_cl, K):
+    M = MP[a:b].astype(np.float64)
+    Mc = ((M - pw) @ Rw) @ T_cl[:3, :3].T + T_cl[:3, 3]
+    im = (Mc[:, 2] > 0.8) & (np.abs(Mc[:, 0]) < 0.7 * Mc[:, 2]) & (np.abs(Mc[:, 1]) < 0.55 * Mc[:, 2])
+    Mc = Mc[im]
+    uvm = proj(Mc, K)
+    zb = np.full((H // 8 + 1, W // 8 + 1), np.inf)
+    ia = (uvm[:, 0] >= 0) & (uvm[:, 0] < W) & (uvm[:, 1] >= 0) & (uvm[:, 1] < H)
+    np.minimum.at(zb, ((uvm[ia, 1] // 8).astype(int), (uvm[ia, 0] // 8).astype(int)), Mc[ia, 2])
+    return zb
+
+
+try:
+    os.environ.setdefault("NUMBA_THREADING_LAYER", "omp")
+    import numba as _nb
+
+    @_nb.njit(cache=True)
+    def _zbuffer_nb(MP, a, b, pw, Rw, R2, t2, K, W_, H_):
+        fx, fy, cx, cy, k1, k2 = K[0], K[1], K[2], K[3], K[4], K[5]
+        zb = np.full((H_ // 8 + 1, W_ // 8 + 1), np.inf)
+        for i in range(a, b):
+            d0, d1, d2 = MP[i, 0] - pw[0], MP[i, 1] - pw[1], MP[i, 2] - pw[2]
+            l0 = d0 * Rw[0, 0] + d1 * Rw[1, 0] + d2 * Rw[2, 0]
+            l1 = d0 * Rw[0, 1] + d1 * Rw[1, 1] + d2 * Rw[2, 1]
+            l2 = d0 * Rw[0, 2] + d1 * Rw[1, 2] + d2 * Rw[2, 2]
+            x = l0 * R2[0, 0] + l1 * R2[0, 1] + l2 * R2[0, 2] + t2[0]
+            y = l0 * R2[1, 0] + l1 * R2[1, 1] + l2 * R2[1, 2] + t2[1]
+            z = l0 * R2[2, 0] + l1 * R2[2, 1] + l2 * R2[2, 2] + t2[2]
+            if not (z > 0.8 and abs(x) < 0.7 * z and abs(y) < 0.55 * z):
+                continue
+            xn, yn = x / z, y / z
+            r2 = xn * xn + yn * yn
+            dd = 1 + k1 * r2 + k2 * r2 * r2
+            u = fx * xn * dd + cx
+            v = fy * yn * dd + cy
+            if u >= 0 and u < W_ and v >= 0 and v < H_:
+                r, c = int(math.floor(v / 8)), int(math.floor(u / 8))
+                if z < zb[r, c]:
+                    zb[r, c] = z
+        return zb
+    _ZB = _zbuffer_nb
+except Exception:  # noqa  (no numba)
+    _ZB = False
+
+
+def zbuffer(MP, a, b, pw, Rw, T_cl, K):
+    """Nearest map depth per 8x8 pixel cell of the frame (the map points of the history [a, b)). Compiled
+    with numba when available: the same formulas point by point in one pass, no temporaries (differs from
+    the numpy version only by the rounding of the 3x3 products)."""
+    if _ZB is False:
+        return _zbuffer_np(MP, a, b, pw, Rw, T_cl, K)
+    return _ZB(MP, a, b, np.ascontiguousarray(pw, np.float64), np.ascontiguousarray(Rw, np.float64),
+               np.ascontiguousarray(T_cl[:3, :3], np.float64), np.ascontiguousarray(T_cl[:3, 3], np.float64),
+               np.asarray(K, np.float64), W, H)

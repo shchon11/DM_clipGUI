@@ -18,7 +18,8 @@ SWEEP_S = 0.1
 
 
 def load(path: Path, rmin: float, rmax: float):
-    s = np.load(path)
+    from .lotraj import read_sweep
+    s = read_sweep(path)
     p = np.stack([s["x"], s["y"], s["z"]], -1).astype(np.float64)
     r = np.linalg.norm(p, axis=1)
     k = (r > rmin) & (r < rmax)

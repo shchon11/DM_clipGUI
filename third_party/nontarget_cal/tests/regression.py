@@ -16,6 +16,7 @@ Nothing under /hdd/DM_calib other than the tool's own OUT/WORK is written.
 """
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -77,6 +78,10 @@ def cmp_extract(work, seg, cams, n_bytes=40):
     for c in cams:
         a = sorted(p.name for p in (new / "cam" / c).glob("*.jpg"))
         b = sorted(p.name for p in (old / "cam" / c).glob("*.jpg"))
+        pr = new / "cam" / c / "PRUNED"
+        if pr.exists():               # thinned after tracking (extract.keep_rgb_every): compare the kept ones
+            k = json.loads(pr.read_text())["keep_every"]
+            b = b[::k]
         same_names = a == b
         pick = a[:: max(1, len(a) // n_bytes)][:n_bytes] if same_names else []
         same_bytes = all((new / "cam" / c / f).read_bytes() == (old / "cam" / c / f).read_bytes() for f in pick)
@@ -91,13 +96,16 @@ def cmp_extract(work, seg, cams, n_bytes=40):
 
 def cmp_thermal_frames(work, seg, cams, n=20):
     out = {}
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from nontarget_cal.thermal.frames import ThermalFrames
     for c in cams:
-        a = sorted(p.name for p in (work / "thermal16" / seg / c).glob("*.png"))
+        fr = ThermalFrames(work / "thermal16" / seg, c)          # pack or per-frame PNG files
+        a = [f"{h}.png" for h in fr.headers]
         old = TH / "extract" / "night16" / c
         present = [f for f in a if (old / f).exists()]
         pick = present[:: max(1, len(present) // n)][:n]
         import cv2
-        same = all(np.array_equal(cv2.imread(str(work / "thermal16" / seg / c / f), -1), cv2.imread(str(old / f), -1)) for f in pick)
+        same = all(np.array_equal(fr.read(int(f[:-4])), cv2.imread(str(old / f), -1)) for f in pick)
         out[c] = {"n_new": len(a), "n_in_old_extract": len(present), "same_pixels_sampled": same}
     return out
 

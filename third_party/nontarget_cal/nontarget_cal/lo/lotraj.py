@@ -76,8 +76,36 @@ def sweep_files(seg: Path):
     return files, np.array([int(f.stem) for f in files], np.int64)
 
 
+_SWEEP_CACHE: dict | None = None      # path -> raw sweep array while a window's LO chain runs (read once)
+
+
+class sweep_cache:
+    """Context manager: inside it, read_sweep() keeps every raw sweep file in memory (~1.1 GB for a 40 s
+    window), so KISS, the refinement, the map and the check read each file from disk once, not 4 times."""
+
+    def __enter__(self):
+        global _SWEEP_CACHE
+        _SWEEP_CACHE = {}
+        return self
+
+    def __exit__(self, *a):
+        global _SWEEP_CACHE
+        _SWEEP_CACHE = None
+
+
+def read_sweep(path: Path) -> np.ndarray:
+    """np.load of a sweep file (cached inside `sweep_cache`; the arrays are never modified by callers)."""
+    if _SWEEP_CACHE is None:
+        return np.load(path)
+    k = str(path)
+    s = _SWEEP_CACHE.get(k)
+    if s is None:
+        s = _SWEEP_CACHE[k] = np.load(path)
+    return s
+
+
 def load_sweep(path: Path, rmin: float = 2.5, rmax: float = 100.0):
-    s = np.load(path)
+    s = read_sweep(path)
     r = np.sqrt(s["x"].astype(np.float64) ** 2 + s["y"] ** 2 + s["z"] ** 2)
     return s[(r > rmin) & (r < rmax)]
 
@@ -95,10 +123,12 @@ def deskew(s, header_ns: int, traj: LOTraj, shift_ns: int = 0) -> np.ndarray:
 
 
 def voxel_down(p: np.ndarray, voxel: float, *extra):
+    """First point (in input order) of every voxel, in input order. fastops.first_occurrence = the
+    sorted return_index of np.unique (hash table instead of a stable sort; identical indices)."""
+    from ..fastops import first_occurrence
     k = np.floor(p / voxel).astype(np.int64) + (1 << 20)
     key = (k[:, 0] << 42) | (k[:, 1] << 21) | k[:, 2]
-    _, idx = np.unique(key, return_index=True)
-    idx.sort()
+    idx = first_occurrence(key)
     return (p[idx], *(e[idx] for e in extra)) if extra else p[idx]
 
 

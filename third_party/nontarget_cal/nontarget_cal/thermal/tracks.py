@@ -50,8 +50,12 @@ def prep_image(raw: np.ndarray, kind: str = "lcn", s: float = 10.0, eps: float =
     return CLAHE.apply(a) if kind == "clahe" else a
 
 
-def track(imgs, skip_gap, grid=(12, 9), per_cell=10, fb_max=0.4, min_len=5, qual=0.01, min_dist=10):
-    """imgs: list of 8-bit images; skip_gap[i] True if frame i follows a freeze (restart all)."""
+def track(imgs, skip_gap, grid=(12, 9), per_cell=10, fb_max=0.4, min_len=5, qual=0.01, min_dist=10, device="cpu"):
+    """imgs: list of 8-bit images; skip_gap[i] True if frame i follows a freeze (restart all).
+    device: cpu (validated, bit-identical) | cuda | opencl | auto (rgb/tracks.lk_device); the refill mask is drawn
+    only around the cells that are refilled (identical)."""
+    from ..rgb.tracks import LKRunner, occupancy
+    lk = LKRunner(device, LK)
     h, w = imgs[0].shape
     gx, gy = grid
     cw, ch = w / gx, h / gy
@@ -61,11 +65,11 @@ def track(imgs, skip_gap, grid=(12, 9), per_cell=10, fb_max=0.4, min_len=5, qual
     nid = 0
     prev = None
     for fi, img in enumerate(imgs):
+        cur = lk.frame(img)
         if skip_gap[fi]:
             pts = np.zeros((0, 2), np.float32); ids = np.zeros(0, np.int64); prev = None
         if prev is not None and len(pts):
-            p1, st, _ = cv2.calcOpticalFlowPyrLK(prev, img, pts.reshape(-1, 1, 2), None, **LK)
-            p0, st2, _ = cv2.calcOpticalFlowPyrLK(img, prev, p1, None, **LK)
+            p1, st, p0, st2 = lk.pair(prev, cur, pts)
             fb = np.linalg.norm(p0.reshape(-1, 2) - pts, axis=1)
             p1 = p1.reshape(-1, 2)
             ok = (st.ravel() == 1) & (st2.ravel() == 1) & (fb < fb_max)
@@ -75,19 +79,15 @@ def track(imgs, skip_gap, grid=(12, 9), per_cell=10, fb_max=0.4, min_len=5, qual
         if len(pts):
             np.add.at(cnt, (np.clip((pts[:, 1] / ch).astype(int), 0, gy - 1),
                             np.clip((pts[:, 0] / cw).astype(int), 0, gx - 1)), 1)
-        occ = np.full((h, w), 255, np.uint8)
-        for x, y in pts:
-            cv2.circle(occ, (int(x), int(y)), min_dist, 0, -1)
+        cells = [(j, i) for j in range(gy) for i in range(gx) if per_cell - cnt[j, i] > per_cell // 2]
+        boxes = [(int(i * cw), int((i + 1) * cw), int(j * ch), int((j + 1) * ch)) for j, i in cells]
+        occ = occupancy(pts, h, w, boxes, min_dist, fill=0, base=255)
         new = []
-        for j in range(gy):
-            for i in range(gx):
-                need = per_cell - cnt[j, i]
-                if need <= per_cell // 2:
-                    continue
-                y0, y1, x0, x1 = int(j * ch), int((j + 1) * ch), int(i * cw), int((i + 1) * cw)
-                c = cv2.goodFeaturesToTrack(img[y0:y1, x0:x1], need, qual, min_dist, mask=occ[y0:y1, x0:x1])
-                if c is not None:
-                    new.append(c.reshape(-1, 2) + [x0, y0])
+        for (j, i), (x0, x1, y0, y1) in zip(cells, boxes):
+            need = per_cell - cnt[j, i]
+            c = cv2.goodFeaturesToTrack(img[y0:y1, x0:x1], need, qual, min_dist, mask=occ[y0:y1, x0:x1])
+            if c is not None:
+                new.append(c.reshape(-1, 2) + [x0, y0])
         if new:
             new = np.concatenate(new).astype(np.float32)
             new = cv2.cornerSubPix(img, new.reshape(-1, 1, 2), (5, 5), (-1, -1),
@@ -96,7 +96,7 @@ def track(imgs, skip_gap, grid=(12, 9), per_cell=10, fb_max=0.4, min_len=5, qual
             ids = np.concatenate([ids, np.arange(nid, nid + len(new))])
             nid += len(new)
         obs_f.append(np.full(len(pts), fi)); obs_t.append(ids.copy()); obs_xy.append(pts.copy())
-        prev = img
+        prev = cur
     obs_f, obs_t, obs_xy = np.concatenate(obs_f), np.concatenate(obs_t), np.concatenate(obs_xy)
     n = np.bincount(obs_t)
     keep = n[obs_t] >= min_len
@@ -137,7 +137,13 @@ def run_thermal_tracks(ws, plan, seg, cam, prep="lcn", log=print, **kw):
     # a gap of more than 3 frames (freeze / flat-field correction) restarts the tracker
     hk = h[keep]
     gap = np.r_[True, np.diff(hk) > 110_000_000]
-    imgs = [prep_image(cv2.imread(str(ws.thermal16(seg) / cam / f"{x}.png"), cv2.IMREAD_UNCHANGED), prep) for x in hk]
+    # read the window's frames in one pass, decode + prepare in threads (PNG decoding and the blurs
+    # release the GIL)
+    from concurrent.futures import ThreadPoolExecutor
+    from .frames import ThermalFrames
+    fr = ThermalFrames(ws.thermal16(seg), cam).load_all()
+    with ThreadPoolExecutor(4) as ex:
+        imgs = list(ex.map(lambda x: prep_image(fr.read(x), prep), hk))
     f, t, xy = track(imgs, gap, **kw)
     f, t, xy, nst = drop_static(hk.astype(np.float64), f, t, xy, ws.lo("ref", seg))
     out = ws.thermal_tracks(seg, cam)

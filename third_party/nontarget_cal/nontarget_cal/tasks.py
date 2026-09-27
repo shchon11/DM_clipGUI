@@ -45,7 +45,14 @@ def t_extract_window(ws, cfg, log, bag_path, bag_id, win, names, zero_ns, rgb, t
 
 # ------------------------------------------------------------------ LiDAR odometry
 def t_lo_chain(ws, cfg, log, win):
-    """KISS-ICP -> continuous-time refinement -> map cache -> quality check, for one window."""
+    """KISS-ICP -> continuous-time refinement -> map cache -> quality check, for one window. The raw
+    sweeps are read from disk once and shared by the four steps (lotraj.sweep_cache)."""
+    from .lo.lotraj import sweep_cache
+    with sweep_cache():
+        return _lo_chain(ws, cfg, log, win)
+
+
+def _lo_chain(ws, cfg, log, win):
     from .lo.check import lo_check
     from .lo.kiss import run_kiss
     from .lo.maps import build_map
@@ -61,10 +68,16 @@ def t_lo_chain(ws, cfg, log, win):
         refine(seg, ws.lo("kiss", win), ws.lo("ref", win), iters=r["iters"], src_voxel=r["src_voxel"],
                tgt_voxel=r["tgt_voxel"], scale=r["scale"], cv_sigma=r["cv_sigma"], max_src=r["max_src"],
                offsets=r["offsets"], log=log)
+    _trim()          # return the refinement's freed heap to the OS before the map (glibc keeps it otherwise)
     if not ws.lo("map", win).exists():
         build_map(seg, ws.lo("ref", win), ws.lo("map", win), log=log, **c["map"])
+    _trim()
     if ws.lo_check(win).exists():
         return read_json(ws.lo_check(win))
+    if (ws.thermal16(win) / "source.json").exists() and not ws.lo("tedge", win).exists():
+        # the calibration-free part of the thermal edge term, while the sweeps are in memory
+        from .thermal.edges import save_sweep_edges
+        save_sweep_edges(ws, win)
     chk = lo_check(seg, ws.lo("ref", win), gaps=c["check"]["gaps"], n=c["check"]["n"], log=log)
     tr = LOTraj.load(ws.lo("ref", win))
     T = tr.T[1:]
@@ -82,6 +95,14 @@ def t_lo_chain(ws, cfg, log, win):
     return chk
 
 
+def _trim():
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:  # noqa
+        pass
+
+
 def t_vehicle_axes(ws, cfg, log, wins):
     from .lo.axes import vehicle_axes
     out = ws.root / "lo" / "vehicle_axes.json"
@@ -93,19 +114,49 @@ def t_vehicle_axes(ws, cfg, log, wins):
 
 
 # ------------------------------------------------------------------ tracks
-def t_rgb_tracks(ws, cfg, log, win, cam, bag_id, mask):
+def t_rgb_tracks(ws, cfg, log, win, cam, bag_id, mask, cams=None, masks=None):
+    """KLT tracks of one camera of a window, or of several (`cams`, `masks`) tracked in parallel threads
+    of this worker (OpenCV releases the GIL; every camera's tracks are the same as tracked alone)."""
     import os
     import cv2
-    from .rgb.tracks import run_tracks
     # OpenCV otherwise uses every core in each of the parallel trackers (oversubscription); the
     # tracks are identical for any thread count
     cv2.setNumThreads(int(os.environ.get("OPENCV_NUM_THREADS", "2")))
+    if cams:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(len(cams)) as ex:
+            rs = list(ex.map(lambda cm: _rgb_tracks_one(ws, cfg, log, win, cm[0], bag_id, cm[1]), zip(cams, masks)))
+        return dict(zip(cams, rs))
+    return _rgb_tracks_one(ws, cfg, log, win, cam, bag_id, mask)
+
+
+def _rgb_tracks_one(ws, cfg, log, win, cam, bag_id, mask):
+    from .rgb.tracks import run_tracks
     out = ws.tracks(win, cam)
     if out.exists():
         return {"cached": True}
     c = cfg["rgb"]["tracks"]
-    return run_tracks(ws.seg_dir(win), cam, Path(mask), ws.ins(bag_id), out, grid=c["grid"], per_cell=c["per_cell"],
-                      fb_max=c["fb_max"], min_len=c["min_len"], log=log)
+    res = run_tracks(ws.seg_dir(win), cam, Path(mask), ws.ins(bag_id), out, grid=c["grid"], per_cell=c["per_cell"],
+                     fb_max=c["fb_max"], min_len=c["min_len"], log=log, anchor=c.get("anchor"),
+                     device=c.get("device", "cpu"), frame_step=c.get("frame_step", 1))
+    keep = int(cfg["extract"].get("keep_rgb_every") or 0)
+    if keep > 1 and not cfg["rgb"].get("crosstime", {}).get("enabled"):
+        res["pruned_gb"] = prune_frames(ws.seg_dir(win) / "cam" / cam, keep)
+    return res
+
+
+def prune_frames(d: Path, keep: int) -> float:
+    """After tracking, keep every `keep`-th RGB frame of a window (the later stages - LiDAR-edge validation,
+    projection images - read a few frames; the tracker and the solves need no image). A marker stops the
+    tracker from ever running on the thinned frames."""
+    files = sorted(d.glob("*.jpg"))
+    (d / "PRUNED").write_text(json.dumps({"keep_every": keep, "frames_before": len(files)}))
+    gone = 0
+    for i, f in enumerate(files):
+        if i % keep:
+            gone += f.stat().st_size
+            f.unlink()
+    return round(gone / 1e9, 3)
 
 
 def t_thermal_tracks(ws, cfg, log, win, cam):
@@ -115,7 +166,8 @@ def t_thermal_tracks(ws, cfg, log, win, cam):
         return {"cached": True}
     c = cfg["thermal"]["tracks"]
     return run_thermal_tracks(ws, Plan(ws), win, cam, prep=c["prep"], log=log, grid=tuple(c["grid"]),
-                              per_cell=c["per_cell"], fb_max=c["fb_max"], min_len=c["min_len"])
+                              per_cell=c["per_cell"], fb_max=c["fb_max"], min_len=c["min_len"],
+                              device=c.get("device", "cpu"))
 
 
 # ------------------------------------------------------------------ solves
@@ -132,15 +184,19 @@ def _rgb_start(spec, cams, design):
 
 
 def t_rgb_solve(ws, cfg, log, name, segs, cams, start, opts, held=None):
-    from .rgb.solve import result_calib, run_ba
+    from .rgb.solve import result_calib, result_time, run_ba
     out = ws.solve_dir("rgb", name)
     if (out / "result.json").exists():
         return {"cached": True, "path": str(out / "result.json")}
     design = yaml.safe_load(Path(cfg["paths"]["rig_design"]).read_text())
     calib_in = result_calib(read_json(held)) if held else None
     st = None if (held or start["kind"] == "nominal") else _rgb_start(start, cams, design)
-    res = run_ba(ws, segs, cams, out, start=st, calib_in=calib_in, design=design, log=log,
-                 threads=cfg["resources"]["solver_threads"], device=cfg["resources"].get("ba_device", "cpu"), **opts)
+    # camera time offsets travel with the calibration they were solved with (rgb.solve.time)
+    src = held or (start.get("path") if start["kind"] == "result" else None)
+    time_init = result_time(read_json(src)) if src else None
+    res = run_ba(ws, segs, cams, out, start=st, calib_in=calib_in, design=design, log=log, time_init=time_init,
+                 threads=cfg["resources"]["solver_threads"], device=cfg["resources"].get("ba_device", "cpu"),
+                 kernel=cfg["resources"].get("ba_kernel"), **opts)
     return {"path": str(out / "result.json"), "reproj_median_px": res["reproj_median_px"], "n_obs": res["n_obs"]}
 
 
@@ -168,7 +224,7 @@ def t_thermal_solve(ws, cfg, log, name, segs, start, opts, rgb_result=None, held
     if opts.get("stereo"):
         opts = dict(opts, stereo=str(ws.root / "thermal" / "links" / f"{opts['stereo']}.npz"))
     res = run_tba(ws, Plan(ws), segs, out, start=st, rig=_rig_from_rgb(rgb_result), calib_in=held, log=log,
-                  threads=cfg["resources"]["solver_threads"], **opts)
+                  threads=cfg["resources"]["solver_threads"], kernel=cfg["resources"].get("ba_kernel"), **opts)
     return {"path": str(out / "result.json"), "reproj_median_px": res["reproj_median_px"]}
 
 
@@ -184,10 +240,11 @@ def t_thermal_edges(ws, cfg, log, win, calib):
     return {"cams": cams}
 
 
-def t_thermal_links(ws, cfg, log, name, segs, calib):
+def t_thermal_links(ws, cfg, log, name, segs, calib, part=False):
+    """part=True: the links of one window into links/parts/<name>.npz (merged by stereo.merge_links)."""
     from .thermal.stereo import link_stereo
     from .thermal.timemodel import Plan
-    out = ws.root / "thermal" / "links" / f"{name}.npz"
+    out = ws.root / "thermal" / "links" / ("parts" if part else "") / f"{name}.npz"
     if out.exists():
         return {"cached": True}
     out.parent.mkdir(parents=True, exist_ok=True)
