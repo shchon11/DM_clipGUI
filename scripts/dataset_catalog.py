@@ -58,7 +58,7 @@ COLUMNS = [
     ("start_time", "시작"), ("end_time", "끝"),
     ("time_of_day", "시간대"), ("day_sec", "day(초)"), ("dusk_sec", "dusk(초)"), ("night_sec", "night(초)"),
     ("duration_sec", "bag 길이(초)"), ("duration_hms", "bag 길이"),
-    ("kind", "종류"), ("driver", "운전자"), ("passenger", "동승자"),
+    ("kind", "종류"), ("road_shapes", "도로 형상"), ("driver", "운전자"), ("passenger", "동승자"),
     ("label", "라벨"), ("messages", "메시지 수"), ("size_gb", "용량(GB)"),
     ("note", "비고"), ("folder", "폴더"),
 ]
@@ -253,6 +253,7 @@ def bag_row(bag, region, route):
     row.update(region=region, route=route, folder=str(bag),
                kind=KIND_CLIP if bag.name.startswith("clip_") else KIND_REC,
                region_name=info.get("region_name", "") or region,
+               road_shapes=" · ".join(info.get("road_shapes") or []),
                driver=info.get("driver", ""), passenger=info.get("passenger", ""),
                label=info.get("label", ""), note=info.get("note", ""))
     row["_excluded"] = bool(info.get("excluded"))     # 현황표에서 '유효한 리스트에서 지우기' 한 녹화
@@ -746,7 +747,7 @@ tr.miss td.ed:not([data-k=note]):empty{background:color-mix(in srgb,var(--warn) 
 </main>
 <script>
 const GOAL_H = __GOAL__, SCALE_H = __SCALE__, COLS = __COLUMNS__, PCOLS = __PLAN_COLUMNS__, BASE = __BASE__;
-const SHOW = ["region_name","route","date","start_time","end_time","time_of_day","duration_hms","kind","driver","passenger","label","size_gb","note","folder"];
+const SHOW = ["region_name","route","date","start_time","end_time","time_of_day","duration_hms","kind","road_shapes","driver","passenger","label","size_gb","note","folder"];
 const EDIT = ["driver","passenger","note"];
 let rows = [], live = true, sortKey = "date", sortDir = 1;
 const $ = id => document.getElementById(id);

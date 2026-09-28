@@ -137,6 +137,9 @@ def save_config(cfg, path=LAST_SESSION):
         encoding="utf-8")
 
 
+# 도로 형상 — 녹화 중에 켜 둔 형상이 그 녹화의 dataset_info.json "road_shapes" 에 들어간다
+ROAD_SHAPES = ["좁은 골목", "일반도로", "대로", "교차로", "경사로", "터널/지하"]
+
 REGION_TIP = ("한글 또는 영문으로 입력 — 폴더 · CSV · json 에는 영문으로 바뀌어 저장됩니다.\n"
               "  강남역 4번출구 → gangnam_station_4th_entrance,  까치산 → kkachisan\n"
               "클립·녹화는 route_NNN_<영문 지역> 폴더 안에 저장됩니다.")
@@ -1666,6 +1669,7 @@ class MainWindow(QMainWindow):
         self._outdir_pending = None      # (route 경로, 보낼 동작, 이름) — 레코더가 output_dir 을 받으면 보낸다
         self._status_server = None       # 취득 현황표 (localhost) — 처음 열 때 띄운다
         self._labels = {"clip": "", "rec": ""}   # 보낼 때의 라벨 — 저장이 끝나면 dataset_info.json 에
+        self._shapes_seen = {"clip": set(), "rec": set()}   # 녹화 동안 한 번이라도 켜진 도로 형상
         self._catalog_msg.connect(self.log)
         self.rec_timer = QTimer(self, interval=1000, timeout=self._tick_recording)
         self._cams = {}           # GVCP 디스커버리 {ip: info}
@@ -1907,6 +1911,24 @@ class MainWindow(QMainWindow):
         btn_status.clicked.connect(self.open_dataset_status)
         region_row.addWidget(btn_status)
         trig_v.addLayout(region_row)
+        # 도로 형상 — 녹화 버튼을 누른 뒤 지금 달리는 도로에 맞춰 켠다 (여러 개 가능)
+        shape_row = QHBoxLayout()
+        lbl_shape = QLabel("🛣️ 도로 형상:")
+        lbl_shape.setStyleSheet("font-weight:bold;")
+        shape_row.addWidget(lbl_shape)
+        self.shape_btns = {}
+        for name in ROAD_SHAPES:
+            b = QPushButton(name)
+            b.setCheckable(True)
+            b.setToolTip("녹화 중 켜 둔 형상이 그 녹화의 dataset_info.json 에 저장됩니다 (여러 개 가능)")
+            b.setStyleSheet(
+                "QPushButton {border:1px solid #d1d5db; border-radius:12px; padding:3px 12px; background:#f9fafb;}"
+                "QPushButton:checked {background:#2563eb; color:white; border-color:#2563eb; font-weight:bold;}")
+            b.toggled.connect(lambda on, n=name: self._toggle_shape(n, on))
+            shape_row.addWidget(b)
+            self.shape_btns[name] = b
+        shape_row.addStretch(1)
+        trig_v.addLayout(shape_row)
         h = QHBoxLayout()
         trig_v.addLayout(h)
         # 저장 위치 — 누르면 폴더 선택. 설정에 바로 저장돼 GUI 를 다시 켜도 유지되고,
@@ -2647,6 +2669,7 @@ class MainWindow(QMainWindow):
         def send(route):
             # 폴더 이름은 시각만 (clip_YYYYmmdd_HHMMSS) — 라벨은 dataset_info.json 에만
             self._labels["clip"] = label
+            self._shapes_seen["clip"] = self._shapes_on()
             self.worker.trigger("", stamp)
             self.log("GUI", f"트리거 전송 → {route.name}/ (label='{label}')")
         self._in_route(send, "클립")
@@ -2828,6 +2851,16 @@ class MainWindow(QMainWindow):
         save_config(self.cfg)
 
     # --- 데이터셋 목록 (CSV) · 취득 현황표 ---
+    # --- 도로 형상 ---
+    def _shapes_on(self):
+        return {n for n, b in self.shape_btns.items() if b.isChecked()}
+
+    def _toggle_shape(self, name, on):
+        if on:                                   # 지금 녹화 중인 것에 더한다 (끄더라도 그 녹화엔 남는다)
+            for seen in self._shapes_seen.values():
+                seen.add(name)
+        self.log("GUI", f"🛣️ 도로 형상 {name} {'켬' if on else '끔'}")
+
     def _catalog(self, uri):
         """저장이 끝난 bag 폴더에 운전자·동승자·라벨을 남기고 datasets.csv 를 다시 만든다."""
         bag = Path(uri)
@@ -2841,6 +2874,11 @@ class MainWindow(QMainWindow):
         base = self.cfg["recorder"]["output_dir"]
         label = self._labels["clip" if bag.name.startswith("clip_") else "rec"]
         region_ko = self.region_edit.text().strip()       # 입력한 이름 (한글이면 현황표에 같이 보인다)
+        kind = "clip" if bag.name.startswith("clip_") else "rec"
+        seen = self._shapes_seen[kind] | self._shapes_on()
+        road_shapes = [n for n in ROAD_SHAPES if n in seen]
+        if not road_shapes:
+            self.log("WARN", f"{bag.name}: 도로 형상이 비어 있습니다 — 🛣️ 버튼을 켜 두면 같이 저장됩니다 (현황표에서도 볼 수 있음)")
 
         def work():
             # 녹화 당시 카메라 시리얼 → 토픽 이름 (GUI 가 기동 때 넘긴 인벤토리 사본). 이름을 나중에 바꿔도
@@ -2853,7 +2891,8 @@ class MainWindow(QMainWindow):
                 cameras = None
                 self._catalog_msg.emit("WARN", f"{bag.name}: 카메라 시리얼 ↔ 이름 기록 실패 — {e}")
             try:
-                dataset_catalog.write_info(bag, label=label, region_name=region_ko, cameras=cameras, **crew)
+                dataset_catalog.write_info(bag, label=label, region_name=region_ko, cameras=cameras,
+                                           road_shapes=road_shapes, **crew)
                 path, n = dataset_catalog.rebuild(base)
                 self._catalog_msg.emit("GUI", f"데이터셋 목록 갱신: {path} ({n}개)")
             except Exception as e:
@@ -2986,8 +3025,9 @@ class MainWindow(QMainWindow):
         if kind == "rec_started":
             self._rec_pending = False
             self.recording = {"uri": parts[1], "t0": time.time(), "sec": 0.0, "mb": 0.0}
+            self._shapes_seen["rec"] = self._shapes_on()
             self.rec_timer.start()
-            self.log("OK", f"수동 녹화 시작: {parts[1]}")
+            self.log("OK", f"수동 녹화 시작: {parts[1]} — 🛣️ 도로 형상을 켜 두세요")
         elif kind == "rec_closing":
             if self.recording:
                 self.recording["closing"] = True
