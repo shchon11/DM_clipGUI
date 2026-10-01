@@ -662,7 +662,7 @@ private:
   }
 
   void writeBag(
-    const std::vector<StampedMsg> & clip,
+    std::vector<StampedMsg> & clip,
     const std::unordered_map<std::string, std::shared_ptr<rclcpp::SerializedMessage>> & latched,
     const std::unordered_map<std::string, std::string> & types,
     const rclcpp::Time & t0,
@@ -709,20 +709,19 @@ private:
       writer.create_topic(meta);
     }
 
-    // Writer::write(shared_ptr<SerializedMessage>) takes ownership of the
-    // buffer ("the serialized data will no longer be managed by message"),
-    // but the ring buffer / latched map still reference these messages —
-    // hand the writer a copy instead.
-    const auto write_copy =
+    // Same zero-copy path as manual recording (writeShared): the ring buffer / latched map
+    // still reference these messages. A deep copy per message used to slow the clip write down
+    // (~330 MB/s) and, together with the clip holding every message until the end, doubled the
+    // memory: with 5 raw cameras a 30 s clip is 12 GB and the recorder peaked at 20.8 GB while the
+    // ring buffer kept filling (2026-09-30). Each clip entry is released once written below.
+    const auto write_shared =
       [&writer, &types](
       const std::string & topic,
       const std::shared_ptr<rclcpp::SerializedMessage> & msg,
       const rclcpp::Time & stamp) {
         auto it = types.find(topic);
         if (it == types.end()) {return;}
-        writer.write(
-          std::make_shared<rclcpp::SerializedMessage>(*msg),
-          topic, it->second, stamp);
+        writeShared(writer, topic, it->second, msg, stamp);
       };
 
     // Prepend latched messages at the start of the clip window so playback
@@ -736,11 +735,12 @@ private:
       clip.empty() ? t0 - rclcpp::Duration::from_seconds(pre_sec_) : clip.front().stamp;
     for (const auto & [topic, msg] : latched) {
       if (in_clip.count(msg.get())) {continue;}
-      write_copy(topic, msg, clip_start);
+      write_shared(topic, msg, clip_start);
     }
 
-    for (const auto & m : clip) {
-      write_copy(m.topic, m.data, m.stamp);
+    for (auto & m : clip) {
+      write_shared(m.topic, m.data, m.stamp);
+      m.data.reset();     // the writer's cache holds it until written; the ring buffer may drop it
     }
 
     const double dur = clip.empty() ? 0.0 :

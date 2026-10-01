@@ -87,6 +87,11 @@ def unit_of(pid):
     return ""
 
 
+def ntp_running():
+    """NTP(systemd-timesyncd)가 지금 시계를 만지고 있나 — 켜짐 설정(timedatectl NTP=yes)이 아니라 실제로 도는지."""
+    return run(["systemctl", "is-active", "systemd-timesyncd"], quiet=True).stdout.strip() == "active"
+
+
 def unit_active(unit):
     return run(["systemctl", "is-active", "--quiet", unit], quiet=True).returncode == 0
 
@@ -198,8 +203,8 @@ def status_summary():
         else:
             add("warn", f"PC 시계가 아직 안 맞음 (최근 오차 {[o for o, _ in offs[-2:]] or '없음'} ns)")
 
-    if run(["timedatectl", "show", "-p", "NTP", "--value"], quiet=True).stdout.strip() == "yes":
-        add("fail", "NTP 가 켜져 있어 phc2sys 와 시스템 시계를 두고 싸웁니다 — ptp 로 끄세요")
+    if ntp_running():
+        add("fail", "NTP 가 돌고 있어 phc2sys 와 시스템 시계를 두고 싸웁니다 — ptp 로 끄세요")
 
     procs = processes()
     stray = [(pid, argv) for pid, argv in procs if unit_of(pid) not in UNITS and "/tmp/ptp4l-flir" not in argv]
@@ -265,12 +270,11 @@ def report(ask_sudo=True):
     else:
         good = False
         bad("phc2sys-orin 서비스가 안 돎 — ptp 로 세우세요")
-    ntp = run(["timedatectl", "show", "-p", "NTP", "--value"], quiet=True).stdout.strip()
-    if ntp == "yes":
+    if ntp_running():
         good = False
-        bad("NTP 가 켜져 있음 — phc2sys 와 시스템 시계를 두고 싸웁니다 (ptp 가 끕니다)")
+        bad("NTP 가 돌고 있음 — phc2sys 와 시스템 시계를 두고 싸웁니다 (ptp 가 이번 부팅 동안만 끕니다)")
     else:
-        ok("NTP 꺼짐")
+        ok("NTP 꺼짐 (이번 부팅 동안 — 재부팅하면 다시 켜져 시계를 인터넷에 맞춘다)")
 
     print("\n[3] 겹치는 PTP 프로세스")
     if stray:
@@ -309,6 +313,10 @@ def stop():
     for unit in UNITS:
         if unit_active(unit):
             run(["systemctl", "stop", unit], sudo=True)
+    if not ntp_running():
+        # Orin 을 안 따르면 PC 시계를 맞출 게 없다 — NTP 를 다시 켜 인터넷 시각으로 (CMOS 배터리가 약한 PC)
+        run(["systemctl", "start", "systemd-timesyncd"], sudo=True)
+        print("NTP 다시 켬 (인터넷 시각)")
     print("멈췄습니다.")
 
 
@@ -334,9 +342,11 @@ def start(args):
         run(["kill", str(pid)], sudo=True, quiet=True)
     time.sleep(1)
 
-    if run(["timedatectl", "show", "-p", "NTP", "--value"], quiet=True).stdout.strip() == "yes":
-        print("\nNTP 끔 (phc2sys 와 겹침)")
-        run(["timedatectl", "set-ntp", "false"], sudo=True)
+    if ntp_running():
+        # 이번 부팅 동안만 끈다 (set-ntp false 는 영구라 재부팅해도 꺼져 있었다). 이 PC 는 CMOS 배터리가 약해 부팅할 때
+        # 시계가 틀려 있고, NTP 가 꺼져 있으면 그대로 남아 HTTPS·Tailscale(폰 지도 공개 주소)까지 죽는다 (2026-10-01).
+        print("\nNTP 끔 — 이번 부팅 동안만 (phc2sys 와 겹침)")
+        run(["systemctl", "stop", "systemd-timesyncd"], sudo=True)
 
     print("\n서비스 시작")
     for unit in UNITS:

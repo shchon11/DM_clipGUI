@@ -833,6 +833,9 @@ def camera_entry(sub, serial, overrides, repo=None):
         entry["force_ip_address"] = mine["force_ip_address"]
         entry.setdefault("force_ip_subnet_mask", mine.get("force_ip_subnet_mask", "255.255.255.0"))
         entry.setdefault("force_ip_gateway", "0.0.0.0")
+    if "publish_raw" in mine:
+        # 카메라별 image_raw (GUI 카메라 표의 raw 칸) — 런치가 그 카메라 노드에만 publish_raw 로 넘긴다
+        entry["publish_raw"] = "true" if mine["publish_raw"] else "false"
     entry.setdefault("namespace", entry.get("name", ""))
     return entry
 
@@ -1372,7 +1375,7 @@ def promote_inventory_plan(group, overrides, subset_key, devices):
             changes.append((serial, f"새 카메라 → {entry['namespace']}"))
         else:
             diff = [f"{k} {repo[serial].get(k, '-')} → {entry[k]}" for k in
-                    ("namespace", "hardware_trigger_role", "ptp_action_role", "force_ip_address")
+                    ("namespace", "hardware_trigger_role", "ptp_action_role", "force_ip_address", "publish_raw")
                     if k in entry and str(repo[serial].get(k, "")) != str(entry[k])]
             if diff:
                 changes.append((serial, " · ".join(diff)))
@@ -1387,7 +1390,7 @@ def promote_inventory_apply(group, overrides, subset_key, devices):
     backup = defaults_writer.write_inventory(path, node_key, entries)
     mine = camera_overrides(overrides)
     for serial, _ in changes:
-        for key in ("name", *SYNC_ROLE_KEYS, "force_ip_address", "force_ip_subnet_mask"):
+        for key in ("name", *SYNC_ROLE_KEYS, "force_ip_address", "force_ip_subnet_mask", "publish_raw"):
             (mine.get(serial) or {}).pop(key, None)
         if not mine.get(serial):
             mine.pop(serial, None)

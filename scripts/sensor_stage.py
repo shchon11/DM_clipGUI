@@ -996,6 +996,10 @@ ROW_STATE_TEXT = {RUNNING: "실행 중 — 영상 수신 중", STARTING: "기동
                   EXCLUDED: "이번 기동에 미포함", STOPPED: "정지"}
 _DOT_ICONS = {}
 
+# 카메라 한 대의 image_raw (BayerRG8 1920×1200 × 30 Hz ≈ 69 MB/s) 와 녹화 디스크(SATA SSD) 쓰기 한계.
+# 2026-09-30 합성 raw 7 스트림 녹화: 489 MB/s 까지 손실 0, 디스크 ~545 MB/s 가 천장.
+RAW_MBPS, RAW_DISK_MBPS = 69, 480
+
 
 def dot_icon(state, lit=True):
     """상태 점 아이콘 (16px 칸에 10px 원). 대기는 빈 주황 원, 정지·미포함은 빈 회색 원, 기동 중은 깜빡임(lit)."""
@@ -2403,10 +2407,14 @@ class DetailPage(QWidget):
         self.empty.hide()
         self.dev_split.show()
 
+        raw = self.cameras_editable                 # 카메라별 image_raw 칸 (라이다 표엔 없음)
         headers = ([("이름" if self.cameras_editable else "비고"), "시리얼", "IP"]
-                   + (["동기 방식"] if self.sync_roles else []) + ["모델", "NIC"])
-        self._col_ids = ["name", "serial", "ip"] + (["ptp"] if self.sync_roles else []) + ["model", "nic"]
-        tail = 4 if self.sync_roles else 3          # 모델 칸 위치
+                   + (["동기 방식"] if self.sync_roles else []) + (["raw"] if raw else []) + ["모델", "NIC"])
+        self._col_ids = (["name", "serial", "ip"] + (["ptp"] if self.sync_roles else [])
+                         + (["raw"] if raw else []) + ["model", "nic"])
+        self._raw_col = self._col_ids.index("raw") if raw else None
+        tail = self._col_ids.index("model")         # 모델 칸 위치
+        raw_default = self._raw_default() if raw else False
         col_id, descending = self._sort_spec()
         if col_id:
             devices = sorted(devices, key=lambda d: self._sort_key(d, col_id), reverse=descending)
@@ -2455,6 +2463,22 @@ class DetailPage(QWidget):
                 item.setForeground(Qt.darkYellow if dev["state"] == SUBNET else Qt.red)
             self.table.setItem(r, self.NAME_COL, item)
 
+            on = self._raw_on(serial, raw_default)
+            item = QTableWidgetItem("")
+            item.setData(Qt.UserRole, serial)
+            item.setFlags((item.flags() | Qt.ItemIsUserCheckable) & ~Qt.ItemIsEditable)
+            if not editable:
+                item.setFlags(item.flags() & ~Qt.ItemIsEnabled)
+            item.setCheckState(Qt.Checked if on else Qt.Unchecked)
+            item.setToolTip(
+                f"이 카메라의 /…/image_raw 발행 (다음 기동부터) — 공통 설정: {'켬' if raw_default else '끔'}"
+                + ("  · 이 카메라만 따로 정함" if "publish_raw" in (
+                    sensor_config.camera_overrides(self.overrides).get(serial) or {}) else "")
+                + f"\nraw 1920×1200 30 Hz 는 한 대에 약 {RAW_MBPS} MB/s — 녹화 디스크(SATA SSD ~540 MB/s)와 "
+                  "클립 링버퍼 메모리를 그만큼 씁니다.\n여러 대를 고른 채로 한 칸을 바꾸면 고른 카메라 전부 바뀝니다."
+                + "\n켠 카메라의 image_raw 는 녹화 토픽에도 넣어야 bag 에 들어갑니다.")
+            self.table.setItem(r, self._raw_col, item)
+
             if self.sync_roles:
                 combo = QComboBox()
                 for mode_key, label, _hw, _ptp in sensor_config.SYNC_MODES:
@@ -2475,7 +2499,7 @@ class DetailPage(QWidget):
                 combo.currentIndexChanged.connect(
                     lambda idx, sn=serial, cb=combo:
                         self._on_sync_mode(sn, cb.itemData(idx)))
-                self.table.setCellWidget(r, 3, combo)
+                self.table.setCellWidget(r, self._col_ids.index("ptp"), combo)
         # 고른 행 유지 (다시 그려도 라이브가 끊기지 않고, 여러 대 고른 것도 풀리지 않게)
         keep = self._picked | ({self._selected} if self._selected else set())
         if keep:
@@ -2603,7 +2627,7 @@ class DetailPage(QWidget):
     def _sort_spec(self):
         """(열 id, 내림차순?) — 저장된 게 없거나 지금 표에 없는 열이면 (None, False) = 감지 순서."""
         col_id, _, order = str(self._sorts.get(self.card["key"]) or "").partition(":")
-        if col_id not in (self._col_ids or ["name", "serial", "ip", "ptp", "model", "nic"]):
+        if col_id not in (self._col_ids or ["name", "serial", "ip", "ptp", "raw", "model", "nic"]):
             return None, False
         return col_id, order == "desc"
 
@@ -2639,6 +2663,8 @@ class DetailPage(QWidget):
             key = sensor_config.sync_mode(entry)
             order = [k for k, *_ in sensor_config.SYNC_MODES]
             return [order.index(key) if key in order else len(order)], serial
+        if col_id == "raw":
+            return [0 if self._raw_on(dev["identity"], self._raw_default()) else 1], serial
         if col_id == "model":
             return self._natural(dev["model"]), serial
         if col_id == "nic":
@@ -2658,7 +2684,43 @@ class DetailPage(QWidget):
         self.table_msg.setText(text)
         self.table_msg.setStyleSheet(f"color:{ui_theme.ERR};" if error else "")
 
+    def _raw_default(self):
+        """이 subset 의 공통 publish_raw (설정 탭 'image_raw 발행')."""
+        value = sensor_config._param_value(self.group, (self.subset or {}).get("key"), "publish_raw",
+                                           self.overrides)
+        return str(value).strip().lower() in ("true", "1", "yes", "on")
+
+    def _raw_on(self, serial, default):
+        mine = sensor_config.camera_overrides(self.overrides).get(serial) or {}
+        return bool(mine["publish_raw"]) if "publish_raw" in mine else default
+
+    def _on_raw(self, serial, on):
+        """raw 칸 — 공통값과 같으면 카메라별 값을 지워 공통 설정을 따르게 한다."""
+        picked, is_picked = self._bulk_targets()
+        targets = sorted(picked) if is_picked and serial in picked else [serial]
+        default = self._raw_default()
+        for sn in targets:
+            store = self._camera_store(sn)
+            if on == default:
+                store.pop("publish_raw", None)
+            else:
+                store["publish_raw"] = on
+            self._drop_empty(sn)
+        count = sum(1 for d in self._devices if self._raw_on(d["identity"], default))
+        names = (f"{len(targets)}대" if len(targets) > 1 else
+                 sensor_config.camera_entry(self.subset, serial, self.overrides)["namespace"])
+        self._show_table_msg(f"{names}: image_raw {'켬' if on else '끔'} (다음 기동부터)  ·  raw 켠 카메라 "
+                             f"{count}대 ≈ {count * RAW_MBPS} MB/s",
+                             error=count * RAW_MBPS > RAW_DISK_MBPS)
+        self._render_devices()
+        self.sig_cameras_edited.emit(self.group["key"])
+
     def _on_table_item(self, item):
+        if self.cameras_editable and item.column() == getattr(self, "_raw_col", None):
+            serial = item.data(Qt.UserRole)
+            if serial:
+                self._on_raw(serial, item.checkState() == Qt.Checked)
+            return
         if item.column() != self.NAME_COL or not self.cameras_editable:
             return
         serial = item.data(Qt.UserRole)

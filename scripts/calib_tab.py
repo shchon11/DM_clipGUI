@@ -166,8 +166,14 @@ class CalibTab(QWidget):
         self.btn_proj.clicked.connect(self.projection_dialog)
         self.btn_hist = QPushButton("적용 기록 · 되돌리기")
         self.btn_hist.clicked.connect(self.history_dialog)
+        # 지금 차량 값을 이미 녹화한 bag 의 camera_info · /tf_static 에도 (recalib_dialog · bag_recalib)
+        self.btn_recalib = QPushButton("이전 녹화에도 적용…")
+        self.btn_recalib.setToolTip("지금 차량에 들어가 있는 캘리브레이션을 이미 녹화한 bag 의 camera_info 와 /tf_static 에 넣습니다 "
+                                    "(녹화마다 진행 막대 · 되돌리기 가능)")
+        self.btn_recalib.clicked.connect(self.recalib_dialog)
         th.addWidget(self.btn_proj)
         th.addWidget(self.btn_hist)
+        th.addWidget(self.btn_recalib)
         outer.addWidget(top)
 
         split = QSplitter(Qt.Horizontal)
@@ -536,10 +542,20 @@ class CalibTab(QWidget):
         if root.is_dir():
             # 녹화는 output_dir 바로 아래 또는 route_NNN_<지역>/ 안 (dataset_catalog) — 둘 다, 최신 순
             found = []
-            for parent in [root] + sorted(p for p in root.iterdir() if p.is_dir() and p.name.startswith("route_")):
-                for d in parent.iterdir():
-                    if d.is_dir() and (d / "metadata.yaml").is_file() and d.name.startswith(("rec_", "clip_")):
-                        found.append(d)
+            for parent in [root] + sorted(p for p in root.iterdir() if p.name.startswith("route_") and p.is_dir()):
+                try:
+                    children = list(parent.iterdir())
+                except OSError:                  # 읽을 수 없는 폴더 — 건너뛴다
+                    continue
+                for d in children:
+                    # 이름을 먼저 본다: /mnt/data/lost+found 처럼 root 만 읽는 폴더 안을 stat 하면 PermissionError
+                    if not d.name.startswith(("rec_", "clip_")):
+                        continue
+                    try:
+                        if d.is_dir() and (d / "metadata.yaml").is_file():
+                            found.append(d)
+                    except OSError:
+                        continue
             found.sort(key=lambda d: (d.name.split("_", 1)[-1], d.name), reverse=True)
             paths = [str(d) for d in found]
         for d in self.c.get("extra_bags") or []:
@@ -1082,11 +1098,11 @@ class CalibTab(QWidget):
                 rows.append(f"<span style='color:{MUTED_C}'>○ {lbl}</span>")
         extra = ""
         if p.refusal:
-            extra += f"<br><b style='color:{ERR_C}'>거절: {p.refusal.get('msg_ko') or p.refusal.get('msg')}</b>"
+            extra += f"<br><b style='color:{ERR_C}'>거절: {oc.name_bags(p.refusal.get('msg_ko') or p.refusal.get('msg'), job['bags'])}</b>"
         if p.task_failed:
             extra += f"<br><span style='color:{ERR_C}'>실패한 세부 작업 {len(p.task_failed)}개 — [작업 로그] 탭</span>"
         if p.warnings:
-            extra += "<br>" + "<br>".join(f"<span style='color:{WARN_C}'>⚠ {w.get('msg_ko') or w.get('msg')}</span>"
+            extra += "<br>" + "<br>".join(f"<span style='color:{WARN_C}'>⚠ {oc.name_bags(w.get('msg_ko') or w.get('msg'), job['bags'])}</span>"
                                           for w in p.warnings[-4:])
         self.lbl_stage.setText("<br>".join(rows) + extra)
         # 배너
@@ -1228,6 +1244,7 @@ class CalibTab(QWidget):
         infos = [self._bag_cache.get(p) or oc.inspect_bag(p) for p in bags]
         if not self._attach_name_map(job, infos, "사전 점검"):
             return
+        self._check_bags = list(job["bags"])
         self.check_proc = QProcess(self)
         self._check_buf = b""
         self._check_prog = oc.Progress(job["sensors"])
@@ -1252,7 +1269,8 @@ class CalibTab(QWidget):
         self.btn_check.setText("사전 점검 (약 30초)")
         p = self._check_prog
         if p.refusal:
-            msg = f"거절 [{p.refusal.get('code')}]\n{p.refusal.get('msg_ko')}\n\n{p.refusal.get('msg')}"
+            msg = (f"거절 [{p.refusal.get('code')}]\n{oc.name_bags(p.refusal.get('msg_ko'), self._check_bags)}\n\n"
+                   f"{oc.name_bags(p.refusal.get('msg'), self._check_bags)}")
             QMessageBox.warning(self, "사전 점검 — 거절", msg)
         elif p.check:
             c = p.check
@@ -1263,7 +1281,7 @@ class CalibTab(QWidget):
                      f"점검 위치 여유 {d.get('free_gb')} GB (도구 기준 필요 {d.get('needed_gb')} GB)",
                      "카메라 이름: " + "; ".join(f"{b}: {s}" for b, s in (c.get("names") or {}).items())]
             for w in c.get("warnings") or []:
-                lines.append(f"경고: {w.get('msg_ko') or w.get('msg')}")
+                lines.append(f"경고: {oc.name_bags(w.get('msg_ko') or w.get('msg'), self._check_bags)}")
             QMessageBox.information(self, "사전 점검", "\n".join(lines))
         else:
             err = (p.error or {}).get("msg") or f"exit {code}"
@@ -1422,6 +1440,23 @@ class CalibTab(QWidget):
     def history_dialog(self):
         HistoryDialog(self).exec_()
         self._update_vehicle_label()
+
+    def recalib_dialog(self):
+        """이전 녹화에도 적용 — 현황표와 같은 목록(저장 위치 + 옮겨 둔 곳)의 녹화들."""
+        try:
+            import dataset_catalog
+            import recalib_dialog
+            base = (self.cfg.get("recorder") or {}).get("output_dir") or str(Path.home() / "DM_clipGUI" / "clips")
+            rows = dataset_catalog.scan(base)
+            ci, ex = self.vehicle_files()
+            dlg = recalib_dialog.RecalibDialog(self, ci, ex, rows, acquisition=self.acquisition)
+        except Exception as e:
+            QMessageBox.warning(self, "이전 녹화에 적용", f"열 수 없습니다: {e}")
+            return
+        if not dlg.bags:
+            QMessageBox.information(self, "이전 녹화에 적용", "지금 연결된 디스크에 녹화가 없습니다.")
+            return
+        dlg.exec_()
 
 
 class ApplyDialog(QDialog):

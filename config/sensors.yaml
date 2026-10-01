@@ -229,7 +229,7 @@ groups:
         inventory: "~/FLIR_control/src/flir_spinnaker_camera/config/multicam_thermal_cameras.yaml"
         inventory_arg: thermal_cameras_file
         name_prefix: thermal
-        force_ip_base: "192.168.1.11"
+        force_ip_base: "192.168.1.101"   # 가시광(.1~) 과 겹치지 않게 (2026-09-28, A70 두 대 .101 · .102)
         # [IP 할당] 뒤 새 주소로 다시 대답하기까지 기다리는 최대 시간. A70 은 네트워크를 다시 올리는 데 오래 걸려
         # 기본 6초로는 '실패' 로 끝나고 감지에서 빠졌다 (2026-09-22). 대답하는 즉시 끝난다.
         force_ip_settle_s: 60
@@ -1056,6 +1056,9 @@ groups:
       - "~/rt2000_ws/install/setup.bash"
     launch_package: oxford_gps_eth
     launch_file: gps.launch.py
+    # 이 센서군을 켜면 NTRIP 보정(str2str: NGII VRS → USB-시리얼 → RT2000 COM2)도 같이 켜고 끈다.
+    # 계정 · 시리얼 · 기본 좌표는 ~/.config/dm_clip_gui/ntrip.yaml (scripts/ntrip_companion.py)
+    ntrip: true
     params: "~/rt2000_ws/src/oxford_gps_eth/config/gps_params.yaml"
     params_arg: params_file
     topic_regex: "^/gps/"

@@ -270,6 +270,12 @@ class SensorGroupProcess(QObject):
 
         self.proc.setProcessEnvironment(clean_environment())
         self.proc.setWorkingDirectory(str(work_dir(group)))
+        # sensors.yaml 의 ntrip: true — 이 센서군과 같이 NTRIP 보정(str2str)을 켜고 끈다 (GNSS RT2000)
+        self.ntrip = None
+        if group.get("ntrip"):
+            import ntrip_companion
+            self.ntrip = ntrip_companion.NtripCompanion(self)
+            self.ntrip.sig_log.connect(lambda line: self.sig_output.emit(self.key, line))
 
     # --- 상태 ---
 
@@ -337,6 +343,8 @@ class SensorGroupProcess(QObject):
         # 포크 없이 exec 하므로 우리가 쥐는 PID 는 그대로 ros2 launch 다.
         self.proc.start("setsid", [program] + args)
         self._set_state(STARTING)
+        if self.ntrip:
+            self.ntrip.start()
         # 장비별 상태도 프로세스가 뜬 뒤에 알린다. 먼저 알리면 받는 쪽(stage)이 is_active()=False 를 보고
         # 카메라별 매핑(시리얼 → 네임스페이스)을 지워 버려, 모든 행이 센서군 상태 하나로 똑같이 칠해졌다.
         self.sig_devices.emit(self.key)
@@ -348,6 +356,8 @@ class SensorGroupProcess(QObject):
     def begin_stop(self):
         """SIGINT 만 보내고 돌아온다. 기다리는 건 finish_stop — 센서군 여럿을 한꺼번에 내릴 때 (stop_all)."""
         self._stopping = None
+        if self.ntrip:
+            self.ntrip.stop()
         if not self.is_active():
             return
         pid = int(self.proc.processId())
@@ -509,6 +519,8 @@ class SensorGroupProcess(QObject):
             self._buf = ""
         if self.state == STOPPED:
             return
+        if self.ntrip:
+            self.ntrip.stop()
         self.sig_output.emit(self.key, f"[GUI] 프로세스 종료 (exit {code})")
         self._set_state(FAILED if code else STOPPED)
 

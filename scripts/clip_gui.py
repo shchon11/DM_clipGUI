@@ -56,6 +56,7 @@ from std_msgs.msg import Header, String
 import bag_diagnostics
 import calib_tab
 import dataset_catalog
+import nav_map
 import hangul_roman
 import gnss_tools
 import net_tools
@@ -1640,6 +1641,15 @@ class DiagDialog(QDialog):
 
 class MainWindow(QMainWindow):
     _catalog_msg = pyqtSignal(str, str)   # (level, message) — CSV 기록 스레드 → 로그
+    _navmap_state = pyqtSignal(dict)       # 지도·내비 서버 상태 (nav_map.status) — 확인 스레드 → 라벨
+    _map_sync_sig = pyqtSignal(object)     # 지도 연동 녹화: /api/dm/sync 응답 (또는 {"error"})
+
+    # 지도 연동 녹화 — 폰 웹에서 루트 취득이 시작/완주되면 녹화를 시작/끝낸다 (bag 하나 = 루트 한 번)
+    MAP_NEAR_M = 150.0          # 폰 ↔ 차량 GNSS 거리 한도. 공개 주소라 차 안의 폰만 녹화를 켤 수 있게
+    MAP_FIX_MAX_AGE = 10.0      # 차량 GNSS fix 가 이보다 오래되면 위치 모름
+    MAP_PHONE_MAX_AGE = 30.0    # 폰 위치가 서버에 이보다 오래 안 들어왔으면 시작 거절
+    MAP_PHONE_LOST_S = 120.0    # 녹화 중 폰 위치가 이만큼 끊기면 (폰 꺼짐·앱 닫힘) 녹화를 끝낸다
+    MAP_START_TIMEOUT = 12.0    # 녹화가 이 안에 시작 안 되면 실패로 폰에 알린다
     def __init__(self, worker, cfg):
         super().__init__()
         self.worker = worker
@@ -1671,6 +1681,17 @@ class MainWindow(QMainWindow):
         self._labels = {"clip": "", "rec": ""}   # 보낼 때의 라벨 — 저장이 끝나면 dataset_info.json 에
         self._shapes_seen = {"clip": set(), "rec": set()}   # 녹화 동안 한 번이라도 켜진 도로 형상
         self._catalog_msg.connect(self.log)
+        self._navmap = {}
+        self._navmap_state.connect(self._on_navmap_state)
+        self.navmap_timer = QTimer(self, interval=30000, timeout=lambda: self._check_navmap(start=False))
+        self._map_port = nav_map.config()["port"]
+        self._map_seen = set()        # 이미 본 런 id — 한 런에 한 번만 판단한다
+        self._map_cur = None          # 지금 맡은 런 {rid, route, zone, state, t, bag, final, why}
+        self._map_first = True        # 첫 응답: GUI 켜기 전에 시작된 런은 새로 녹화하지 않는다
+        self._map_inflight = False
+        self._map_err = False
+        self._map_sync_sig.connect(self._on_map_sync)
+        self.map_timer = QTimer(self, interval=1000, timeout=self._map_tick)
         self.rec_timer = QTimer(self, interval=1000, timeout=self._tick_recording)
         self._cams = {}           # GVCP 디스커버리 {ip: info}
         self._own_ips = net_tools.own_ipv4s()
@@ -1721,6 +1742,10 @@ class MainWindow(QMainWindow):
         self._apply_shortcut()
         QTimer.singleShot(3000, self._check_undiagnosed)
         QTimer.singleShot(300, self._startup_recorder)
+        QTimer.singleShot(800, lambda: self._check_navmap(start=True))
+        QTimer.singleShot(1500, self._hotspot_notice)
+        QTimer.singleShot(2000, self.map_timer.start)
+        self.navmap_timer.start()
 
     # --- UI 구성 ---
     def _build_ui(self):
@@ -1853,6 +1878,11 @@ class MainWindow(QMainWindow):
         head.addWidget(self.lbl_gnss_status, 1)
         head.addWidget(btn_g)
         gg.addLayout(head)
+        # NTRIP 보정 상태는 따로 한 줄 — GNSS 줄과 한 줄에 두면 위치가 안 잡혀 빨개질 때 정상인 보정까지 빨갛게 보였다
+        self.lbl_ntrip = QLabel("")
+        self.lbl_ntrip.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.lbl_ntrip.hide()
+        gg.addWidget(self.lbl_ntrip)
         self.lbl_gnss_pos = QLabel("-")
         self.lbl_gnss_pos.setStyleSheet("color:#6b7280;")
         self.lbl_gnss_pos.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
@@ -1910,6 +1940,23 @@ class MainWindow(QMainWindow):
                               "clips/datasets.csv 기준, 인터넷 없이 동작")
         btn_status.clicked.connect(self.open_dataset_status)
         region_row.addWidget(btn_status)
+        # 지도·내비 (Data Machine, TCar-livingmap 포크) — 구역·루트 정의 + 휴대폰 내비. GUI 가 켜질 때 서버를 띄운다
+        btn_map = QPushButton("지도·내비 ↗")
+        btn_map.setToolTip("구역(하남·고덕·암사 …) 안의 루트를 정의하고 휴대폰으로 내비처럼 안내받는 웹앱\n"
+                           "휴대폰은 오른쪽에 보이는 공개 주소(https)로 들어옵니다 — 로그인 없음")
+        btn_map.clicked.connect(self.open_nav_map)
+        region_row.addWidget(btn_map)
+        self.lbl_map = QLabel("🗺️ 지도 서버 확인 중…")
+        self.lbl_map.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        region_row.addWidget(self.lbl_map)
+        self.chk_maprec = QCheckBox("지도 연동 녹화")
+        self.chk_maprec.setChecked(bool(self.cfg["ui"].get("map_record", True)))
+        self.chk_maprec.setToolTip(
+            "폰 지도·내비에서 루트 취득이 시작되면(출발점 도착) 녹화를 시작하고, 완주하면 끝냅니다 — bag 하나 = 루트 한 번.\n"
+            f"폰이 차량 GNSS 에서 {self.MAP_NEAR_M:.0f} m 안일 때만 (공개 주소라 차 밖의 누가 눌러도 녹화되지 않게).\n"
+            "지역은 그 루트의 구역 이름으로 바뀌고, 라벨은 루트 번호가 됩니다. 결과는 폰 화면에도 보입니다.")
+        self.chk_maprec.toggled.connect(self._on_maprec_toggled)
+        region_row.addWidget(self.chk_maprec)
         trig_v.addLayout(region_row)
         # 도로 형상 — 녹화 버튼을 누른 뒤 지금 달리는 도로에 맞춰 켠다 (여러 개 가능)
         shape_row = QHBoxLayout()
@@ -2448,6 +2495,26 @@ class MainWindow(QMainWindow):
         else:
             parts.append({-1: "NO_FIX", 0: "FIX", 1: "SBAS", 2: "GBAS"}.get(
                 fix["status"], str(fix["status"])))
+        # NTRIP 보정(str2str) — GNSS 센서군과 같이 뜬다. 문제면 빨갛게 (sensors.yaml ntrip: true)
+        ntrip = next((p.ntrip for p in self.stage.supervisor.procs.values() if getattr(p, "ntrip", None)), None)
+        if ntrip and ntrip.status.get("kind") == "network" and not getattr(self, "_ntrip_net_warned", False):
+            # 내부망 와이파이는 NTRIP 포트를 막는다 — 글씨만으로는 놓치기 쉬워 한 번은 창으로 알린다
+            self._ntrip_net_warned = True
+            self.log("ERROR", ntrip.status["text"])
+            QMessageBox.warning(self, "NTRIP 보정 안 됨", ntrip.status["text"].replace("NTRIP: ", "") +
+                                "\n\nGNSS 는 보정 없이(단독 측위) 계속 돌고 있습니다.")
+        elif ntrip and ntrip.status.get("kind") != "network":
+            self._ntrip_net_warned = False
+        if ntrip and ntrip.status["level"] != "off":
+            level = ntrip.status["level"]
+            icon = {"ok": "📡 ", "wait": "⏳ ", "warn": "⚠ ", "err": "✖ "}.get(level, "")
+            color = {"ok": "#16a34a", "wait": "#6b7280", "warn": "#d97706", "err": "#dc2626"}.get(level, "#6b7280")
+            self.lbl_ntrip.setText(icon + ntrip.status["text"])
+            self.lbl_ntrip.setToolTip(ntrip.status["text"])
+            self.lbl_ntrip.setStyleSheet(f"color:{color}; font-weight:bold;")
+            self.lbl_ntrip.show()
+        else:
+            self.lbl_ntrip.hide()
         self.lbl_gnss_status.setText("  ".join(parts) if parts else "수신 대기…")
         self.lbl_gnss_status.setStyleSheet(
             "color:#16a34a; font-weight:bold;" if live else "color:#dc2626; font-weight:bold;")
@@ -2599,8 +2666,23 @@ class MainWindow(QMainWindow):
             buf = min(ring["cap"], max(ring["buf"], ring["need"]), ring["buf"] + ring["rate"] * dt)
         self.bar_mem.setMaximum(max(1, int(ring["cap"])))
         self.bar_mem.setValue(min(int(buf), int(ring["cap"])))
+        if not (-1.0 <= span <= retain * 10 + 60):
+            # 버퍼 안 메시지 시각이 뒤죽박죽 — PC 시계가 크게 뛰었다 (2026-09-30: phc2sys 가 Orin 의 2024 시각으로
+            # 끌고 갔다 돌아옴 → span -7200만 초). 그대로 막대에 넣으면 int 범위를 넘어 예외가 난다.
+            self.bar_span.setValue(0)
+            self.bar_span.setFormat(f"⚠ 버퍼 시각이 뒤죽박죽 (span {span:,.0f} s) — PC 시계가 뛰었음. 시계를 고친 뒤 레코더를 다시 켜세요")
+            if self.bar_span.property("ringColor") != ui_theme.ERR:
+                self.bar_span.setProperty("ringColor", ui_theme.ERR)
+                self.bar_span.setStyleSheet(f"QProgressBar::chunk {{ background: {ui_theme.ERR}; border-radius: 4px; }}")
+            if not getattr(self, "_span_warned", False):
+                self._span_warned = True
+                self.log("ERROR", f"링 버퍼 시각 범위가 비정상 ({span:,.0f} s) — PC 시계가 크게 뛰어 버퍼에 다른 시각의 메시지가 "
+                                  "섞였습니다. 이 상태의 클립은 구간이 틀립니다. PC 시계를 고친 뒤 레코더를 다시 켜세요")
+            self._set_ring_ready(False)
+            return
+        self._span_warned = False
         full = span >= retain - 0.3
-        self.bar_span.setValue(int(min(span / retain, 1.0) * 1000))
+        self.bar_span.setValue(int(max(0.0, min(span / retain, 1.0)) * 1000))
         if ring["cap_hit"]:
             color, text = ui_theme.ERR, f"{span:.1f} / {retain:.1f} s — 메모리 상한에 걸려 더 못 채움"
         elif full:
@@ -2759,6 +2841,14 @@ class MainWindow(QMainWindow):
         m = self.ROUTE_RE.match(cur.name)
         if cur.parent != base or not m or m.group(2) != self._region():
             return None
+        if not cur.exists():
+            # 폴더 번호를 손으로 바꿨으면(route_002_amsa → route_004_amsa) 되살리지 말고 같은 지역 폴더를 이어 쓴다
+            same = sorted((p for p in base.iterdir() if p.is_dir() and (mm := self.ROUTE_RE.match(p.name))
+                           and mm.group(2) == self._region()), key=lambda p: int(self.ROUTE_RE.match(p.name).group(1)))
+            if same:
+                self.cfg["ui"]["route_dir"] = str(same[-1])
+                save_config(self.cfg)
+                return same[-1]
         return cur
 
     def _next_route(self):
@@ -2861,8 +2951,9 @@ class MainWindow(QMainWindow):
                 seen.add(name)
         self.log("GUI", f"🛣️ 도로 형상 {name} {'켬' if on else '끔'}")
 
-    def _catalog(self, uri):
-        """저장이 끝난 bag 폴더에 운전자·동승자·라벨을 남기고 datasets.csv 를 다시 만든다."""
+    def _catalog(self, uri, extra=None):
+        """저장이 끝난 bag 폴더에 운전자·동승자·라벨을 남기고 datasets.csv 를 다시 만든다.
+        extra: 지도 연동 녹화면 {map_route, map_run, map_zone, map_status, map_coverage}."""
         bag = Path(uri)
         if not dataset_catalog.ROUTE_RE.match(bag.parent.name):
             self.log("WARN", f"{bag.name} 은 route 폴더 밖에 저장돼 취득 현황표에 들어가지 않습니다")
@@ -2892,7 +2983,7 @@ class MainWindow(QMainWindow):
                 self._catalog_msg.emit("WARN", f"{bag.name}: 카메라 시리얼 ↔ 이름 기록 실패 — {e}")
             try:
                 dataset_catalog.write_info(bag, label=label, region_name=region_ko, cameras=cameras,
-                                           road_shapes=road_shapes, **crew)
+                                           road_shapes=road_shapes, **crew, **(extra or {}))
                 path, n = dataset_catalog.rebuild(base)
                 self._catalog_msg.emit("GUI", f"데이터셋 목록 갱신: {path} ({n}개)")
             except Exception as e:
@@ -2914,6 +3005,236 @@ class MainWindow(QMainWindow):
             self._status_server.RequestHandlerClass.base = Path(self.cfg["recorder"]["output_dir"])
         subprocess.Popen(["xdg-open", f"http://localhost:{port}"],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def _hotspot_notice(self):
+        """교내 와이파이면 켜자마자 핫스팟으로 바꾸라고 한 번 알린다 — NTRIP 보정 · 폰 지도·내비 둘 다 교내망에서 막힌다."""
+        try:
+            import ntrip_companion
+            ssid = ntrip_companion.current_wifi()
+            blocked = ssid and ssid in (ntrip_companion.load_config().get("blocked_wifi") or [])
+        except Exception:
+            return
+        if not blocked:
+            return
+        self._ntrip_net_warned = True      # NTRIP 이 뜰 때 같은 안내 창을 또 띄우지 않게
+        text = (f"지금 와이파이 '{ssid}' 는 교내망이라 아래 두 가지가 안 됩니다.\n\n"
+                "  • NTRIP 보정 (RTK/DGPS)\n  • 휴대폰 지도·내비 (공개 주소)\n\n"
+                "취득 전에 휴대폰 핫스팟에 연결하세요. 바꾸면 둘 다 알아서 다시 붙습니다.")
+        self.log("WARN", f"와이파이 '{ssid}'(교내망) — NTRIP · 폰 지도·내비 안 됨. 휴대폰 핫스팟에 연결하세요")
+        QMessageBox.warning(self, "핫스팟에 연결하세요", text)
+
+    # --- 지도 연동 녹화 (폰 웹의 취득 시작/완주 → 녹화 시작/끝) ---
+    def _on_maprec_toggled(self, on):
+        self.cfg["ui"]["map_record"] = bool(on)
+        save_config(self.cfg)
+        self.log("GUI", f"지도 연동 녹화 {'켬' if on else '끔'}")
+
+    def _vehicle_fix(self):
+        """차량 GNSS 마지막 유효 fix (lat, lon, 경과 초) — 오래됐으면 None."""
+        if not self._trail:
+            return None
+        t, lat, lon = self._trail[-1]
+        age = time.time() - t
+        return (lat, lon, round(age, 1)) if age <= self.MAP_FIX_MAX_AGE else None
+
+    def _map_tick(self):
+        if self._map_inflight:
+            return
+        self._map_inflight = True
+        port, fix = self._map_port, self._vehicle_fix()
+        enabled = self.chk_maprec.isChecked()
+        recording = bool(self.recording or self._rec_pending)
+        watch = [self._map_cur["rid"]] if self._map_cur else []
+
+        def work():
+            try:
+                resp = nav_map.dm_sync(port, enabled, recording, list(fix) if fix else None, watch)
+            except Exception as e:           # noqa: BLE001 — 서버 꺼짐 · 시간 초과 모두 같은 취급
+                resp = {"error": str(e)}
+            self._map_sync_sig.emit(resp)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _map_report(self, rid, state, msg="", bag=""):
+        port = self._map_port
+
+        def work():
+            try:
+                nav_map.dm_run_state(port, rid, state, msg, bag)
+            except Exception as e:           # noqa: BLE001
+                self._catalog_msg.emit("WARN", f"지도 연동: 폰에 상태({state})를 못 알림 — {e}")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _map_fail(self, why):
+        cur = self._map_cur
+        if not cur:
+            return
+        self.log("ERROR", f"지도 연동: {cur['route']} 녹화 실패 — {why}")
+        self._map_report(cur["rid"], "failed", why)
+        if self.recording and cur["state"] == "recording":
+            cur["why"] = why                 # 녹화는 계속 돈다 — 끝날 때 bag 에 사유를 남긴다
+        else:
+            self._map_cur = None
+
+    def _on_map_sync(self, resp):
+        self._map_inflight = False
+        if "error" in resp:
+            if not self._map_err:
+                self._map_err = True
+                self.log("WARN", f"지도 연동: 지도 서버에 연결 안 됨 — 폰의 취득 시작이 녹화로 이어지지 않습니다 "
+                                 f"({resp['error']})")
+            return
+        if self._map_err:
+            self._map_err = False
+            self.log("GUI", "지도 연동: 지도 서버 연결됨")
+        active = resp.get("active") or []
+        if self._map_first:
+            self._map_first = False
+            for run in active:
+                self._map_seen.add(run["id"])
+                dm = run.get("dm") or {}
+                if dm.get("state") in ("starting", "recording") and self.recording and not self._map_cur:
+                    # GUI 를 다시 켰는데 그 런의 녹화가 레코더에서 계속 도는 중 — 이어서 맡아 완주 때 끝낸다
+                    self._map_cur = {"rid": run["id"], "route": run["route_id"], "zone": run.get("zone", ""),
+                                     "state": "recording", "t": time.time(), "bag": dm.get("bag", "")}
+                    self.log("GUI", f"지도 연동: 진행 중인 {run['route_id']} 녹화를 이어서 맡습니다")
+                elif not dm:
+                    self._map_report(run["id"], "ignored", "GUI 를 켜기 전에 시작된 취득이라 녹화에 연결하지 않음")
+            return
+        for run in active:
+            if run["id"] not in self._map_seen:
+                self._map_seen.add(run["id"])
+                self._map_start(run)
+        cur = self._map_cur
+        if not cur:
+            return
+        w = (resp.get("watched") or {}).get(cur["rid"])
+        if cur["state"] == "starting" and time.time() - cur["t"] > self.MAP_START_TIMEOUT:
+            self._map_fail(f"{self.MAP_START_TIMEOUT:.0f}초 안에 녹화가 시작되지 않음 — PC 로그를 확인하세요")
+        elif cur["state"] in ("starting", "recording") and w and w.get("status") != "running":
+            self._map_stop(w)
+        elif cur["state"] == "recording":
+            run = next((r for r in active if r["id"] == cur["rid"]), None)
+            g = run.get("gps") if run else None
+            if not g or g.get("age", 1e9) > self.MAP_PHONE_LOST_S:
+                self._map_stop({"status": "lost"})
+
+    def _map_start(self, run):
+        rid, route = run["id"], run["route_id"]
+
+        def refuse(state, why, level="WARN"):
+            self.log(level, f"지도 연동: {route} 취득 시작 — 녹화 안 함: {why}")
+            self._map_report(rid, state, why)
+
+        if not self.chk_maprec.isChecked():
+            return refuse("ignored", "PC 에서 '지도 연동 녹화' 가 꺼져 있음", "GUI")
+        if self.recording or self._rec_pending or self._map_cur:
+            return refuse("ignored", "PC 가 이미 녹화 중")
+        if not self.worker.recorder_alive():
+            return refuse("failed", "PC 레코더가 꺼져 있음 — 센서·레코더를 켜세요", "ERROR")
+        fix, g = self._vehicle_fix(), run.get("gps")
+        if not fix:
+            return refuse("failed", "차량 GNSS 위치가 없음 — 폰이 차 안인지 확인할 수 없어 녹화하지 않음 (GNSS 센서를 켜세요)",
+                          "ERROR")
+        if not g or g.get("age", 1e9) > self.MAP_PHONE_MAX_AGE:
+            return refuse("failed", "폰 위치가 서버에 안 들어옴", "ERROR")
+        d = nav_map.distance_m(fix[0], fix[1], g["lat"], g["lng"])
+        if d > self.MAP_NEAR_M:
+            return refuse("ignored", f"폰이 차량에서 {d:.0f} m 떨어져 있음 (한도 {self.MAP_NEAR_M:.0f} m)")
+        region = (run.get("zone_name") or run.get("zone") or "").strip()
+        if region and region != self.region_edit.text().strip():
+            # 구역 이름(고덕) → 기존 지역 칸 → route_NNN_godeok. 손으로 넣는 것과 같은 길
+            self.region_edit.setText(region)
+            self._on_region_edited(region)
+            self.log("GUI", f"지도 연동: 지역을 '{region}' 로 바꿈 (구역 {run.get('zone')})")
+        self._map_cur = {"rid": rid, "route": route, "zone": run.get("zone", ""), "state": "starting",
+                         "t": time.time(), "bag": ""}
+        self._map_report(rid, "starting", "PC 녹화 시작 중")
+        self.log("GUI", f"지도 연동: {route} 취득 시작 (폰 '{run.get('device')}', 차량과 {d:.0f} m) → 녹화 시작")
+        name = (run.get("route_name") or "").strip()
+        self._start_recording(route + (f" {name}" if name else ""), from_map=True)
+
+    def _map_rec_started(self, uri):
+        cur = self._map_cur
+        if not cur or cur["state"] != "starting":
+            return
+        cur.update(state="recording", bag=uri)
+        self._map_report(cur["rid"], "recording", "PC 녹화 중", Path(uri).name)
+        if cur.get("final"):                 # 시작 중에 폰이 이미 끝냈다 — 바로 닫는다
+            self._map_stop(cur["final"])
+
+    def _map_stop(self, final):
+        cur = self._map_cur
+        cur["final"] = final
+        if cur["state"] == "starting":
+            return                           # 녹화가 시작되면 _map_rec_started 가 바로 닫는다
+        if cur["state"] == "stopping":
+            return
+        if not self.recording:
+            self._map_fail("PC 녹화가 이미 멈춰 있음")
+            return
+        cur["state"] = "stopping"
+        status = final.get("status")
+        why = {"done": "완주", "aborted": "중단(폐기)", "lost": f"폰 위치가 {self.MAP_PHONE_LOST_S:.0f}초 넘게 끊김",
+               "deleted": "런이 지워짐"}.get(status, status or "?")
+        self.log("GUI" if status == "done" else "WARN", f"지도 연동: {cur['route']} {why} → 녹화 끝")
+        self._map_report(cur["rid"], "stopping", f"PC 녹화 끝내는 중 ({why})")
+        self._request_stop_recording()
+
+    def _map_rec_stopped(self, uri, dur):
+        """녹화가 닫혔다 — 지도 연동 녹화였으면 bag 에 적을 지도 필드를 돌려주고 폰에 '저장됨' 을 알린다."""
+        cur = self._map_cur
+        if not cur or cur["state"] == "starting":
+            return None
+        self._map_cur = None
+        final = cur.get("final") or {}
+        status = final.get("status") or "manual_stop"     # 폰이 끝내기 전에 PC 에서 멈춤
+        extra = {"map_route": cur["route"], "map_run": cur["rid"], "map_zone": cur["zone"], "map_status": status,
+                 "map_coverage": final.get("coverage")}
+        note = {"manual_stop": " · PC 에서 손으로 멈춤", "lost": " · 폰 위치 끊김으로 멈춤",
+                "aborted": " · 폰에서 중단(폐기)"}.get(status, "")
+        if cur.get("why"):
+            note += f" · {cur['why']}"
+        self._map_report(cur["rid"], "saved", f"저장됨 {Path(uri).name} ({dur}s){note}", Path(uri).name)
+        self.log("OK", f"지도 연동: {cur['route']} → {Path(uri).name} 에 루트·재현율 기록{note}")
+        return extra
+
+    # --- 지도·내비 서버 (nav_map) ---
+    def _check_navmap(self, start):
+        def work():
+            if start:
+                ok, msg = nav_map.start()
+                self._catalog_msg.emit("GUI" if ok else "ERROR", f"지도·내비 서버: {msg}")
+            st = nav_map.status()
+            self._navmap_state.emit(st)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_navmap_state(self, st):
+        prev, self._navmap = self._navmap, st
+        if not st["running"]:
+            text, color = "⚠ 지도 서버 꺼짐", "#b91c1c"
+        elif st["public"] and st.get("kakao_problem"):
+            text, color = f"⚠ 지도: {st['kakao_problem']}", "#b91c1c"
+        elif st["public"]:
+            text, color = f"🗺️ 폰: {st['public']}", "#15803d"
+        else:
+            text, color = f"⚠ 지도: {st['local']} 만 — {st['note']}", "#b45309"
+        self.lbl_map.setText(text)
+        self.lbl_map.setStyleSheet(f"color:{color};")
+        self.lbl_map.setToolTip(
+            f"PC: {st['local']}\n폰(공개): {st['public'] or '없음 — ' + st['note']}\n"
+            "서버는 GUI 와 따로 돌아서 GUI 를 닫아도 휴대폰 안내가 끊기지 않습니다 (~/DataMachine-map/server.log)")
+        # 바뀌었을 때만 로그 — 30초마다 같은 줄이 쌓이지 않게
+        key = (st["running"], st["public"], st.get("kakao_problem"))
+        if key != (prev.get("running"), prev.get("public"), prev.get("kakao_problem")):
+            ok = st["running"] and st["public"] and not st.get("kakao_problem")
+            self.log("GUI" if ok else "WARN", f"지도·내비: {text}")
+
+    def open_nav_map(self):
+        st = self._navmap or {}
+        if not st.get("running"):
+            self._check_navmap(start=True)
+        url = (st.get("local") or f"http://localhost:{nav_map.config()['port']}")
+        subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     # --- 수동 녹화 ---
     def _style_record_button(self):
@@ -2956,11 +3277,18 @@ class MainWindow(QMainWindow):
         if self.recording:
             self._request_stop_recording()
             return
+        self._start_recording(self.label_edit.text().strip())
+
+    def _start_recording(self, label, from_map=False):
         if not self.worker.recorder_alive():
             self.log("ERROR", "레코더가 실행 중이 아님 — 녹화 불가")
+            if from_map:
+                self._map_fail("레코더가 실행 중이 아님 — PC 에서 레코더를 켜세요")
             return
         job = self.calib.running_job()
-        if job:
+        if job and from_map:
+            self.calib.cancel_job(job, reason="지도 연동 녹화를 시작해서 중단", ask=False)
+        elif job:
             # 녹화가 먼저다. 캘리브레이션은 끝난 단계가 남아 나중에 이어서 할 수 있다.
             if QMessageBox.question(
                     self, "녹화 시작",
@@ -2971,7 +3299,6 @@ class MainWindow(QMainWindow):
             self.calib.cancel_job(job, reason="녹화를 시작해서 중단", ask=False)
         if not self.cfg["topics"]:
             self.log("WARN", "녹화할 토픽을 고르지 않아 레코더가 보는 토픽 전부를 녹화합니다")
-        label = self.label_edit.text().strip()
 
         def send(route):
             self._rec_pending = True
@@ -2987,6 +3314,8 @@ class MainWindow(QMainWindow):
     def _record_request_timeout(self):
         if self._rec_pending:
             self._rec_pending = False
+            if self._map_cur and self._map_cur["state"] == "starting":
+                self._map_fail("레코더가 녹화 명령에 답이 없음 — PC 레코더를 확인하세요")
             self.log("ERROR", "레코더가 수동 녹화 명령에 답이 없습니다 — 레코더가 이 기능을 모르는 옛 "
                               "빌드일 수 있습니다 (레코더를 재시작하세요)")
             self._style_record_button()
@@ -3028,6 +3357,7 @@ class MainWindow(QMainWindow):
             self._shapes_seen["rec"] = self._shapes_on()
             self.rec_timer.start()
             self.log("OK", f"수동 녹화 시작: {parts[1]} — 🛣️ 도로 형상을 켜 두세요")
+            self._map_rec_started(parts[1])
         elif kind == "rec_closing":
             if self.recording:
                 self.recording["closing"] = True
@@ -3037,7 +3367,7 @@ class MainWindow(QMainWindow):
             self.rec_timer.stop()
             self.last_clip = uri
             saved = f"수동 녹화 저장 완료: {uri} ({nmsg}개, {dur}s, {float(mb or 0) / 1024:.1f} GB)"
-            self._catalog(uri)
+            self._catalog(uri, self._map_rec_stopped(uri, dur))
             if self.cfg["ui"]["auto_diagnose"]:
                 self.log("OK", saved + " — 진단을 시작합니다")
                 self.run_diagnostics(uri)
@@ -3057,6 +3387,8 @@ class MainWindow(QMainWindow):
                 self.recording = None
                 self.rec_timer.stop()
             self.log("ERROR", f"수동 녹화 오류: {parts[1] if len(parts) > 1 else ''}")
+            if self._map_cur and self._map_cur["state"] == "starting":
+                self._map_fail("PC 녹화 오류: " + (parts[1] if len(parts) > 1 else ""))
         self._style_record_button()
 
     def _sync_recording(self, kv):
@@ -3079,6 +3411,8 @@ class MainWindow(QMainWindow):
         elif active == "false" and self.recording and not self.recording.get("closing"):
             self.log("WARN", "레코더가 녹화 중이 아닙니다 (레코더가 재시작됐을 수 있음) — 녹화 표시를 끕니다")
             self.recording = None
+            if self._map_cur and self._map_cur["state"] in ("recording", "stopping"):
+                self._map_fail("PC 레코더가 녹화를 멈춤 (재시작됐을 수 있음) — bag 이 끝까지 안 남았을 수 있습니다")
             self.rec_timer.stop()
             self._style_record_button()
         self._update_diag_hold()
@@ -3097,7 +3431,8 @@ class MainWindow(QMainWindow):
             self.btn_record.setText("파일 닫는 중…")
         else:
             self.btn_record.setText(f"■  녹화 중지  ({key})   {clock}")
-        self.lbl_rec.setText(f"● 수동 녹화 중  {Path(rec['uri']).name}  ·  {clock}  ·  {gb:.1f} GB"
+        via = f"지도 {self._map_cur['route']}  " if self._map_cur else ""
+        self.lbl_rec.setText(f"● {via or '수동 '}녹화 중  {Path(rec['uri']).name}  ·  {clock}  ·  {gb:.1f} GB"
                              + (f"  ·  {self._last_rate:.0f} MB/s" if self._last_rate else ""))
         self.lbl_rec.show()
 
@@ -3204,10 +3539,15 @@ class MainWindow(QMainWindow):
         root = Path(self.cfg["recorder"]["output_dir"]).expanduser()
         if not root.is_dir():
             return []
-        return sorted((d for d in root.iterdir()
-                       if d.is_dir() and (d / "metadata.yaml").is_file()
-                       and not (d / "diagnostics.json").is_file()),
-                      key=lambda d: d.name)
+        def undiagnosed(d):
+            # 녹화 폴더 이름만 본다 — 저장 위치가 /mnt/data 면 root 전용 lost+found 안을 stat 하다 PermissionError
+            if not d.name.startswith(("rec_", "clip_")):
+                return False
+            try:
+                return d.is_dir() and (d / "metadata.yaml").is_file() and not (d / "diagnostics.json").is_file()
+            except OSError:
+                return False
+        return sorted((d for d in root.iterdir() if undiagnosed(d)), key=lambda d: d.name)
 
     def _diag_missing(self):
         """진단이 빠진 녹화를 차례로 진단한다 — 자동 진단을 꺼 뒀거나, GUI 를 진단 전에 닫았거나,

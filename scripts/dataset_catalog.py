@@ -4,7 +4,8 @@
 # 기준은 폴더다: <저장 위치>/route_NNN_<지역>/{clip_*,rec_*}/ 를 훑어
 #   - metadata.yaml (rosbag2)  → 날짜 · 시작/끝 시각 · bag 길이 · 메시지 수
 #   - dataset_info.json (GUI)  → 운전자 · 동승자 · 라벨 · 비고
-# 를 모아 <저장 위치>/datasets.csv 를 새로 쓴다. 폴더를 지우거나 옮겨도 다시 만들면 맞는다.
+# 를 모아 <저장 위치>/datasets.csv 를 새로 쓴다. 한 번 들어온 줄은 datasets_archive.json 에 보관해서
+# bag 폴더를 지우거나 옮겨도 목록에 남는다 ('bag 폴더' 칸 = 없음).
 #
 #   python3 dataset_catalog.py rebuild            # CSV 만 다시 쓰기
 #   python3 dataset_catalog.py serve [--port N]   # http://localhost:8765 현황표 (인터넷 없이 동작)
@@ -41,7 +42,9 @@ DEFAULT_PORT = 8765
 DEFAULT_GOAL_HOURS = 4.0
 DEFAULT_SCALE_HOURS = 6.0     # 게이지 전체 길이 — 목표(4h)를 넘겨 더 모아도 계속 보이게
 ROUTE_RE = re.compile(r"route_(\d+)_(.+)$")
-EDITABLE = ("driver", "passenger", "note")
+EDITABLE = ("driver", "passenger", "note", "label")
+# 도로 형상 — 녹화 GUI(clip_gui.ROAD_SHAPES)와 같은 목록. 현황표에서 더블클릭해 고친다.
+ROAD_SHAPES = ["좁은 골목", "일반도로", "대로", "교차로", "경사로", "터널/지하"]
 KIND_REC, KIND_CLIP = "수동녹화(Loop)", "Clip(30s)"
 
 # 시간대 — 녹화 구간의 태양 고도로 나눈다 (30초 간격으로 쪼개 합산, 녹화 하나가 걸쳐 있으면 나눠서 센다)
@@ -59,8 +62,9 @@ COLUMNS = [
     ("time_of_day", "시간대"), ("day_sec", "day(초)"), ("dusk_sec", "dusk(초)"), ("night_sec", "night(초)"),
     ("duration_sec", "bag 길이(초)"), ("duration_hms", "bag 길이"),
     ("kind", "종류"), ("road_shapes", "도로 형상"), ("driver", "운전자"), ("passenger", "동승자"),
-    ("label", "라벨"), ("messages", "메시지 수"), ("size_gb", "용량(GB)"),
-    ("note", "비고"), ("folder", "폴더"),
+    ("label", "라벨"), ("map_route", "지도 루트"), ("map_coverage", "재현율(%)"), ("map_run", "지도 run"),
+    ("messages", "메시지 수"), ("size_gb", "용량(GB)"),
+    ("note", "비고"), ("folder", "폴더"), ("on_disk", "bag 폴더"),
 ]
 _lock = threading.Lock()
 
@@ -136,7 +140,7 @@ def upload_to_gsheet(base):
     cfg = upload_cfg()
     if not cfg.get("url"):
         raise LookupError("웹 앱 URL 이 아직 없습니다")
-    rows = scan(base)
+    rows = _read_csv(rebuild(base)[0])                 # 폴더를 지운 녹화도 포함한 유효한 리스트
     keys = [k for k, _ in COLUMNS]
     body = json.dumps({
         "token": cfg["token"],
@@ -255,7 +259,10 @@ def bag_row(bag, region, route):
                region_name=info.get("region_name", "") or region,
                road_shapes=" · ".join(info.get("road_shapes") or []),
                driver=info.get("driver", ""), passenger=info.get("passenger", ""),
-               label=info.get("label", ""), note=info.get("note", ""))
+               label=info.get("label", ""), note=info.get("note", ""),
+               # 지도·내비(Data Machine)의 루트를 따라 달리며 녹화한 bag — GUI 의 지도 연동 녹화가 적는다
+               map_route=info.get("map_route", ""), map_run=info.get("map_run", ""),
+               map_coverage=("" if info.get("map_coverage") is None else f"{float(info['map_coverage']) * 100:.0f}"))
     row["_excluded"] = bool(info.get("excluded"))     # 현황표에서 '유효한 리스트에서 지우기' 한 녹화
     size = sum(f.stat().st_size for f in bag.iterdir() if f.is_file())
     row["size_gb"] = f"{size / 1e9:.2f}"
@@ -282,25 +289,63 @@ def bag_row(bag, region, route):
     return row
 
 
+# 저장 위치 말고도 bag 을 옮겨 두는 곳 (다른 디스크 등) — 여기의 route_*/clip_*|rec_* 도 목록에 넣는다.
+# 2026-09-29: 녹화 뒤 /mnt/data 로 옮긴 bag 이 '녹화 중' 모습(길이 0)으로 목록에 굳어 합계에서 빠졌다.
+CATALOG_CFG = Path.home() / ".config" / "dm_clip_gui" / "catalog.yaml"
+DEFAULT_EXTRA_ROOTS = ["/mnt/data"]
+
+
+_BAG_KEY = re.compile(r"^((?:clip|rec)_\d{8}_\d{6})")
+
+
+def bag_key(folder):
+    """녹화 하나를 가리키는 이름 — 폴더 이름 앞의 clip_/rec_날짜_시각 (뒤에 붙인 메모는 무시)."""
+    name = Path(folder).name
+    m = _BAG_KEY.match(name)
+    return m.group(1) if m else name
+
+
+def scan_roots(base):
+    try:
+        extra = (yaml.safe_load(CATALOG_CFG.read_text(encoding="utf-8")) or {}).get("extra_roots")
+    except FileNotFoundError:
+        extra = None
+    if extra is None:
+        extra = DEFAULT_EXTRA_ROOTS
+    roots, seen = [], set()
+    for r in [base] + list(extra):
+        p = Path(r).expanduser()
+        if p.is_dir() and p.resolve() not in seen:
+            seen.add(p.resolve())
+            roots.append(p)
+    return roots
+
+
 def scan(base, excluded=False):
     """route_* 폴더 안의 clip_*/rec_* 만 모은다 (지역 없이 clips/ 바로 아래 있는 옛 클립은 뺀다).
 
+    저장 위치(base)와 옮겨 두는 곳(catalog.yaml 의 extra_roots, 기본 /mnt/data)을 같이 본다.
     현황표에서 리스트에서 뺀 녹화(dataset_info.json 의 excluded)는 빠진다 — bag 파일은 그대로.
     excluded=True 면 거꾸로 뺀 것만 돌려준다 (되돌리기 목록).
     """
-    base = Path(base)
-    rows = []
-    if not base.is_dir():
-        return rows
-    for route in sorted(base.iterdir()):
-        m = ROUTE_RE.match(route.name)
-        if not (route.is_dir() and m):
-            continue
-        for bag in sorted(route.iterdir()):
-            if bag.is_dir() and bag.name.startswith(("clip_", "rec_")):
-                row = bag_row(bag, m.group(2), route.name)
-                if row.pop("_excluded") == excluded:
-                    rows.append(row)
+    rows, seen = [], set()
+    for root in scan_roots(Path(base)):
+        for route in sorted(root.iterdir()):
+            m = ROUTE_RE.match(route.name)
+            if not (route.is_dir() and m):
+                continue
+            try:
+                bags = sorted(route.iterdir())
+            except OSError:
+                continue
+            for bag in bags:
+                if bag.is_dir() and bag.name.startswith(("clip_", "rec_")):
+                    if bag_key(bag) in seen:          # 같은 녹화의 복사본이 다른 곳에도 있으면 한 번만 센다
+                        continue
+                    seen.add(bag_key(bag))
+                    row = bag_row(bag, m.group(2), route.name)
+                    if row.pop("_excluded") == excluded:
+                        rows.append(row)
     rows.sort(key=lambda r: (r["date"], r["start_time"]))
     return rows
 
@@ -313,17 +358,105 @@ def to_csv(rows):
     return buf.getvalue()
 
 
+# 한 번 목록에 들어온 녹화는 bag 폴더를 지우거나 옮겨도 목록에 남는다 — 모든 줄을 여기 보관한다.
+# {폴더: {"row": {CSV 한 줄}, "excluded": bool, "excluded_at": ""}}. datasets.csv 는 (지금 있는 폴더) + (보관본) 이다.
+ARCHIVE = "datasets_archive.json"
+ON_DISK, OFF_DISK = "있음", "없음 (지움·옮김)"
+
+
+def load_archive(base):
+    try:
+        return json.loads((Path(base) / ARCHIVE).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+
+
+def save_archive(base, arch):
+    path = Path(base) / ARCHIVE
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(arch, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _clean(row):
+    return {k: ("" if row.get(k) is None else str(row.get(k))) for k, _ in COLUMNS}
+
+
+def _read_csv(path):
+    try:
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            return list(csv.DictReader(f))
+    except FileNotFoundError:
+        return []
+
+
 def rebuild(base):
-    """datasets.csv 를 다시 쓴다 (엑셀에서 한글이 깨지지 않게 UTF-8 BOM). 반환: (경로, 줄 수)."""
+    """datasets.csv 를 다시 쓴다 (엑셀에서 한글이 깨지지 않게 UTF-8 BOM). 반환: (경로, 줄 수).
+
+    지금 있는 bag 폴더를 훑은 줄 + 보관본(ARCHIVE)의 폴더 없는 줄. 폴더가 사라져도 줄은 남는다.
+    """
     base = Path(base)
     with _lock:
-        rows = scan(base)
+        valid, excl = scan(base), scan(base, excluded=True)
+        on_disk = {r["folder"] for r in valid + excl}
+        arch = load_archive(base)
+        # 옮겨진 bag: 보관본의 옛 경로와 이름(rec_…)이 같은 bag 이 다른 곳에 있으면 옛 기록을 버린다
+        # (옛 기록은 녹화 중에 찍힌 모습일 수 있다 — 길이 0). 리스트에서 뺀 표시는 이어받는다.
+        # 같은 녹화 = 폴더 이름 앞의 clip_/rec_날짜_시각 이 같음 (뒤에 '-카메라2죽음' 처럼 붙여 이름을 바꿔도 같은 것)
+        here = {bag_key(f): f for f in on_disk}
+        inherited = False
+        for old in [f for f in arch if f not in on_disk and bag_key(f) in here]:
+            if arch[old].get("excluded"):
+                new = Path(here[bag_key(old)])
+                if new.is_dir() and not read_info(new).get("excluded"):
+                    write_info(new, excluded=True, excluded_at=arch[old].get("excluded_at", ""))
+                    inherited = True
+            del arch[old]
+        if inherited:
+            valid, excl = scan(base), scan(base, excluded=True)
+        for r in _read_csv(base / CSV_NAME):          # 보관본이 생기기 전 목록에 있던 줄도 옮겨 둔다
+            f = r.get("folder")
+            if f and f not in on_disk and f not in arch and bag_key(f) not in here:   # 옮겨진 bag 은 새 위치로
+                arch[f] = {"row": _clean(r), "excluded": False}
+        for r in valid:
+            arch[r["folder"]] = {"row": _clean(dict(r, on_disk=ON_DISK)), "excluded": False}
+        for r in excl:
+            arch[r["folder"]] = {"row": _clean(dict(r, on_disk=ON_DISK)), "excluded": True}
+        rows = [dict(r, on_disk=ON_DISK) for r in valid]
+        rows += [dict(e["row"], on_disk=OFF_DISK) for f, e in arch.items()
+                 if f not in on_disk and not e.get("excluded")]
+        rows.sort(key=lambda r: (r["date"], r["start_time"]))
         base.mkdir(parents=True, exist_ok=True)
+        save_archive(base, arch)
         path = base / CSV_NAME
         tmp = path.with_suffix(".csv.tmp")
         tmp.write_text(to_csv(rows), encoding="utf-8-sig")
         tmp.replace(path)
     return path, len(rows)
+
+
+def excluded_rows(base):
+    """리스트에서 뺀 녹화 — 폴더가 있는 것 + 보관본에만 남은 것."""
+    rows = scan(base, excluded=True)
+    have = {r["folder"] for r in rows}
+    rows += [dict(e["row"], on_disk=OFF_DISK) for f, e in load_archive(base).items()
+             if e.get("excluded") and f not in have and not Path(f).is_dir()]
+    return rows
+
+
+def import_rows(base, rows):
+    """다른 PC · 엑셀에서 가져온 줄을 보관본에 넣는다 (같은 폴더가 이미 있으면 건너뜀). 반환: 넣은 수."""
+    with _lock:
+        arch = load_archive(base)
+        n = 0
+        for r in rows:
+            f = r.get("folder")
+            if f and f not in arch:
+                arch[f] = {"row": _clean(r), "excluded": False}
+                n += 1
+        save_archive(base, arch)
+    rebuild(base)
+    return n
 
 
 def read_plans(base):
@@ -455,7 +588,8 @@ class Handler(BaseHTTPRequestHandler):
                        .replace("__COLUMNS__", json.dumps(COLUMNS, ensure_ascii=False)) \
                        .replace("__PLAN_COLUMNS__", json.dumps(PLAN_COLUMNS, ensure_ascii=False)) \
                        .replace("__BASE__", json.dumps(str(self.base), ensure_ascii=False)) \
-                       .replace("__GSHEET_EDIT__", json.dumps(GSHEET_EDIT_URL))
+                       .replace("__GSHEET_EDIT__", json.dumps(GSHEET_EDIT_URL)) \
+                       .replace("__ROAD_SHAPES__", json.dumps(ROAD_SHAPES, ensure_ascii=False))
             self._send(200, page, "text/html; charset=utf-8")
         elif path == "/" + CSV_NAME:
             try:
@@ -476,7 +610,7 @@ class Handler(BaseHTTPRequestHandler):
                        "application/json; charset=utf-8")
         elif path == "/api/excluded":
             try:
-                self._send(200, json.dumps(scan(self.base, excluded=True), ensure_ascii=False),
+                self._send(200, json.dumps(excluded_rows(self.base), ensure_ascii=False),
                            "application/json; charset=utf-8")
             except Exception as e:
                 self._send(500, f"제외 목록 읽기 실패: {e}", "text/plain; charset=utf-8")
@@ -526,16 +660,37 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(404, "not found", "text/plain")
         try:
             req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
-            bag = Path(req["folder"]).resolve()
-            # 저장 위치 안의 route_*/clip_*|rec_* 만 고칠 수 있다
-            if bag.parent.parent != Path(self.base).resolve() or not ROUTE_RE.match(bag.parent.name) \
-                    or not bag.is_dir():
-                raise ValueError("저장 위치 안의 녹화 폴더가 아닙니다")
             fields = {k: str(req[k]).strip() for k in EDITABLE if k in req}
+            shapes = None
+            if "road_shapes" in req:                               # 목록으로 받는다 — 모르는 이름은 거절
+                shapes = [x for x in ROAD_SHAPES if x in list(req["road_shapes"] or [])]
+                unknown = [x for x in (req["road_shapes"] or []) if x not in ROAD_SHAPES]
+                if unknown:
+                    raise ValueError(f"모르는 도로 형상: {unknown}")
             if "excluded" in req:                                  # 리스트에서 빼기 / 되돌리기
                 fields["excluded"] = bool(req["excluded"])
                 fields["excluded_at"] = dt.datetime.now().isoformat(timespec="seconds") if req["excluded"] else ""
-            write_info(bag, **fields)
+            bag = Path(req["folder"]).resolve()
+            with _lock:
+                arch = load_archive(self.base)
+            if bag.is_dir():
+                # 저장 위치 안의 route_*/clip_*|rec_* 만 고칠 수 있다
+                roots = {r.resolve() for r in scan_roots(Path(self.base))}   # 저장 위치 + 옮겨 두는 곳
+                if bag.parent.parent not in roots or not ROUTE_RE.match(bag.parent.name):
+                    raise ValueError("저장 위치 안의 녹화 폴더가 아닙니다")
+                write_info(bag, **fields, **({"road_shapes": shapes} if shapes is not None else {}))
+            elif req["folder"] in arch:                              # 폴더는 없고 목록에만 남은 줄
+                with _lock:
+                    arch = load_archive(self.base)
+                    e = arch[req["folder"]]
+                    e["row"].update({k: v for k, v in fields.items() if k in EDITABLE})
+                    if shapes is not None:
+                        e["row"]["road_shapes"] = " · ".join(shapes)
+                    if "excluded" in fields:
+                        e["excluded"], e["excluded_at"] = fields["excluded"], fields["excluded_at"]
+                    save_archive(self.base, arch)
+            else:
+                raise ValueError("목록에 없는 녹화입니다")
             rebuild(self.base)
             self._send(200, json.dumps({"ok": True}), "application/json")
         except Exception as e:
@@ -652,6 +807,12 @@ th,td{border-bottom:1px dashed var(--line);padding:8px 9px;text-align:left;white
 th{position:sticky;top:0;background:var(--card);cursor:pointer;font-size:12px;color:var(--mute);font-weight:700;border-bottom:2px solid var(--line)}
 tbody tr{transition:background .12s}tbody tr:hover{background:color-mix(in srgb,var(--acc) 7%,transparent)}
 td.num{text-align:right}td.ed{cursor:text;min-width:70px}td.ed:empty::after{content:"입력";color:var(--mute);opacity:.5}
+td.path.gone{text-decoration:line-through;opacity:.7}
+td.dbl{cursor:pointer}td.dbl:hover{background:color-mix(in srgb,var(--acc) 8%,transparent)}
+td.shapes .chips{display:flex;flex-wrap:wrap;gap:4px;max-width:360px;white-space:normal}
+td.shapes .chip{padding:2px 9px;font-size:12px;border-radius:999px}
+td.shapes .chip.on{background:var(--acc);border-color:var(--acc);color:#fff}
+td.shapes .chip.ok{border-color:var(--ok);color:var(--ok)}
 td.ed:focus{outline:2px solid var(--acc)}td.path{color:var(--mute);font-size:11px}
 tr.miss td.ed:not([data-k=note]):empty{background:color-mix(in srgb,var(--warn) 12%,transparent)}
 .err{color:var(--bad);font-weight:600}.msg{color:var(--mute);font-size:12px}
@@ -747,7 +908,7 @@ tr.miss td.ed:not([data-k=note]):empty{background:color-mix(in srgb,var(--warn) 
 </main>
 <script>
 const GOAL_H = __GOAL__, SCALE_H = __SCALE__, COLS = __COLUMNS__, PCOLS = __PLAN_COLUMNS__, BASE = __BASE__;
-const SHOW = ["region_name","route","date","start_time","end_time","time_of_day","duration_hms","kind","road_shapes","driver","passenger","label","size_gb","note","folder"];
+const SHOW = ["region_name","route","date","start_time","end_time","time_of_day","duration_hms","kind","road_shapes","map_route","map_coverage","driver","passenger","label","size_gb","note","folder"];
 const EDIT = ["driver","passenger","note"];
 let rows = [], live = true, sortKey = "date", sortDir = 1;
 const $ = id => document.getElementById(id);
@@ -832,11 +993,13 @@ function render() {
   });
   $("tbody").innerHTML = vis.map(r => `<tr class="${!r.driver || !r.passenger ? "miss" : ""}" data-f="${esc(r.folder)}"><td><button class="del" data-ex="1" title="유효한 리스트에서 지우기 (bag 파일은 그대로)">🗑️</button></td>` + SHOW.map(k =>
     EDIT.includes(k) && live ? `<td class="ed" contenteditable="plaintext-only" data-k="${k}">${esc(r[k])}</td>`
+    : k === "label" && live ? `<td class="dbl" data-k="label" title="더블클릭해서 수정">${esc(r.label)}</td>`
+    : k === "road_shapes" && live ? `<td class="dbl shapes" data-k="road_shapes" title="더블클릭해서 수정">${esc(r.road_shapes)}</td>`
     : k === "region_name" ? `<td title="${esc(r.region)}">${esc(r.region_name || r.region)}</td>`
-    : k === "folder" ? `<td class="path">${esc(r.folder.split("/").slice(-2).join("/"))}</td>`
+    : k === "folder" ? `<td class="path${r.on_disk && r.on_disk !== "있음" ? " gone" : ""}" title="${r.on_disk && r.on_disk !== "있음" ? "bag 폴더 없음 (지움·옮김) — 목록에는 남겨 둡니다" : esc(r.folder)}">${esc(r.folder.split("/").slice(-2).join("/"))}</td>`
     : k === "time_of_day" ? `<td>${(r.time_of_day || "").split("+").filter(Boolean).map(t => `<span class="tod ${t}">${TOD_EMOJI[t]} ${t}</span>`).join(" ")}</td>`
     : `<td class="${num(k) ? "num" : ""}">${esc(r[k])}</td>`).join("") + "</tr>").join("");
-  $("msg").textContent = `${vis.length}개 표시` + (live ? " · 운전자/동승자/비고 칸은 눌러서 고칠 수 있습니다" : " · 불러온 CSV (읽기 전용)");
+  $("msg").textContent = `${vis.length}개 표시` + (live ? " · 운전자/동승자/비고는 눌러서, 라벨·도로 형상은 더블클릭해서 고칩니다" : " · 불러온 CSV (읽기 전용)");
   if (!$("pbody").contains(document.activeElement)) renderPlan(); else renderPlanStats();
 }
 
@@ -984,6 +1147,39 @@ $("thead").addEventListener("click", e => {
   sortDir = k === sortKey ? -sortDir : 1; sortKey = k; render();
 });
 $("tbody").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); e.target.blur(); } });
+// 라벨 · 도로 형상: 잘못 눌러 바뀌지 않게 더블클릭으로만 연다
+const ROAD_SHAPES = __ROAD_SHAPES__;
+$("tbody").addEventListener("dblclick", e => {
+  const td = e.target.closest("td.dbl"); if (!td || td.classList.contains("editing")) return;
+  const folder = td.parentElement.dataset.f, row = rows.find(r => r.folder === folder); if (!row) return;
+  if (td.dataset.k === "label") {           // 글자 수정 → 기존 칸 저장(focusout)으로
+    td.classList.add("ed"); td.contentEditable = "plaintext-only"; td.focus();
+    const sel = getSelection(); sel.selectAllChildren(td);
+    return;
+  }
+  // 도로 형상: 칸 안에 버튼 6개 — 누르면 켜고 끄고, 칸 밖을 누르거나 Enter 면 저장
+  const cur = new Set((row.road_shapes || "").split(" · ").filter(Boolean));
+  td.classList.add("editing");
+  td.innerHTML = `<div class="chips">${ROAD_SHAPES.map(s => `<button type="button" class="chip${cur.has(s) ? " on" : ""}">${esc(s)}</button>`).join("")}
+    <button type="button" class="chip ok">✔ 저장</button></div>`;
+  const save = async () => {
+    document.removeEventListener("mousedown", outside, true);
+    const pick = [...td.querySelectorAll(".chip.on")].map(b => b.textContent);
+    const joined = pick.join(" · ");
+    if (joined === (row.road_shapes || "")) { render(); return; }
+    const j = await (await fetch("/api/edit", {method: "POST", headers: {"Content-Type": "application/json"},
+                                          body: JSON.stringify({folder, road_shapes: pick})})).json();
+    if (j.ok) { row.road_shapes = joined; $("msg").textContent = `저장됨: ${folder.split("/").pop()} 도로 형상 = ${joined || "(없음)"}`; }
+    else $("msg").innerHTML = `<span class="err">저장 실패: ${esc(j.error)}</span>`;
+    render();
+  };
+  const outside = ev => { if (!td.contains(ev.target)) save(); };
+  td.querySelectorAll(".chip").forEach(b => b.onclick = ev => {
+    ev.stopPropagation();
+    if (b.classList.contains("ok")) save(); else b.classList.toggle("on");
+  });
+  setTimeout(() => document.addEventListener("mousedown", outside, true), 0);
+});
 $("tbody").addEventListener("focusout", async e => {
   const td = e.target; if (!td.classList.contains("ed")) return;
   const folder = td.parentElement.dataset.f, k = td.dataset.k, v = td.textContent.trim();

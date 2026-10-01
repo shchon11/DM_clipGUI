@@ -14,6 +14,7 @@
 
 import json
 import math
+import re
 import os
 import shlex
 import shutil
@@ -425,6 +426,14 @@ def launched_inventory(generated_dir):
     return out
 
 
+def name_bags(text, bags):
+    """도구 문구의 b0 · b1 … (--bags 순서) 를 녹화 이름으로: 'b2: …' → 'rec_20260928_155447: …'."""
+    if not text or not bags:
+        return text
+    names = [Path(b).name for b in bags]
+    return re.sub(r"\bb(\d+)\b", lambda m: names[int(m.group(1))] if int(m.group(1)) < len(names) else m.group(0), str(text))
+
+
 def tool_args(job):
     """nontarget_cal run 인자 (실행 파일 뒤)."""
     a = ["run", "--bags", *job["bags"], "--out", job["out"], "--workdir", job["workdir"],
@@ -604,7 +613,7 @@ def settle_state(job, alive=None):
     elif rc == 2 or prog.refusal:
         job["state"] = REFUSED
         r = prog.refusal or {}
-        job["state_msg"] = r.get("msg_ko") or r.get("msg") or "거절"
+        job["state_msg"] = name_bags(r.get("msg_ko") or r.get("msg") or "거절", job.get("bags"))
         if r.get("code") == "insufficient_disk":
             job["state"] = PENDING          # 공간만 생기면 되는 거절은 대기로
     elif att.get("stop_reason"):
