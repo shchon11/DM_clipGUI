@@ -1684,7 +1684,7 @@ class MainWindow(QMainWindow):
         self._navmap = {}
         self._navmap_state.connect(self._on_navmap_state)
         self.navmap_timer = QTimer(self, interval=30000, timeout=lambda: self._check_navmap(start=False))
-        self._map_port = nav_map.config()["port"]
+        self._map_cfg = nav_map.config()
         self._map_seen = set()        # 이미 본 런 id — 한 런에 한 번만 판단한다
         self._map_cur = None          # 지금 맡은 런 {rid, route, zone, state, t, bag, final, why}
         self._map_first = True        # 첫 응답: GUI 켜기 전에 시작된 런은 새로 녹화하지 않는다
@@ -2986,6 +2986,12 @@ class MainWindow(QMainWindow):
                                            road_shapes=road_shapes, **crew, **(extra or {}))
                 path, n = dataset_catalog.rebuild(base)
                 self._catalog_msg.emit("GUI", f"데이터셋 목록 갱신: {path} ({n}개)")
+                try:
+                    up = nav_map.upload_datasets(self._map_cfg, path)
+                    if up is not None:
+                        self._catalog_msg.emit("GUI", f"지도 서버에 루트별 녹화 합계 올림 ({up}개 루트)")
+                except Exception as e:      # noqa: BLE001 — 인터넷이 끊겨도 녹화 기록은 이미 남았다
+                    self._catalog_msg.emit("WARN", f"지도 서버에 녹화 합계를 못 올림 — 지도의 '녹화 n' 이 늦게 맞습니다 ({e})")
             except Exception as e:
                 self._catalog_msg.emit("ERROR", f"데이터셋 목록(CSV) 기록 실패: {bag} — {e}")
         threading.Thread(target=work, daemon=True).start()
@@ -3041,25 +3047,25 @@ class MainWindow(QMainWindow):
         if self._map_inflight:
             return
         self._map_inflight = True
-        port, fix = self._map_port, self._vehicle_fix()
+        cfg, fix = self._map_cfg, self._vehicle_fix()
         enabled = self.chk_maprec.isChecked()
         recording = bool(self.recording or self._rec_pending)
         watch = [self._map_cur["rid"]] if self._map_cur else []
 
         def work():
             try:
-                resp = nav_map.dm_sync(port, enabled, recording, list(fix) if fix else None, watch)
+                resp = nav_map.dm_sync(cfg, enabled, recording, list(fix) if fix else None, watch)
             except Exception as e:           # noqa: BLE001 — 서버 꺼짐 · 시간 초과 모두 같은 취급
                 resp = {"error": str(e)}
             self._map_sync_sig.emit(resp)
         threading.Thread(target=work, daemon=True).start()
 
     def _map_report(self, rid, state, msg="", bag=""):
-        port = self._map_port
+        cfg = self._map_cfg
 
         def work():
             try:
-                nav_map.dm_run_state(port, rid, state, msg, bag)
+                nav_map.dm_run_state(cfg, rid, state, msg, bag)
             except Exception as e:           # noqa: BLE001
                 self._catalog_msg.emit("WARN", f"지도 연동: 폰에 상태({state})를 못 알림 — {e}")
         threading.Thread(target=work, daemon=True).start()
@@ -3233,7 +3239,7 @@ class MainWindow(QMainWindow):
         st = self._navmap or {}
         if not st.get("running"):
             self._check_navmap(start=True)
-        url = (st.get("local") or f"http://localhost:{nav_map.config()['port']}")
+        url = st.get("public") or st.get("local") or nav_map.base_url(self._map_cfg)
         subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     # --- 수동 녹화 ---
